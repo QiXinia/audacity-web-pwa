@@ -1,8 +1,7 @@
 name: Deploy to GitHub Pages
 
+# Automatic deployment is disabled. Pages is published from manually built static files.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
