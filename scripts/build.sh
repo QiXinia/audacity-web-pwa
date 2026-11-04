@@ -10,4 +10,8 @@ export NODE_ENV="${NODE_ENV:-production}"
 rm -rf "$ROOT/dist"
 npx vite build --outDir "$ROOT/dist" --emptyOutDir
 
+# GitHub Pages serves 404.html for unknown paths. A copy of the built app
+# shell allows direct /editor/:id links to bootstrap React before SW control.
+cp "$ROOT/dist/index.html" "$ROOT/dist/404.html"
+
 echo "Build complete: dist/"
