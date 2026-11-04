@@ -14,6 +14,16 @@
   --au-text: #e4e5e7;
   --au-muted: #aab0b6;
   --au-accent: #84b5ff;
+  --primary: hsl(215 100% 76%);
+  --primary-foreground: hsl(220 20% 14%);
+  --ring: hsl(215 100% 76%);
+  --secondary: #515a63;
+  --secondary-foreground: #e4e5e7;
+  --accent: #434a50;
+  --accent-foreground: #e4e5e7;
+  --muted: #32383e;
+  --muted-foreground: #aab0b6;
+  --radius: 0.125rem;
   background: var(--au-bg);
   color: var(--au-text);
   font-family: Inter, "Noto Sans SC", system-ui, sans-serif;

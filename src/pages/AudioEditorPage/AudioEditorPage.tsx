@@ -809,7 +809,7 @@ export default function AudioEditorPage() {
         if (end > maxEnd) maxEnd = end;
       }
     }
-    return Math.max(maxEnd, 30); // Minimum 30s timeline
+    return maxEnd;
   }
 
   function getEffectLabel(type: EffectType): string {
@@ -1331,8 +1331,9 @@ export default function AudioEditorPage() {
   }
 
   const projectDuration = getProjectDuration();
+  const timelineDuration = Math.max(projectDuration, 30);
   const pxPerSec = horizontalZoom;
-  const totalWidth = Math.max(projectDuration * pxPerSec, 1000);
+  const totalWidth = Math.max(timelineDuration * pxPerSec, 1000);
 
   if (isLoading) {
     return (
@@ -1798,7 +1799,7 @@ export default function AudioEditorPage() {
               className="au-toolbar sticky top-0 z-20 h-7 shrink-0 border-b"
               style={{ width: totalWidth }}
             >
-              <TimeRuler duration={projectDuration} pxPerSec={pxPerSec} />
+              <TimeRuler duration={timelineDuration} pxPerSec={pxPerSec} />
             </div>
 
             {/* Playhead */}
