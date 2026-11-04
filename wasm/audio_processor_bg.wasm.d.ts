@@ -1,0 +1,33 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_get_wavdecoderesult_num_channels: (a: number) => number;
+export const __wbg_get_wavdecoderesult_sample_rate: (a: number) => number;
+export const __wbg_get_wavdecoderesult_samples: (a: number) => [number, number];
+export const __wbg_set_wavdecoderesult_num_channels: (a: number, b: number) => void;
+export const __wbg_set_wavdecoderesult_sample_rate: (a: number, b: number) => void;
+export const __wbg_set_wavdecoderesult_samples: (a: number, b: number, c: number) => void;
+export const __wbg_wavdecoderesult_free: (a: number, b: number) => void;
+export const apply_compressor: (a: number, b: number, c: any, d: number, e: number, f: number, g: number, h: number) => void;
+export const apply_fade_in: (a: number, b: number, c: any, d: number) => void;
+export const apply_fade_out: (a: number, b: number, c: any, d: number) => void;
+export const apply_gain: (a: number, b: number, c: any, d: number) => void;
+export const compute_peak: (a: number, b: number) => number;
+export const compute_rms: (a: number, b: number) => number;
+export const concat_buffers: (a: number, b: number, c: number, d: number) => [number, number];
+export const decode_wav: (a: number, b: number) => number;
+export const encode_wav_float32: (a: number, b: number, c: number, d: number) => [number, number];
+export const encode_wav_pcm16: (a: number, b: number, c: number, d: number) => [number, number];
+export const fft_magnitude: (a: number, b: number) => [number, number];
+export const invert_phase: (a: number, b: number, c: any) => void;
+export const mix_buffers: (a: number, b: number, c: number, d: number) => [number, number];
+export const normalize: (a: number, b: number, c: any, d: number) => number;
+export const remove_dc_offset: (a: number, b: number, c: any) => number;
+export const reverse: (a: number, b: number, c: any) => void;
+export const slice_buffer: (a: number, b: number, c: number, d: number) => [number, number];
+export const spectrogram: (a: number, b: number, c: number, d: number) => [number, number];
+export const wavdecoderesult_new: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_start: () => void;
