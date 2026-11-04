@@ -183,6 +183,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/wasm/selection-ops.test.ts` | 选区截取、删除、插入、替换操作 | 18 |
 | `src/services/historyService.test.ts` | 撤销/重做命令栈、push/undo/redo/clear | 9 |
 | `src/services/clipboardService.test.ts` | 多声道剪贴板序列化、旧格式恢复、异常输入 | 4 |
+| `src/engine/audioEngine.test.ts` | 立体声/单声道声像、双声道增益、修剪偏移混音 | 4 |
 | `src/engine/mp3Encoder.test.ts` | 真实 MPEG 输出、采样率选择、空输入边界 | 3 |
 
 运行测试：
@@ -240,6 +241,7 @@ audacity-web/
 │   │   └── audioDb.ts          # IndexedDB 数据库（Dexie，含历史快照表）
 │   ├── engine/
 │   │   ├── audioEngine.ts      # 音频引擎（播放/录音/混音/导出）
+│   │   ├── audioEngine.test.ts # 声像、增益与修剪混音测试
 │   │   └── mp3Encoder.ts       # MP3 编码器封装（基于 @breezystack/lamejs）
 │   ├── wasm/
 │   │   ├── processor.ts        # WASM 加载层 + 纯 JS 降级实现

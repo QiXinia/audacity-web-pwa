@@ -733,11 +733,14 @@ export class AudioEngine {
     for (const track of tracks) {
       if (track.muted) continue;
       const trackGainLin = Math.pow(10, track.gain / 20);
-      // Constant-power pan law
       const pan = Math.max(-1, Math.min(1, track.pan));
+      // Mono uses constant-power panning. Stereo clips instead use balance
+      // panning so centre position preserves both original channel levels.
       const panAngle = ((pan + 1) / 2) * (Math.PI / 2);
-      const panL = Math.cos(panAngle);
-      const panR = Math.sin(panAngle);
+      const monoPanL = Math.cos(panAngle);
+      const monoPanR = Math.sin(panAngle);
+      const stereoPanL = pan > 0 ? Math.cos((pan * Math.PI) / 2) : 1;
+      const stereoPanR = pan < 0 ? Math.cos((-pan * Math.PI) / 2) : 1;
 
       for (const clip of track.clips) {
         const cached = this.getCachedBuffer(clip.audioBufferId);
@@ -766,10 +769,14 @@ export class AudioEngine {
           }
 
           const g = clipGainLin * Math.max(0, fadeGain);
-          const sL = numCh === 1 ? cached[0][j] : cached[0][j];
-          const sR = numCh === 1 ? cached[0][j] : (cached[1]?.[j] ?? cached[0][j]);
-          left[i] += sL * g * panL;
-          right[i] += sR * g * panR;
+          const firstChannel = cached[0][j];
+          if (numCh === 1) {
+            left[i] += firstChannel * g * monoPanL;
+            right[i] += firstChannel * g * monoPanR;
+          } else {
+            left[i] += firstChannel * g * stereoPanL;
+            right[i] += (cached[1]?.[j] ?? firstChannel) * g * stereoPanR;
+          }
         }
       }
     }
