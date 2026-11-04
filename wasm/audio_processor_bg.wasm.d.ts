@@ -26,6 +26,7 @@ export const remove_dc_offset: (a: number, b: number, c: any) => number;
 export const reverse: (a: number, b: number, c: any) => void;
 export const slice_buffer: (a: number, b: number, c: number, d: number) => [number, number];
 export const spectrogram: (a: number, b: number, c: number, d: number) => [number, number];
+export const time_stretch: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const wavdecoderesult_new: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_malloc: (a: number, b: number) => number;

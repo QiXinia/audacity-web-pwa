@@ -375,6 +375,28 @@ export function spectrogram(input, window_size, hop_size) {
     wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
     return v4;
 }
+
+/**
+ * Pitch-preserving WSOLA stretch on planar multi-channel audio.
+ * All channels share analysis positions, preserving stereo alignment.
+ * speed > 1 shortens; speed < 1 lengthens. Returns planar channels.
+ * @param {Float32Array | number[]} input
+ * @param {number} channel_count
+ * @param {number} speed
+ * @param {number} sample_rate
+ * @returns {Float32Array}
+ */
+export function time_stretch(input, channel_count, speed, sample_rate) {
+    const val2 = +channel_count;
+    const val3 = +speed;
+    const val4 = +sample_rate;
+    const ptr0 = passArrayF32ToWasm0(input, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.time_stretch(ptr0, len0, val2, val3, val4);
+    var v5 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v5;
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
