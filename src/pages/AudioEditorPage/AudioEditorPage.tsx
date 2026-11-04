@@ -2711,6 +2711,18 @@ function drawSpectrumMini(
 }
 
 // Time Ruler Component
+function formatRulerTime(seconds: number, interval: number) {
+  const totalMs = Math.round(seconds * 1000);
+  const hours = Math.floor(totalMs / 3_600_000);
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMs % 60_000) / 1000);
+  const ms = totalMs % 1000;
+  const base = hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+    : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  return interval < 1 ? `${base}.${String(ms).padStart(3, '0')}` : base;
+}
+
 function TimeRuler({ duration, pxPerSec }: { duration: number; pxPerSec: number }) {
   const totalWidth = Math.max(duration * pxPerSec, 1000);
   const markers: number[] = [];
@@ -2745,7 +2757,7 @@ function TimeRuler({ duration, pxPerSec }: { duration: number; pxPerSec: number 
             />
             {isMajor && (
               <span className="absolute left-1 top-0.5 text-[10px] tabular-nums text-muted-foreground">
-                {formatTime(t)}
+                {formatRulerTime(t, interval)}
               </span>
             )}
           </div>
