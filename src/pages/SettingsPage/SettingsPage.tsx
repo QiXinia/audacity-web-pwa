@@ -87,7 +87,6 @@ export default function SettingsPage() {
 
   async function loadMicPermission() {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await (navigator.permissions as any)?.query({ name: 'microphone' });
       if (result) {
         setMicPermission(result.state);

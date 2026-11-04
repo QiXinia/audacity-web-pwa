@@ -3,3 +3,61 @@
 @import "tw-animate-css";
 @import "./tailwind-theme.css";
 @import "./typography.css";
+
+/* Audacity 4 editor palette, measured from the official interactive UI. */
+.audacity-editor {
+  --au-bg: #252b31;
+  --au-panel: #32383e;
+  --au-toolbar: #2e353c;
+  --au-button: #515a63;
+  --au-border: #434a50;
+  --au-text: #e4e5e7;
+  --au-muted: #aab0b6;
+  --au-accent: #84b5ff;
+  background: var(--au-bg);
+  color: var(--au-text);
+  font-family: Inter, "Noto Sans SC", system-ui, sans-serif;
+}
+
+.audacity-editor .au-toolbar {
+  background: var(--au-toolbar);
+  border-color: var(--au-border);
+}
+
+.audacity-editor .au-panel {
+  background: var(--au-panel);
+  border-color: var(--au-border);
+}
+
+.audacity-editor .au-secondary[data-slot="button"] {
+  background: var(--au-button);
+  border-color: var(--au-border);
+  color: var(--au-text);
+}
+
+.audacity-editor [data-slot="button"]:focus-visible,
+.audacity-editor [role="slider"]:focus-visible {
+  outline: 2px solid var(--au-accent);
+  outline-offset: 1px;
+}
+
+.audacity-editor .au-time-field {
+  background: #20252a;
+  border: 1px solid var(--au-border);
+  color: var(--au-text);
+}
+
+.audacity-editor .au-selection {
+  background: rgb(132 181 255 / 18%);
+  border-inline: 1px solid rgb(132 181 255 / 55%);
+}
+
+.audacity-editor .au-clip {
+  border-color: rgb(32 37 42 / 45%);
+  box-shadow: inset 0 1px rgb(255 255 255 / 15%);
+}
+
+.audacity-editor .au-clip[data-selected="true"] {
+  border-color: var(--au-accent);
+  box-shadow: 0 0 0 1px var(--au-accent), inset 0 1px rgb(255 255 255 / 20%);
+}

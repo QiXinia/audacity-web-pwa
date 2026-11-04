@@ -92,8 +92,9 @@ import { audioDb } from '@/db/audioDb';
 import { getMp3SampleRate } from '@/engine/mp3Encoder';
 import { projectService } from '@/services/projectService';
 import { historyManager } from '@/services/historyService';
+import { parseAudioClipboard, serializeAudioClipboard, type AudioClipboardData } from '@/services/clipboardService';
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
-import { formatTime, clamp, generateId, dbToGain, gainToDb } from '@/lib/audioUtils';
+import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
 import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -128,6 +129,7 @@ export default function AudioEditorPage() {
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isPlayingRef = useRef(false);
+  const recordingSampleRateRef = useRef(44100);
 
   // Load project
   useEffect(() => {
@@ -166,7 +168,6 @@ export default function AudioEditorPage() {
 
   async function checkMicPermission() {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await (navigator.permissions as any)?.query({ name: 'microphone' });
       if (result) {
         setMicPermissionState(result.state);
@@ -274,37 +275,64 @@ export default function AudioEditorPage() {
     if (!project) return;
 
     if (recordingState === 'recording') {
-      const data = audioEngine.stopRecording();
-      if (data && data.length > 0) {
-        // Find first armed track, or first track
-        const armedTrack = project.tracks.find((t) => t.armed);
-        const targetTrack = armedTrack ?? project.tracks[0];
-        if (targetTrack) {
-          await projectService.addRecordingToTrack(
-            project.id,
-            targetTrack.id,
-            data,
-            project.sampleRate,
-            cursorPosition,
-          );
-          // Reload project
-          const updated = await projectService.getProject(project.id);
-          if (updated) setProject(updated);
-          toast.success('录音已添加到轨道');
-        }
-      }
-    } else {
       try {
-        // Ensure audio context exists
-        await audioEngine.ensureContext();
-        await audioEngine.startRecording();
-        setRecordingState('recording');
-        toast.info('正在录音...');
-        setMicPermissionState('granted');
-      } catch (e) {
-        toast.error('无法访问麦克风，请检查权限设置');
-        setMicPermissionState('denied');
+        const data = audioEngine.stopRecording();
+        if (!data || data.length === 0 || data[0].length === 0) {
+          toast.warning('未采集到音频，请检查麦克风输入');
+          return;
+        }
+
+        const targetTrack = project.tracks.find((t) => t.armed) ?? project.tracks[0];
+        if (!targetTrack) {
+          toast.warning('没有可用于录音的轨道');
+          return;
+        }
+
+        // Web Audio 使用设备采样率；统一重采样到工程采样率，避免导出时长和播放速度偏移。
+        const resampled = data.map((channel) =>
+          resampleBuffer(channel, recordingSampleRateRef.current, project.sampleRate),
+        );
+        const before = project;
+        const clip = await projectService.addRecordingToTrack(
+          project.id,
+          targetTrack.id,
+          resampled,
+          project.sampleRate,
+          cursorPosition,
+        );
+        if (!clip) throw new Error('Recording clip could not be created');
+
+        const updated = await projectService.getProject(project.id);
+        if (updated) {
+          setProject(updated);
+          pushHistoryCmd({
+            id: generateId(),
+            label: '录音',
+            execute: () => updated,
+            undo: () => before,
+          });
+        }
+        toast.success(`录音已添加到「${targetTrack.name}」`);
+      } catch (error) {
+        logger.error('保存录音失败:', String(error));
+        toast.error('录音保存失败');
+      } finally {
+        setRecordingState('idle');
       }
+      return;
+    }
+
+    try {
+      await audioEngine.ensureContext();
+      await audioEngine.startRecording();
+      recordingSampleRateRef.current = audioEngine.getSampleRate();
+      setRecordingState('recording');
+      toast.info(`正在录音（${audioEngine.getRecordingMode()}）…`);
+      setMicPermissionState('granted');
+    } catch (e) {
+      setRecordingState('idle');
+      toast.error('无法访问麦克风，请检查权限设置');
+      setMicPermissionState('denied');
     }
   }
 
@@ -393,6 +421,61 @@ export default function AudioEditorPage() {
   function selectClip(trackId: string, clipId: string) {
     setSelectedTrackId(trackId);
     setSelectedClipId(clipId);
+  }
+
+  async function handleClipEdgeTrim(
+    trackId: string,
+    clipId: string,
+    edge: 'left' | 'right',
+    deltaSeconds: number,
+  ) {
+    if (!project || Math.abs(deltaSeconds) < 0.001) return;
+    const before = project;
+    let changed = false;
+    const updated: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => {
+        if (track.id !== trackId) return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId) return clip;
+            if (edge === 'left') {
+              const delta = clamp(
+                deltaSeconds,
+                -Math.min(clip.startTime, clip.offset),
+                Math.max(0, clip.duration - 0.05),
+              );
+              if (Math.abs(delta) < 0.001) return clip;
+              changed = true;
+              return {
+                ...clip,
+                startTime: clip.startTime + delta,
+                offset: clip.offset + delta,
+                duration: clip.duration - delta,
+              };
+            }
+            const duration = clamp(
+              clip.duration + deltaSeconds,
+              0.05,
+              Math.max(0.05, clip.originalDuration - clip.offset),
+            );
+            if (Math.abs(duration - clip.duration) < 0.001) return clip;
+            changed = true;
+            return { ...clip, duration };
+          }),
+        };
+      }),
+    };
+    if (!changed) return;
+    setProject(updated);
+    await projectService.saveProject(updated);
+    pushHistoryCmd({
+      id: generateId(),
+      label: '修剪片段',
+      execute: () => updated,
+      undo: () => before,
+    });
   }
 
   // Import audio
@@ -523,23 +606,25 @@ export default function AudioEditorPage() {
     setCanRedo(historyManager.canRedo());
   }
 
-  function handleUndo() {
+  async function handleUndo() {
     if (!project) return;
     const result = historyManager.undo(project);
     if (result) {
       setProject(result.project);
-      projectService.saveProject(result.project);
+      await projectService.saveProject(result.project);
+      await historyManager.flush();
       toast.info(`撤销：${result.command.label}`);
       updateHistoryState();
     }
   }
 
-  function handleRedo() {
+  async function handleRedo() {
     if (!project) return;
     const result = historyManager.redo(project);
     if (result) {
       setProject(result.project);
-      projectService.saveProject(result.project);
+      await projectService.saveProject(result.project);
+      await historyManager.flush();
       toast.info(`重做：${result.command.label}`);
       updateHistoryState();
     }
@@ -574,7 +659,7 @@ export default function AudioEditorPage() {
         
         await audioDb.clipboard.put({
           id: 'current',
-          data: JSON.stringify(clipboardData),
+          data: serializeAudioClipboard(clipboardData),
           createdAt: Date.now(),
         });
         toast.success('已复制到剪贴板');
@@ -592,7 +677,7 @@ export default function AudioEditorPage() {
         return;
       }
       const before = JSON.parse(JSON.stringify(project)) as IProject;
-      const clipboardData = JSON.parse(entry.data);
+      const clipboardData = parseAudioClipboard(entry.data);
       const result = await pasteAtCursor(project, clipboardData, cursorPosition);
       if (result) {
         setProject(result);
@@ -756,7 +841,7 @@ export default function AudioEditorPage() {
       
       await audioDb.clipboard.put({
         id: 'current',
-        data: JSON.stringify(copied),
+        data: serializeAudioClipboard(copied),
         createdAt: Date.now(),
       });
     } catch {}
@@ -764,20 +849,47 @@ export default function AudioEditorPage() {
     return deleteRegion(proj, start, end);
   }
 
+  async function storeProjectBuffer(
+    projectId: string,
+    channels: Float32Array[],
+    sampleRate: number,
+  ): Promise<string> {
+    if (channels.length === 0 || channels[0].length === 0) throw new Error('Cannot store an empty audio buffer');
+    const length = channels[0].length;
+    if (channels.some((channel) => channel.length !== length)) {
+      throw new Error('Audio channels must have equal lengths');
+    }
+    const bufferId = generateId();
+    await audioDb.audioBuffers.put({
+      id: bufferId,
+      projectId,
+      sampleRate,
+      channels: channels.length,
+      length,
+      duration: length / sampleRate,
+      channelData: channels.map((channel) =>
+        channel.buffer.slice(channel.byteOffset, channel.byteOffset + channel.byteLength) as ArrayBuffer,
+      ),
+      createdAt: Date.now(),
+    });
+    audioEngine.cacheBuffer(bufferId, channels, sampleRate);
+    return bufferId;
+  }
+
   async function copySelection(
     proj: IProject,
     start: number,
     end: number,
-  ): Promise<{ tracks: Array<{ trackId: string; data: Float32Array; startTime: number }>; sampleRate: number; duration: number } | null> {
+  ): Promise<AudioClipboardData | null> {
     const duration = end - start;
     if (duration <= 0) return null;
 
-    const result: Array<{ trackId: string; data: Float32Array; startTime: number }> = [];
+    const result: AudioClipboardData['tracks'] = [];
     const sampleRate = proj.sampleRate;
-    const totalSamples = Math.ceil(duration * sampleRate);
+    const totalSamples = Math.max(1, Math.ceil(duration * sampleRate));
 
     for (const track of proj.tracks) {
-      const trackBuffer = new Float32Array(totalSamples);
+      const trackBuffers: Float32Array[] = [];
       let hasContent = false;
 
       for (const clip of track.clips) {
@@ -786,36 +898,40 @@ export default function AudioEditorPage() {
 
         const overlapStart = Math.max(clip.startTime, start);
         const overlapEnd = Math.min(clipEnd, end);
-        const overlapDuration = overlapEnd - overlapStart;
+        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
+        if (!clipChannels || clipChannels.length === 0) continue;
 
-        const clipData = await projectService.loadAudioBuffer(clip.audioBufferId);
-        if (!clipData) continue;
+        while (trackBuffers.length < clipChannels.length) {
+          trackBuffers.push(new Float32Array(totalSamples));
+        }
 
         const offsetInClip = overlapStart - clip.startTime + clip.offset;
         const srcStartSample = Math.floor(offsetInClip * sampleRate);
-        const srcSamples = Math.floor(overlapDuration * sampleRate);
+        const srcSamples = Math.floor((overlapEnd - overlapStart) * sampleRate);
         const dstStartSample = Math.floor((overlapStart - start) * sampleRate);
+        const positionAtOverlapStart = (overlapStart - clip.startTime) * sampleRate;
 
-        for (let i = 0; i < srcSamples && srcStartSample + i < clipData.length && dstStartSample + i < totalSamples; i++) {
-          // Apply fade in/out from clip
+        for (let i = 0; i < srcSamples && srcStartSample + i < clipChannels[0].length && dstStartSample + i < totalSamples; i++) {
+          const positionInClip = positionAtOverlapStart + i;
           let fadeGain = 1;
-          const posInClip = offsetInClip * sampleRate + i;
-
-          if (clip.fadeIn > 0 && posInClip < clip.fadeIn * sampleRate) {
-            fadeGain = posInClip / (clip.fadeIn * sampleRate);
+          if (clip.fadeIn > 0 && positionInClip < clip.fadeIn * sampleRate) {
+            fadeGain = positionInClip / (clip.fadeIn * sampleRate);
           }
-          if (clip.fadeOut > 0 && posInClip > (clip.duration - clip.fadeOut) * sampleRate) {
-            const fadePos = posInClip - (clip.duration - clip.fadeOut) * sampleRate;
+          if (clip.fadeOut > 0 && positionInClip > (clip.duration - clip.fadeOut) * sampleRate) {
+            const fadePos = positionInClip - (clip.duration - clip.fadeOut) * sampleRate;
             fadeGain = 1 - fadePos / (clip.fadeOut * sampleRate);
           }
 
-          trackBuffer[dstStartSample + i] += clipData[srcStartSample + i] * dbToGain(clip.gain) * fadeGain;
+          for (let channel = 0; channel < clipChannels.length; channel++) {
+            trackBuffers[channel][dstStartSample + i] +=
+              clipChannels[channel][srcStartSample + i] * dbToGain(clip.gain) * fadeGain;
+          }
         }
         hasContent = true;
       }
 
       if (hasContent) {
-        result.push({ trackId: track.id, data: trackBuffer, startTime: 0 });
+        result.push({ trackId: track.id, channels: trackBuffers, startTime: 0 });
       }
     }
 
@@ -824,7 +940,7 @@ export default function AudioEditorPage() {
 
   async function pasteAtCursor(
     proj: IProject,
-    clipboardData: { tracks: Array<{ trackId: string; data: Float32Array; startTime: number }>; sampleRate: number; duration: number },
+    clipboardData: AudioClipboardData,
     cursorPos: number,
   ): Promise<IProject | null> {
     if (clipboardData.tracks.length === 0) return null;
@@ -860,21 +976,8 @@ export default function AudioEditorPage() {
 
       if (!targetTrack) continue;
 
-      // Store audio data
-      const bufferId = generateId();
-      
-      await audioDb.audioBuffers.put({
-        id: bufferId,
-        projectId: proj.id,
-        sampleRate: clipboardData.sampleRate,
-        channels: 1,
-        length: trackClip.data.length,
-        duration: clipboardData.duration,
-        channelData: [trackClip.data.buffer as ArrayBuffer],
-        createdAt: Date.now(),
-      });
-
-      audioEngine.cacheBuffer(bufferId, [trackClip.data], clipboardData.sampleRate);
+      // Store every channel without downmixing.
+      const bufferId = await storeProjectBuffer(proj.id, trackClip.channels, clipboardData.sampleRate);
 
       const newClip: IClip = {
         id: generateId(),
@@ -922,8 +1025,8 @@ export default function AudioEditorPage() {
         }
 
         // Clip overlaps region - split or truncate
-        const clipData = await projectService.loadAudioBuffer(clip.audioBufferId);
-        if (!clipData) {
+        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
+        if (!clipChannels || clipChannels.length === 0) {
           newClips.push(clip);
           continue;
         }
@@ -932,21 +1035,8 @@ export default function AudioEditorPage() {
         if (clip.startTime < start) {
           const leftDuration = start - clip.startTime;
           const leftSamples = Math.floor(leftDuration * proj.sampleRate);
-          const leftData = wasmProcessor.sliceBuffer(clipData, 0, leftSamples);
-
-          const leftBufferId = generateId();
-          
-          await audioDb.audioBuffers.put({
-            id: leftBufferId,
-            projectId: proj.id,
-            sampleRate: proj.sampleRate,
-            channels: 1,
-            length: leftData.length,
-            duration: leftDuration,
-            channelData: [leftData.buffer as ArrayBuffer],
-            createdAt: Date.now(),
-          });
-          audioEngine.cacheBuffer(leftBufferId, [leftData], proj.sampleRate);
+          const leftChannels = clipChannels.map((channel) => wasmProcessor.sliceBuffer(channel, 0, leftSamples));
+          const leftBufferId = await storeProjectBuffer(proj.id, leftChannels, proj.sampleRate);
 
           newClips.push({
             ...clip,
@@ -963,22 +1053,11 @@ export default function AudioEditorPage() {
         if (clipEnd > end) {
           const rightOffsetInClip = end - clip.startTime + clip.offset;
           const rightStartSample = Math.floor(rightOffsetInClip * proj.sampleRate);
-          const rightData = wasmProcessor.sliceBuffer(clipData, rightStartSample, clipData.length);
-          const rightDuration = rightData.length / proj.sampleRate;
-
-          const rightBufferId = generateId();
-          
-          await audioDb.audioBuffers.put({
-            id: rightBufferId,
-            projectId: proj.id,
-            sampleRate: proj.sampleRate,
-            channels: 1,
-            length: rightData.length,
-            duration: rightDuration,
-            channelData: [rightData.buffer as ArrayBuffer],
-            createdAt: Date.now(),
-          });
-          audioEngine.cacheBuffer(rightBufferId, [rightData], proj.sampleRate);
+          const rightChannels = clipChannels.map((channel) =>
+            wasmProcessor.sliceBuffer(channel, rightStartSample, channel.length),
+          );
+          const rightDuration = rightChannels[0].length / proj.sampleRate;
+          const rightBufferId = await storeProjectBuffer(proj.id, rightChannels, proj.sampleRate);
 
           newClips.push({
             ...clip,
@@ -1041,11 +1120,11 @@ export default function AudioEditorPage() {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
 
-        const clipData = await projectService.loadAudioBuffer(clip.audioBufferId);
-        if (!clipData) continue;
+        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
+        if (!clipChannels || clipChannels.length === 0) continue;
 
-        // Make a mutable copy
-        const dataCopy = new Float32Array(clipData);
+        // Make a mutable copy of every channel.
+        const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
 
         const overlapStart = Math.max(clip.startTime, selection.start);
         const overlapEnd = Math.min(clipEnd, selection.end);
@@ -1054,25 +1133,15 @@ export default function AudioEditorPage() {
         const startSample = Math.floor(offsetInClip * project.sampleRate);
         const endSample = Math.floor((offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate);
 
-        // Apply gain to selected portion
-        for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
-          dataCopy[i] *= gainLin;
+        // Apply one linear gain to every channel.
+        for (const dataCopy of dataCopies) {
+          for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
+            dataCopy[i] *= gainLin;
+          }
         }
 
         // Store modified buffer
-        const newBufferId = generateId();
-        
-        await audioDb.audioBuffers.put({
-          id: newBufferId,
-          projectId: project.id,
-          sampleRate: project.sampleRate,
-          channels: 1,
-          length: dataCopy.length,
-          duration: clip.duration,
-          channelData: [dataCopy.buffer as ArrayBuffer],
-          createdAt: Date.now(),
-        });
-        audioEngine.cacheBuffer(newBufferId, [dataCopy], project.sampleRate);
+        const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
 
         clip.audioBufferId = newBufferId;
       }
@@ -1102,10 +1171,10 @@ export default function AudioEditorPage() {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
 
-        const clipData = await projectService.loadAudioBuffer(clip.audioBufferId);
-        if (!clipData) continue;
+        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
+        if (!clipChannels || clipChannels.length === 0) continue;
 
-        const dataCopy = new Float32Array(clipData);
+        const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
 
         const overlapStart = Math.max(clip.startTime, selection.start);
         const overlapEnd = Math.min(clipEnd, selection.end);
@@ -1117,33 +1186,21 @@ export default function AudioEditorPage() {
         );
 
         const selectionSamples = endSample - startSample;
-        if (type === 'in') {
-          // Apply fade in: from 0 to 1 across selection
-          for (let i = 0; i < selectionSamples && startSample + i < dataCopy.length; i++) {
-            const factor = i / selectionSamples;
-            dataCopy[startSample + i] *= factor;
-          }
-        } else {
-          // Apply fade out: from 1 to 0 across selection
-          for (let i = 0; i < selectionSamples && startSample + i < dataCopy.length; i++) {
-            const factor = 1 - i / selectionSamples;
-            dataCopy[startSample + i] *= factor;
+        for (const dataCopy of dataCopies) {
+          if (type === 'in') {
+            for (let i = 0; i < selectionSamples && startSample + i < dataCopy.length; i++) {
+              const factor = selectionSamples > 0 ? i / selectionSamples : 1;
+              dataCopy[startSample + i] *= factor;
+            }
+          } else {
+            for (let i = 0; i < selectionSamples && startSample + i < dataCopy.length; i++) {
+              const factor = selectionSamples > 0 ? 1 - i / selectionSamples : 0;
+              dataCopy[startSample + i] *= factor;
+            }
           }
         }
 
-        const newBufferId = generateId();
-        
-        await audioDb.audioBuffers.put({
-          id: newBufferId,
-          projectId: project.id,
-          sampleRate: project.sampleRate,
-          channels: 1,
-          length: dataCopy.length,
-          duration: clip.duration,
-          channelData: [dataCopy.buffer as ArrayBuffer],
-          createdAt: Date.now(),
-        });
-        audioEngine.cacheBuffer(newBufferId, [dataCopy], project.sampleRate);
+        const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
 
         clip.audioBufferId = newBufferId;
       }
@@ -1172,10 +1229,10 @@ export default function AudioEditorPage() {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
 
-        const clipData = await projectService.loadAudioBuffer(clip.audioBufferId);
-        if (!clipData) continue;
+        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
+        if (!clipChannels || clipChannels.length === 0) continue;
 
-        const dataCopy = new Float32Array(clipData);
+        const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
 
         const overlapStart = Math.max(clip.startTime, selection.start);
         const overlapEnd = Math.min(clipEnd, selection.end);
@@ -1186,34 +1243,26 @@ export default function AudioEditorPage() {
           (offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate,
         );
 
-        // Find peak in selection
+        // Find one shared peak and gain so the stereo balance is preserved.
         let peak = 0;
-        for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
-          const abs = Math.abs(dataCopy[i]);
-          if (abs > peak) peak = abs;
-        }
-
-        if (peak > 0) {
-          const targetLin = dbToGain(-1); // -1dB headroom
-          const gain = targetLin / peak;
+        for (const dataCopy of dataCopies) {
           for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
-            dataCopy[i] *= gain;
+            const abs = Math.abs(dataCopy[i]);
+            if (abs > peak) peak = abs;
           }
         }
 
-        const newBufferId = generateId();
-        
-        await audioDb.audioBuffers.put({
-          id: newBufferId,
-          projectId: project.id,
-          sampleRate: project.sampleRate,
-          channels: 1,
-          length: dataCopy.length,
-          duration: clip.duration,
-          channelData: [dataCopy.buffer as ArrayBuffer],
-          createdAt: Date.now(),
-        });
-        audioEngine.cacheBuffer(newBufferId, [dataCopy], project.sampleRate);
+        if (peak > 0) {
+          const targetLin = dbToGain(-1);
+          const gain = targetLin / peak;
+          for (const dataCopy of dataCopies) {
+            for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
+              dataCopy[i] *= gain;
+            }
+          }
+        }
+
+        const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
 
         clip.audioBufferId = newBufferId;
       }
@@ -1242,10 +1291,10 @@ export default function AudioEditorPage() {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
 
-        const clipData = await projectService.loadAudioBuffer(clip.audioBufferId);
-        if (!clipData) continue;
+        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
+        if (!clipChannels || clipChannels.length === 0) continue;
 
-        const dataCopy = new Float32Array(clipData);
+        const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
 
         const overlapStart = Math.max(clip.startTime, selection.start);
         const overlapEnd = Math.min(clipEnd, selection.end);
@@ -1256,24 +1305,14 @@ export default function AudioEditorPage() {
           (offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate,
         );
 
-        // Reverse selected portion
-        const segment = dataCopy.slice(startSample, endSample);
-        segment.reverse();
-        dataCopy.set(segment, startSample);
+        // Reverse the same time range independently in each channel.
+        for (const dataCopy of dataCopies) {
+          const segment = dataCopy.slice(startSample, endSample);
+          segment.reverse();
+          dataCopy.set(segment, startSample);
+        }
 
-        const newBufferId = generateId();
-        
-        await audioDb.audioBuffers.put({
-          id: newBufferId,
-          projectId: project.id,
-          sampleRate: project.sampleRate,
-          channels: 1,
-          length: dataCopy.length,
-          duration: clip.duration,
-          channelData: [dataCopy.buffer as ArrayBuffer],
-          createdAt: Date.now(),
-        });
-        audioEngine.cacheBuffer(newBufferId, [dataCopy], project.sampleRate);
+        const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
 
         clip.audioBufferId = newBufferId;
       }
@@ -1319,16 +1358,95 @@ export default function AudioEditorPage() {
   return (
     <TooltipProvider>
       <div
-        className="flex h-screen flex-col overflow-hidden bg-background text-foreground"
+        className="audacity-editor flex h-screen flex-col overflow-hidden"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
+        {/* Audacity 4 application menu: every item maps to a real local action. */}
+        <nav aria-label="应用菜单" className="au-toolbar flex h-8 shrink-0 items-center gap-0.5 border-b px-2 text-xs">
+          <div className="mr-2 flex items-center gap-1.5 font-semibold">
+            <AudioWaveform className="size-4 text-[#ff4d6d]" />
+            <span>Audacity Web</span>
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">文件</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={handleImportClick}>导入音频…</DropdownMenuItem>
+              <DropdownMenuItem onClick={saveProject} disabled={isSaving}>保存工程</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setExportDialogOpen(true)}>导出音频…</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => navigate('/')}>返回工程列表</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">编辑</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={handleUndo} disabled={!canUndo}>撤销</DropdownMenuItem>
+              <DropdownMenuItem onClick={handleRedo} disabled={!canRedo}>重做</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleCut} disabled={!selection}>剪切</DropdownMenuItem>
+              <DropdownMenuItem onClick={handleCopy} disabled={!selection}>复制</DropdownMenuItem>
+              <DropdownMenuItem onClick={handlePaste}>粘贴</DropdownMenuItem>
+              <DropdownMenuItem onClick={handleTrim} disabled={!selection}>裁剪到选区</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">选择</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem
+                onClick={() => setSelection({ start: 0, end: projectDuration })}
+                disabled={projectDuration <= 0}
+              >
+                选择全部音频
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSelection(null)} disabled={!selection}>清除选区</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">视图</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={() => setViewMode('waveform')}>波形</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setViewMode('spectrum')}>频谱</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setViewMode('both')}>波形与频谱</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">轨道</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={addTrack}>添加单声道轨道</DropdownMenuItem>
+              <DropdownMenuItem onClick={handleRecord}>
+                {recordingState === 'recording' ? '停止录音' : '开始录音'}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            onClick={() => toast.info('独立非官方 Web 版 · 工程仅保存在当前浏览器')}
+          >
+            帮助
+          </Button>
+          <div className="flex-1" />
+          <span className="hidden px-2 text-[10px] text-[#aab0b6] md:inline">本地工作区</span>
+        </nav>
+
         {/* Top Toolbar - Audacity 4 风格紧凑工具栏 */}
-        <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-card/80 px-2">
+        <header className="au-toolbar flex h-12 shrink-0 items-center gap-2 border-b px-2">
           {/* 左侧：项目 + 撤销重做 */}
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={() => navigate('/')} className="size-8">
+            <Button variant="ghost" size="icon" onClick={() => navigate('/')} className="size-8" aria-label="返回工程列表" title="返回工程列表">
               <ArrowLeft className="size-4" />
             </Button>
             <Separator orientation="vertical" className="mx-1 h-5" />
@@ -1345,6 +1463,8 @@ export default function AudioEditorPage() {
                   onClick={handleUndo}
                   disabled={!canUndo}
                   className="size-8"
+                  aria-label="撤销"
+                  title="撤销 (Ctrl+Z)"
                 >
                   <Undo2 className="size-4" />
                 </Button>
@@ -1359,6 +1479,8 @@ export default function AudioEditorPage() {
                   onClick={handleRedo}
                   disabled={!canRedo}
                   className="size-8"
+                  aria-label="重做"
+                  title="重做 (Ctrl+Shift+Z)"
                 >
                   <Redo2 className="size-4" />
                 </Button>
@@ -1372,7 +1494,7 @@ export default function AudioEditorPage() {
             <div className="flex items-center gap-0.5">
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" onClick={handleSkipBack} className="size-8">
+                  <Button variant="ghost" size="icon" onClick={handleSkipBack} className="size-8" aria-label="跳到开头" title="跳到开头">
                     <SkipBack className="size-4" />
                   </Button>
                 </TooltipTrigger>
@@ -1382,7 +1504,9 @@ export default function AudioEditorPage() {
                 variant={playbackState === 'playing' ? 'default' : 'secondary'}
                 size="icon"
                 onClick={handlePlayPause}
-                className="size-9"
+                className="au-secondary size-9"
+                aria-label={playbackState === 'playing' ? '暂停' : '播放'}
+                title={playbackState === 'playing' ? '暂停' : '播放'}
               >
                 {playbackState === 'playing' ? (
                   <Pause className="size-4" />
@@ -1390,12 +1514,12 @@ export default function AudioEditorPage() {
                   <Play className="size-4 ml-0.5" />
                 )}
               </Button>
-              <Button variant="ghost" size="icon" onClick={handleStop} className="size-8">
+              <Button variant="ghost" size="icon" onClick={handleStop} className="size-8" aria-label="停止" title="停止">
                 <StopCircle className="size-4" />
               </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" onClick={handleSkipForward} className="size-8">
+                  <Button variant="ghost" size="icon" onClick={handleSkipForward} className="size-8" aria-label="跳到末尾" title="跳到末尾">
                     <SkipForward className="size-4" />
                   </Button>
                 </TooltipTrigger>
@@ -1407,6 +1531,8 @@ export default function AudioEditorPage() {
                 size="icon"
                 onClick={handleRecord}
                 className={`size-8 ${recordingState === 'recording' ? 'animate-pulse' : ''}`}
+                aria-label={recordingState === 'recording' ? '停止录音' : '开始录音'}
+                title={recordingState === 'recording' ? '停止录音' : '开始录音'}
               >
                 {recordingState === 'recording' ? (
                   <MicOff className="size-4" />
@@ -1457,7 +1583,7 @@ export default function AudioEditorPage() {
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="default" size="sm" onClick={() => setExportDialogOpen(true)} className="h-8">
+                <Button variant="secondary" size="sm" onClick={() => setExportDialogOpen(true)} className="au-secondary h-8">
                   <Download className="mr-1 size-3.5" />
                   导出
                 </Button>
@@ -1468,7 +1594,7 @@ export default function AudioEditorPage() {
         </header>
 
         {/* Edit Toolbar */}
-        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border bg-muted/20 px-2">
+        <div className="au-toolbar flex h-9 shrink-0 items-center gap-1 border-b px-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" className="text-xs">
@@ -1556,15 +1682,17 @@ export default function AudioEditorPage() {
           {/* Selection status indicator */}
           <div className="flex items-center gap-2 text-xs">
             {selection ? (
-              <div className="flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-0.5 text-primary">
-                <span className="size-1.5 rounded-full bg-primary" />
+              <div className="flex items-center gap-1.5 rounded-sm border border-[#84b5ff]/40 bg-[#84b5ff]/10 px-2 py-0.5 text-[#a2c7ff]">
+                <span className="size-1.5 rounded-full bg-[#84b5ff]" />
                 <span>选区：{formatTime(selection.start)} → {formatTime(selection.end)}</span>
                 <span className="text-muted-foreground">（{formatTime(selection.end - selection.start)}）</span>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="ml-1 size-5 hover:bg-primary/20"
+                  className="ml-1 size-5 hover:bg-[#84b5ff]/20"
                   onClick={() => setSelection(null)}
+                  aria-label="清除选区"
+                  title="清除选区"
                 >
                   <X className="size-3" />
                 </Button>
@@ -1588,6 +1716,8 @@ export default function AudioEditorPage() {
                   size="icon"
                   className="size-7"
                   onClick={() => setHorizontalZoom((z) => Math.max(10, z - 20))}
+                  aria-label="水平缩小"
+                  title="水平缩小"
                 >
                   <ZoomOut className="size-3.5" />
                 </Button>
@@ -1604,6 +1734,8 @@ export default function AudioEditorPage() {
                   size="icon"
                   className="size-7"
                   onClick={() => setHorizontalZoom((z) => Math.min(500, z + 20))}
+                  aria-label="水平放大"
+                  title="水平放大"
                 >
                   <ZoomIn className="size-3.5" />
                 </Button>
@@ -1616,12 +1748,12 @@ export default function AudioEditorPage() {
         {/* Main Area */}
         <div className="flex flex-1 overflow-hidden">
           {/* Track Panel (Left) */}
-          <div className="flex w-56 shrink-0 flex-col border-r border-border bg-card/30">
-            <div className="flex h-7 items-center justify-between border-b border-border px-2 text-xs text-muted-foreground">
+          <div className="flex w-60 shrink-0 flex-col border-r border-[#434a50] bg-[#252b31]">
+            <div className="au-toolbar flex h-7 items-center justify-between border-b px-2 text-xs text-[#aab0b6]">
               <span>轨道</span>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" className="size-6" onClick={addTrack}>
+                  <Button variant="ghost" size="icon" className="size-6" onClick={addTrack} aria-label="添加轨道" title="添加轨道">
                     <Plus className="size-3.5" />
                   </Button>
                 </TooltipTrigger>
@@ -1658,12 +1790,12 @@ export default function AudioEditorPage() {
           {/* Timeline Area (Center) */}
           <div
             ref={timelineRef}
-            className="relative flex-1 overflow-auto bg-background"
+            className="relative flex-1 overflow-auto bg-[#252b31]"
             onScroll={(e) => setScrollX((e.target as HTMLDivElement).scrollLeft)}
           >
             {/* Time Ruler */}
             <div
-              className="sticky top-0 z-20 h-7 shrink-0 border-b border-border bg-card/70 backdrop-blur"
+              className="au-toolbar sticky top-0 z-20 h-7 shrink-0 border-b"
               style={{ width: totalWidth }}
             >
               <TimeRuler duration={projectDuration} pxPerSec={pxPerSec} />
@@ -1671,16 +1803,16 @@ export default function AudioEditorPage() {
 
             {/* Playhead */}
             <div
-              className="pointer-events-none absolute top-0 bottom-0 z-10 w-px bg-red-500"
+              className="pointer-events-none absolute top-0 bottom-0 z-10 w-px bg-[#e4e5e7]"
               style={{ left: cursorPosition * pxPerSec }}
             >
-              <div className="absolute -left-1.5 top-7 size-3 rotate-45 bg-red-500" />
+              <div className="absolute -left-1 top-7 size-2 rotate-45 bg-[#e4e5e7]" />
             </div>
 
             {/* Selection overlay */}
             {selection && (
               <div
-                className="pointer-events-none absolute top-7 bottom-0 z-[5] bg-primary/20"
+                className="au-selection pointer-events-none absolute top-7 bottom-0 z-[5]"
                 style={{
                   left: selection.start * pxPerSec,
                   width: (selection.end - selection.start) * pxPerSec,
@@ -1754,6 +1886,7 @@ export default function AudioEditorPage() {
                 isSelected={selectedTrackId === track.id}
                 selectedClipId={selectedClipId}
                 onSelectClip={(clipId) => selectClip(track.id, clipId)}
+                onTrimClip={(clipId, edge, delta) => handleClipEdgeTrim(track.id, clipId, edge, delta)}
                 onSelectionChange={handleSelectionChange}
                 onCursorChange={handleCursorChange}
               />
@@ -1782,55 +1915,76 @@ export default function AudioEditorPage() {
           )}
         </div>
 
-        {/* Status Bar - Audacity 4 风格底部状态栏 */}
-        <div className="flex h-7 shrink-0 items-center justify-between border-t border-border bg-muted/40 px-3 text-[11px] text-muted-foreground">
+        {/* Audacity 4 selection toolbar */}
+        <div className="au-toolbar flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-t px-3 py-1.5 text-[11px]">
+          <div className="flex min-w-44 items-center gap-3">
+            <span className="font-medium text-[#e4e5e7]">
+              {recordingState === 'recording' ? '录制中' : playbackState === 'playing' ? '播放中' : playbackState === 'paused' ? '已暂停' : '已停止'}
+            </span>
+            <span className="text-[#aab0b6]">
+              {selection ? '已选择音频区间' : '在时间轴上拖拽以选择音频'}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-end gap-2 font-mono tabular-nums">
+            <label className="flex flex-col gap-0.5 text-[9px] uppercase tracking-wide text-[#aab0b6]">
+              选区开始
+              <input
+                aria-label="选区开始时间"
+                readOnly
+                className="au-time-field h-6 w-32 rounded-sm px-2 text-[11px]"
+                value={formatAudacityTime(selection?.start ?? 0)}
+              />
+            </label>
+            <label className="flex flex-col gap-0.5 text-[9px] uppercase tracking-wide text-[#aab0b6]">
+              选区结束
+              <input
+                aria-label="选区结束时间"
+                readOnly
+                className="au-time-field h-6 w-32 rounded-sm px-2 text-[11px]"
+                value={formatAudacityTime(selection?.end ?? 0)}
+              />
+            </label>
+            <label className="flex flex-col gap-0.5 text-[9px] uppercase tracking-wide text-[#aab0b6]">
+              时长
+              <input
+                aria-label="选区时长"
+                readOnly
+                className="au-time-field h-6 w-32 rounded-sm px-2 text-[11px]"
+                value={formatAudacityTime(selection ? selection.end - selection.start : 0)}
+              />
+            </label>
+            {selection && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => setSelection(null)}
+                aria-label="清除选区时间"
+                title="清除选区"
+              >
+                <X className="size-3.5" />
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Technical status bar */}
+        <div className="flex h-6 shrink-0 items-center justify-between border-t border-[#434a50] bg-[#252b31] px-3 text-[10px] text-[#aab0b6]">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
               <AudioWaveform className="size-3" />
               {project.tracks.length} 轨道
             </span>
-            <span className="text-border">|</span>
             <span>{project.sampleRate} Hz</span>
-            <span className="text-border">|</span>
             <span>32-bit float</span>
-            <span className="text-border">|</span>
-            <span className={isWasmAvailable() ? 'text-success' : 'text-warning'}>
+            <span className={isWasmAvailable() ? 'text-[#8bd5a7]' : 'text-warning'}>
               {isWasmAvailable() ? '● WASM 加速' : '○ JS 模式'}
             </span>
           </div>
-
-          {/* 选区信息 */}
-          {selection ? (
-            <div className="flex items-center gap-3 font-mono tabular-nums">
-              <span>选区: <span className="text-foreground">{formatTime(selection.start)}</span></span>
-              <span className="text-border">-</span>
-              <span className="text-foreground">{formatTime(selection.end)}</span>
-              <span className="text-border" />
-              <span className="text-primary">时长 {formatTime(selection.end - selection.start)}</span>
-            </div>
-          ) : (
-            <div className="font-mono tabular-nums">
-              光标: <span className="text-foreground">{formatTime(cursorPosition)}</span>
-            </div>
-          )}
-
           <div className="flex items-center gap-3">
-            {micPermissionState === 'denied' && (
-              <span className="text-destructive">麦克风无权限</span>
-            )}
-            {recordingState === 'recording' && (
-              <span className="flex items-center gap-1 text-destructive">
-                <span className="size-2 animate-pulse rounded-full bg-destructive" />
-                录制中
-              </span>
-            )}
-            {playbackState === 'playing' && (
-              <span className="flex items-center gap-1 text-primary">
-                <Play className="size-3 fill-current" />
-                播放中
-              </span>
-            )}
-            <span className="text-border">|</span>
+            {micPermissionState === 'denied' && <span className="text-destructive">麦克风无权限</span>}
+            {micPermissionState === 'granted' && recordingState !== 'recording' && <span>麦克风可用</span>}
+            <span>光标 {formatTime(cursorPosition)}</span>
             <span>缩放 {Math.round(pxPerSec)} px/s</span>
           </div>
         </div>
@@ -1928,13 +2082,13 @@ function TrackPanelRow({
 
   return (
     <div
-      className={`border-b border-border p-2 transition-colors ${
-        isSelected ? 'bg-accent/20' : 'hover:bg-accent/10'
+      className={`au-panel relative flex h-[100px] flex-col border-b p-1.5 transition-colors ${
+        isSelected ? 'shadow-[inset_0_0_0_1px_#84b5ff]' : 'hover:bg-[#373e45]'
       }`}
       onClick={onSelect}
     >
-      <div className="mb-1.5 flex items-center gap-1">
-        <GripVertical className="size-3 text-muted-foreground" />
+      <div className="mb-1 flex h-[18px] items-center gap-1">
+        <GripVertical className="size-3 shrink-0 text-[#aab0b6]" />
         {isEditing ? (
           <Input
             value={editName}
@@ -1947,13 +2101,15 @@ function TrackPanelRow({
                 setIsEditing(false);
               }
             }}
-            className="h-6 text-xs"
+            className="h-5 text-xs"
+            aria-label="轨道名称"
             autoFocus
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
           <span
-            className="flex-1 truncate text-sm font-medium"
+            className="flex-1 truncate text-xs font-medium text-[#e4e5e7]"
+            title="双击重命名轨道"
             onDoubleClick={(e) => {
               e.stopPropagation();
               setIsEditing(true);
@@ -1963,164 +2119,160 @@ function TrackPanelRow({
           </span>
         )}
         <div
-          className="size-2.5 shrink-0 rounded-sm"
+          className="size-2 shrink-0 rounded-sm"
           style={{ backgroundColor: track.color }}
+          aria-label="轨道颜色"
         />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-5 text-[#aab0b6] hover:text-destructive"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          aria-label={`删除轨道 ${track.name}`}
+          title="删除轨道"
+        >
+          <Trash2 className="size-3" />
+        </Button>
       </div>
 
-      {/* Mute / Solo / Arm buttons */}
-      <div className="mb-2 flex gap-1">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant={track.muted ? 'destructive' : 'secondary'}
-              size="sm"
-              className="h-6 flex-1 px-1 text-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                onMute();
-              }}
-            >
-              {track.muted ? <VolumeX className="size-3" /> : <Volume2 className="size-3" />}
-              <span className="ml-1">M</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>静音</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant={track.solo ? 'default' : 'secondary'}
-              size="sm"
-              className="h-6 flex-1 px-1 text-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                onSolo();
-              }}
-            >
-              <Headphones className="size-3" />
-              <span className="ml-1">S</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>独奏</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant={track.armed ? 'destructive' : 'secondary'}
-              size="sm"
-              className="h-6 flex-1 px-1 text-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                onArm();
-              }}
-            >
-              <Mic className="size-3" />
-              <span className="ml-1">R</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>录音准备</TooltipContent>
-        </Tooltip>
-      </div>
-
-      {/* Gain slider */}
-      <div className="mb-1.5">
-        <div className="mb-0.5 flex justify-between text-[10px] text-muted-foreground">
-          <span>增益</span>
-          <span className="tabular-nums">{track.gain.toFixed(1)} dB</span>
+      <div className="mb-1 flex h-8 items-center gap-1.5">
+        <GainKnob value={track.gain} onChange={onGainChange} />
+        <div className="min-w-0 flex-1">
+          <Slider
+            value={[track.pan]}
+            min={-1}
+            max={1}
+            step={0.01}
+            onValueChange={(v) => onPanChange(v[0])}
+            className="h-1"
+            aria-label="声像"
+          />
+          <div className="mt-1 flex justify-between text-[9px] text-[#aab0b6]">
+            <span>声像</span>
+            <span className="tabular-nums">
+              {track.pan === 0 ? 'C' : track.pan < 0 ? `L${Math.abs(track.pan).toFixed(1)}` : `R${track.pan.toFixed(1)}`}
+            </span>
+          </div>
         </div>
-        <Slider
-          value={[track.gain]}
-          min={-60}
-          max={12}
-          step={0.5}
-          onValueChange={(v) => onGainChange(v[0])}
-          className="h-1"
-        />
-      </div>
-
-      {/* Pan slider */}
-      <div className="mb-2">
-        <div className="mb-0.5 flex justify-between text-[10px] text-muted-foreground">
-          <span>声像</span>
-          <span className="tabular-nums">
-            {track.pan === 0 ? 'C' : track.pan < 0 ? `L${Math.abs(track.pan).toFixed(1)}` : `R${track.pan.toFixed(1)}`}
-          </span>
-        </div>
-        <Slider
-          value={[track.pan]}
-          min={-1}
-          max={1}
-          step={0.01}
-          onValueChange={(v) => onPanChange(v[0])}
-          className="h-1"
-        />
-      </div>
-
-      {/* Effects & Delete */}
-      <div className="flex items-center justify-between">
-        <Badge variant="outline" className="text-[10px]">
-          {track.clips.length} 片段
-        </Badge>
         <div className="flex gap-0.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenEffects();
-                }}
-              >
-                <Settings className="size-3" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>效果器</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-destructive"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete();
-                }}
-              >
-                <Trash2 className="size-3" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>删除轨道</TooltipContent>
-          </Tooltip>
+          <Button
+            variant={track.muted ? 'destructive' : 'secondary'}
+            size="icon"
+            className="au-secondary size-6 min-h-6 p-0 text-[10px]"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMute();
+            }}
+            aria-label={`静音 ${track.name}`}
+            aria-pressed={track.muted}
+            title="静音 (Mute)"
+          >
+            M
+          </Button>
+          <Button
+            variant={track.solo ? 'default' : 'secondary'}
+            size="icon"
+            className="au-secondary size-6 min-h-6 p-0 text-[10px]"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSolo();
+            }}
+            aria-label={`独奏 ${track.name}`}
+            aria-pressed={track.solo}
+            title="独奏 (Solo)"
+          >
+            S
+          </Button>
+          <Button
+            variant={track.armed ? 'destructive' : 'secondary'}
+            size="icon"
+            className="au-secondary size-6 min-h-6 p-0 text-[10px]"
+            onClick={(e) => {
+              e.stopPropagation();
+              onArm();
+            }}
+            aria-label={`录音准备 ${track.name}`}
+            aria-pressed={track.armed}
+            title="录音准备"
+          >
+            R
+          </Button>
         </div>
       </div>
 
-      {/* Effect count indicator */}
-      {track.effects.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {track.effects.slice(0, 3).map((fx) => (
-            <Badge
-              key={fx.id}
-              variant={fx.bypassed ? 'outline' : 'secondary'}
-              className="text-[10px] px-1.5 py-0"
-            >
-              {fx.bypassed && <EyeOff className="mr-0.5 size-2.5" />}
-              {getShortEffectLabel(fx.type)}
-            </Badge>
-          ))}
-          {track.effects.length > 3 && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-              +{track.effects.length - 3}
-            </Badge>
-          )}
-        </div>
-      )}
+      <Button
+        variant="secondary"
+        size="sm"
+        className="au-secondary mt-auto h-5 min-h-5 w-full rounded-sm px-2 text-[10px]"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenEffects();
+        }}
+        aria-label={`打开 ${track.name} 效果器`}
+        title={`${track.clips.length} 个片段 · ${track.effects.length} 个效果`}
+      >
+        <Settings className="size-3" />
+        Effects
+        {track.effects.length > 0 && (
+          <span className="ml-auto rounded-sm bg-[#252b31]/70 px-1 text-[9px]">{track.effects.length}</span>
+        )}
+      </Button>
     </div>
+  );
+}
+
+function GainKnob({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const drag = useRef<{ y: number; value: number } | null>(null);
+  const angle = -135 + ((value + 60) / 72) * 270;
+
+  return (
+    <button
+      type="button"
+      role="slider"
+      className="relative size-7 shrink-0 cursor-ns-resize rounded-full border-2 border-[#515a63] bg-[#20252a] text-[#e4e5e7]"
+      aria-label="轨道增益"
+      aria-valuemin={-60}
+      aria-valuemax={12}
+      aria-valuenow={value}
+      aria-valuetext={`${value.toFixed(1)} dB`}
+      title={`增益 ${value.toFixed(1)} dB · 上下拖拽，双击复位`}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { y: e.clientY, value };
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        e.stopPropagation();
+        const sensitivity = e.shiftKey ? 0.05 : 0.25;
+        onChange(clamp(drag.current.value + (drag.current.y - e.clientY) * sensitivity, -60, 12));
+      }}
+      onPointerUp={(e) => {
+        e.stopPropagation();
+        drag.current = null;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        onChange(0);
+      }}
+      onKeyDown={(e) => {
+        const direction = e.key === 'ArrowUp' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowDown' || e.key === 'ArrowLeft' ? -1 : 0;
+        if (direction !== 0) {
+          e.preventDefault();
+          onChange(clamp(value + direction * (e.shiftKey ? 0.1 : 1), -60, 12));
+        }
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span
+        className="absolute left-[calc(50%-1px)] top-[2px] h-2.5 w-0.5 rounded-full bg-[#84b5ff]"
+        style={{ transform: `rotate(${angle}deg)`, transformOrigin: '50% 9px' }}
+      />
+    </button>
   );
 }
 
@@ -2152,6 +2304,7 @@ function TrackTimeline({
   isSelected,
   selectedClipId,
   onSelectClip,
+  onTrimClip,
   onSelectionChange,
   onCursorChange,
 }: {
@@ -2167,6 +2320,7 @@ function TrackTimeline({
   isSelected: boolean;
   selectedClipId: string | null;
   onSelectClip: (clipId: string) => void;
+  onTrimClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number) => void;
   onSelectionChange: (start: number, end: number) => void;
   onCursorChange: (pos: number) => void;
 }) {
@@ -2229,6 +2383,7 @@ function TrackTimeline({
           viewMode={viewMode}
           isSelected={selectedClipId === clip.id}
           trackColor={track.color}
+          onTrim={(edge, delta) => onTrimClip(clip.id, edge, delta)}
           onClick={(e) => {
             e.stopPropagation();
             onSelectClip(clip.id);
@@ -2251,6 +2406,7 @@ function ClipItem({
   viewMode,
   isSelected,
   trackColor,
+  onTrim,
   onClick,
 }: {
   clip: IClip;
@@ -2263,10 +2419,12 @@ function ClipItem({
   viewMode: ViewMode;
   isSelected: boolean;
   trackColor: string;
+  onTrim: (edge: 'left' | 'right', deltaSeconds: number) => void;
   onClick: (e: React.MouseEvent) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [audioData, setAudioData] = useState<Float32Array | null>(null);
+  const [trimDrag, setTrimDrag] = useState<{ edge: 'left' | 'right'; startX: number; delta: number } | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -2288,7 +2446,7 @@ function ClipItem({
 
     const dpr = window.devicePixelRatio || 1;
     const width = Math.max(1, Math.floor(clip.duration * pxPerSec));
-    const height = trackHeight - 16;
+    const height = trackHeight - 24;
 
     canvas.width = width * dpr;
     canvas.height = height * dpr;
@@ -2303,7 +2461,7 @@ function ClipItem({
 
     // Draw waveform or spectrum based on view mode
     if (viewMode === 'waveform' || viewMode === 'both') {
-      drawWaveform(ctx, audioData, width, height, trackColor, clip, sampleRate, verticalZoom, viewMode === 'both' ? 0.6 : 1);
+      drawWaveform(ctx, audioData, width, height, '#20252a', clip, sampleRate, verticalZoom, viewMode === 'both' ? 0.8 : 1);
     }
 
     if (viewMode === 'spectrum' || viewMode === 'both') {
@@ -2313,45 +2471,127 @@ function ClipItem({
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
+  const trimDelta = trimDrag?.delta ?? 0;
+  const displayLeft = left + (trimDrag?.edge === 'left' ? trimDelta * pxPerSec : 0);
+  const displayWidth = Math.max(
+    2,
+    width + (trimDrag?.edge === 'left' ? -trimDelta : trimDelta) * pxPerSec,
+  );
+
+  function boundedTrimDelta(edge: 'left' | 'right', rawDelta: number) {
+    if (edge === 'left') {
+      return clamp(rawDelta, -Math.min(clip.startTime, clip.offset), Math.max(0, clip.duration - 0.05));
+    }
+    return clamp(
+      rawDelta,
+      0.05 - clip.duration,
+      Math.max(0.05, clip.originalDuration - clip.offset) - clip.duration,
+    );
+  }
+
+  function handleTrimMove(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!trimDrag) return;
+    e.stopPropagation();
+    const rawDelta = (e.clientX - trimDrag.startX) / pxPerSec;
+    setTrimDrag({ ...trimDrag, delta: boundedTrimDelta(trimDrag.edge, rawDelta) });
+  }
+
+  function handleTrimEnd(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!trimDrag) return;
+    e.stopPropagation();
+    if (Math.abs(trimDrag.delta) >= 0.001) onTrim(trimDrag.edge, trimDrag.delta);
+    setTrimDrag(null);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+  }
 
   return (
     <div
-      className={`absolute top-2 bottom-2 overflow-hidden rounded-md border transition-shadow ${
-        isSelected ? 'border-primary shadow-lg shadow-primary/20' : 'border-border/50'
-      }`}
+      className="au-clip group absolute top-1 bottom-1 overflow-hidden rounded-[3px] border text-[#20252a]"
+      data-selected={isSelected}
+      role="button"
+      tabIndex={0}
+      aria-label={`${clip.name || '音频片段'}，开始 ${formatTime(clip.startTime)}，时长 ${formatTime(clip.duration)}`}
       style={{
-        left,
-        width,
-        backgroundColor: `${trackColor}15`,
+        left: displayLeft,
+        width: displayWidth,
+        backgroundColor: `color-mix(in srgb, ${trackColor} 76%, white)`,
       }}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.currentTarget.click();
+        }
+      }}
     >
-      {/* Clip label */}
-      <div className="absolute left-1 top-0 z-10 max-w-full truncate px-1 py-0.5 text-[10px] font-medium text-foreground/80">
-        {clip.name || '音频片段'}
+      {/* Audacity 4 clip header */}
+      <div
+        className="absolute inset-x-0 top-0 z-10 flex h-5 items-center truncate px-1.5 text-[10px] font-medium"
+        style={{ backgroundColor: trackColor }}
+      >
+        <span className="truncate">{clip.name || '音频片段'}</span>
       </div>
 
       {/* Waveform canvas */}
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-x-0 bottom-1 top-4"
-      />
+      <canvas ref={canvasRef} className="absolute inset-x-0 bottom-1 top-5" />
+
+      {/* Functional trim handles */}
+      {(['left', 'right'] as const).map((edge) => (
+        <button
+          key={edge}
+          type="button"
+          aria-label={edge === 'left' ? '修剪片段左边缘' : '修剪片段右边缘'}
+          title={edge === 'left' ? '拖拽修剪片段起点' : '拖拽修剪片段终点'}
+          className={`absolute top-5 bottom-1 z-20 w-2.5 cursor-ew-resize opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100 ${
+            isSelected || trimDrag?.edge === edge ? 'opacity-100' : ''
+          } ${edge === 'left' ? 'left-0' : 'right-0'}`}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setTrimDrag({ edge, startX: e.clientX, delta: 0 });
+          }}
+          onPointerMove={handleTrimMove}
+          onPointerUp={handleTrimEnd}
+          onPointerCancel={() => setTrimDrag(null)}
+        >
+          <span
+            className={`absolute top-1/2 size-0 -translate-y-1/2 border-y-4 border-y-transparent ${
+              edge === 'left'
+                ? 'left-0.5 border-r-[6px] border-r-[#20252a]'
+                : 'right-0.5 border-l-[6px] border-l-[#20252a]'
+            }`}
+          />
+        </button>
+      ))}
 
       {/* Fade indicators */}
       {clip.fadeIn > 0 && (
         <div
-          className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-background/30 to-transparent"
+          className="pointer-events-none absolute left-0 top-5 bottom-0 bg-gradient-to-r from-[#20252a]/20 to-transparent"
           style={{ width: clip.fadeIn * pxPerSec }}
         />
       )}
       {clip.fadeOut > 0 && (
         <div
-          className="absolute right-0 top-0 bottom-0 bg-gradient-to-l from-background/30 to-transparent"
+          className="pointer-events-none absolute right-0 top-5 bottom-0 bg-gradient-to-l from-[#20252a]/20 to-transparent"
           style={{ width: clip.fadeOut * pxPerSec }}
         />
       )}
     </div>
   );
+}
+
+function formatAudacityTime(seconds: number): string {
+  const safeSeconds = Math.max(0, seconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const secs = Math.floor(safeSeconds % 60);
+  const milliseconds = Math.floor((safeSeconds - Math.floor(safeSeconds)) * 1000);
+  return `${hours.toString().padStart(2, '0')}h${minutes.toString().padStart(2, '0')}m${secs
+    .toString()
+    .padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}s`;
 }
 
 function drawWaveform(

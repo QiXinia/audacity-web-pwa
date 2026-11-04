@@ -151,6 +151,10 @@ class HistoryManager {
     this.persistEnabled = enabled;
   }
 
+  async flush(): Promise<void> {
+    await this.persistChain.catch(() => undefined);
+  }
+
   private schedulePersist(): void {
     if (!this.persistEnabled || !this.projectId) return;
     const projectId = this.projectId;

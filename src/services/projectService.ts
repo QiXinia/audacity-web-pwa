@@ -280,26 +280,25 @@ class ProjectService {
 
     onProgress?.(0.8);
 
-    // Mono downmix for simplicity (can expand later)
-    const monoData = this.monoDownmix(channelData);
-
-    // Store in IndexedDB
+    // Preserve every decoded channel; mono is only a waveform display choice, not a storage step.
     const bufferId = generateId();
-    const duration = monoData.length / sampleRate;
+    const duration = channelData[0].length / sampleRate;
 
     await audioDb.audioBuffers.put({
       id: bufferId,
       projectId,
       sampleRate,
-      channels: 1,
-      length: monoData.length,
+      channels: channelData.length,
+      length: channelData[0].length,
       duration,
-      channelData: [monoData.buffer as ArrayBuffer],
+      channelData: channelData.map((channel) =>
+        channel.buffer.slice(channel.byteOffset, channel.byteOffset + channel.byteLength) as ArrayBuffer,
+      ),
       createdAt: Date.now(),
     });
 
-    // Cache in audio engine
-    audioEngine.cacheBuffer(bufferId, [monoData], sampleRate);
+    // Cache all channels for playback and export.
+    audioEngine.cacheBuffer(bufferId, channelData, sampleRate);
 
     onProgress?.(0.95);
 
@@ -380,17 +379,21 @@ class ProjectService {
   }
 
   // Audio buffer loading
-  async loadAudioBuffer(bufferId: string): Promise<Float32Array | null> {
-    // Check cache first
+  async loadAudioChannels(bufferId: string): Promise<Float32Array[] | null> {
     const cached = audioEngine.getCachedBuffer(bufferId);
-    if (cached && cached[0]) return cached[0];
+    if (cached && cached.length > 0) return cached;
 
     const record = await audioDb.audioBuffers.get(bufferId);
-    if (!record) return null;
+    if (!record || record.channelData.length === 0) return null;
 
-    const data = new Float32Array(record.channelData[0] as ArrayBuffer);
-    audioEngine.cacheBuffer(bufferId, [data], record.sampleRate);
-    return data;
+    const channels = record.channelData.map((buffer) => new Float32Array(buffer as ArrayBuffer));
+    audioEngine.cacheBuffer(bufferId, channels, record.sampleRate);
+    return channels;
+  }
+
+  async loadAudioBuffer(bufferId: string): Promise<Float32Array | null> {
+    const channels = await this.loadAudioChannels(bufferId);
+    return channels?.[0] ?? null;
   }
 
   // Effect operations
@@ -471,7 +474,6 @@ class ProjectService {
     let usage = 0;
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const estimate = await (navigator.storage as any).estimate();
       quota = estimate.quota || 0;
       usage = estimate.usage || 0;
@@ -515,21 +517,6 @@ class ProjectService {
       clips: [],
       effects: [],
     };
-  }
-
-  private monoDownmix(channels: Float32Array[]): Float32Array {
-    if (channels.length === 1) return channels[0];
-    const len = channels[0].length;
-    const result = new Float32Array(len);
-    const inv = 1 / channels.length;
-    for (let i = 0; i < len; i++) {
-      let sum = 0;
-      for (const ch of channels) {
-        sum += ch[i];
-      }
-      result[i] = sum * inv;
-    }
-    return result;
   }
 
   private getDefaultEffectParams(type: EffectType): Record<string, number> {

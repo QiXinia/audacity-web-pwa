@@ -98,7 +98,6 @@ export class AudioEngine {
     }
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const Ctx = (window.AudioContext || (window as any).webkitAudioContext);
       this.audioContext = new Ctx();
       this.sampleRate = this.audioContext.sampleRate;
@@ -225,7 +224,7 @@ export class AudioEngine {
       trackGain.connect(panNode);
 
       // Apply effects chain (Web Audio nodes)
-      let chainInput: AudioNode = panNode;
+      const chainInput: AudioNode = panNode;
       let chainOutput: AudioNode = panNode;
 
       for (const effect of track.effects) {

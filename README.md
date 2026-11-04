@@ -129,23 +129,26 @@ npm run build:wasm
 
 ## 部署到 GitHub Pages
 
-项目已内置 GitHub Actions 工作流，推送到 `main` 分支会自动构建并发布到 GitHub Pages。
+当前仓库采用**本地手动编译、静态分支发布**。向 `main` 推送源码不会触发自定义 Actions 自动部署；线上静态文件由维护者从本地 `dist` 发布到 `gh-pages` 分支。
 
-### 一键部署步骤
+### 手动发布步骤
 
-1. 将代码推送到 GitHub 仓库（仓库名建议 `audacity-web-pwa`）
-2. 进入仓库 Settings → Pages
-3. Source 选择「GitHub Actions」
-4. 推送代码到 `main` 分支，等待 Actions 完成
-5. 访问 `https://<username>.github.io/audacity-web-pwa/`
+```bash
+# 1. 安装依赖并执行完整验证
+npm ci
+npm run lint
+npm test
 
-### 工作流说明
+# 2. 使用 Pages 子路径构建；构建脚本会同时生成 404.html
+VITE_APP_BASE=/audacity-web-pwa/ npm run build
 
-工作流文件位于 `.github/workflows/deploy.yml`，流程：
-
+# 3. 仅将本地 dist 发布到 gh-pages（不会把 dist 提交进 main）
+npx --yes gh-pages@6.3.0 -d dist -b gh-pages -m "Manual Pages deploy"
 ```
-推送到 main → 安装 Node/Rust → 编译 WASM → 类型检查 → 单元测试 → 生产构建 → 发布到 GitHub Pages
-```
+
+仓库 Settings → Pages 应选择 **Deploy from a branch**，分支为 `gh-pages`，目录为 `/(root)`。发布命令需要当前 Git 凭据具备仓库写权限。
+
+`.github/workflows/deploy.yml` 仅保留 `workflow_dispatch` 作为可选的人工灾备入口，不参与日常发布，也没有 `push` / `pull_request` 自动触发。GitHub 官方的 `pages-build-deployment` 是静态分支发布后的托管机制，不执行本项目的编译工作流。
 
 构建时设置 `VITE_APP_BASE=/audacity-web-pwa/` 以适配 Pages 子路径，包括：
 - JS / CSS / WASM / Worklet 资源路径
@@ -165,7 +168,7 @@ VITE_APP_BASE=/audacity-web-pwa/ npm run preview
 
 ### SPA 路由刷新 404 处理
 
-GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 404。工作流自动复制 `index.html` 为 `404.html`，确保所有路由都能返回应用壳，由前端路由接管。
+GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 404。`scripts/build.sh` 会复制 `index.html` 为 `404.html`，确保所有路由都能返回应用壳，由前端路由接管。
 
 ---
 
@@ -179,6 +182,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/wasm/processor.test.ts` | WAV 编解码、DSP 函数（normalize/reverse/gain/fade/phase/peak/rms）、缓冲区工具 | 24 |
 | `src/wasm/selection-ops.test.ts` | 选区截取、删除、插入、替换操作 | 18 |
 | `src/services/historyService.test.ts` | 撤销/重做命令栈、push/undo/redo/clear | 9 |
+| `src/services/clipboardService.test.ts` | 多声道剪贴板序列化、旧格式恢复、异常输入 | 4 |
 | `src/engine/mp3Encoder.test.ts` | 真实 MPEG 输出、采样率选择、空输入边界 | 3 |
 
 运行测试：
