@@ -25,6 +25,8 @@ export interface IClip {
   offset: number;
   duration: number;
   originalDuration: number;
+  /** Source seconds per timeline second: 2 = half duration, 0.5 = double duration. */
+  stretchRatio?: number;
   gain: number;
   fadeIn: number;
   fadeOut: number;

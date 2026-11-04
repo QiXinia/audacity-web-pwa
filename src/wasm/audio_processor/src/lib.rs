@@ -10,7 +10,9 @@
 //! - Invert
 
 mod wav;
+mod stretch;
 pub use wav::*;
+pub use stretch::*;
 
 use wasm_bindgen::prelude::*;
 

@@ -91,4 +91,33 @@ describe('AudioEngine stereo mixdown', () => {
     expect(Array.from(left)).toEqual([0, 2, 3, 0]);
     expect(Array.from(right)).toEqual([0, 20, 30, 0]);
   });
+
+  it('exports a stretched clip on its shortened timeline without mutating source PCM', async () => {
+    const engine = new AudioEngine();
+    const sampleRate = 8000;
+    const sourceLeft = new Float32Array(2000).fill(0.5);
+    const sourceRight = new Float32Array(2000).fill(0.25);
+    const clip = makeClip({
+      audioBufferId: 'stretched',
+      duration: 0.125,
+      originalDuration: 0.25,
+      stretchRatio: 2,
+    });
+    const processed = engine.processClipChannels(clip, [sourceLeft, sourceRight], sampleRate);
+    expect(processed[0]).toHaveLength(1000);
+    expect(processed[1]).toHaveLength(1000);
+    expect(sourceLeft).toHaveLength(2000);
+    expect(sourceRight).toHaveLength(2000);
+
+    engine.cacheBuffer('stretched', [sourceLeft, sourceRight], sampleRate);
+    const track = makeTrack(0, { clips: [clip] });
+    const [left, right] = await engine.renderMixdownStereo([track], 0.25, sampleRate);
+
+    expect(left[100]).toBeCloseTo(0.5, 3);
+    expect(right[100]).toBeCloseTo(0.25, 3);
+    expect(left[1000]).toBe(0);
+    expect(right[1000]).toBe(0);
+    expect(left[1999]).toBe(0);
+    expect(right[1999]).toBe(0);
+  });
 });

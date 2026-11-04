@@ -25,6 +25,8 @@
 | 波形显示 | ✅ | 实时波形渲染，支持缩放与滚动 |
 | 频谱视图 | ✅ | FFT 频谱分析视图，切换波形/频谱/混合显示 |
 | 选区编辑 | ✅ | 剪切、复制、粘贴、裁剪、删除 |
+| 非破坏性时间拉伸 | ✅ | 片段级 WSOLA 拉伸，0.25×–4×，保持音高并贯穿播放、编辑与导出 |
+| Shift 片段多选 | ✅ | 跨轨不连续选择，支持成组移动、修剪、拉伸、删除与速度复位 |
 | 基础效果 | ✅ | 增益、淡入、淡出、标准化、反转、静音、移除直流 |
 | 撤销 / 重做 | ✅ | 命令历史栈 + IndexedDB 持久化，刷新可恢复 |
 | 实时播放 | ✅ | Web Audio API 驱动，带播放头与游标 |
@@ -63,6 +65,7 @@
 | 回收站 / 恢复 | ✅ |
 | 搜索工程 | ✅ |
 | IndexedDB 本地持久化 | ✅ |
+| Workspace 工作区 | ✅ | Classic / Modern / Music 预设、自定义布局、轨道面板与混音器显隐 |
 | 撤销/重做持久化（刷新可恢复） | ✅ |
 
 ---
@@ -183,8 +186,15 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/wasm/selection-ops.test.ts` | 选区截取、删除、插入、替换操作 | 18 |
 | `src/services/historyService.test.ts` | 撤销/重做命令栈、push/undo/redo/clear | 9 |
 | `src/services/clipboardService.test.ts` | 多声道剪贴板序列化、旧格式恢复、异常输入 | 4 |
-| `src/engine/audioEngine.test.ts` | 立体声/单声道声像、双声道增益、修剪偏移混音 | 4 |
+| `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴 | 5 |
+| `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 4 |
+| `src/engine/recordingWorklet.test.ts` | 真实 Worklet 任意尾块 flush、停止确认与去重 | 2 |
+| `src/engine/timeStretch.test.ts` | WSOLA 时长、音高、立体声对齐与归一化幅度 | 6 |
+| `src/lib/clipEditing.test.ts` | 跨轨多选与成组移动、修剪、拉伸、删除边界 | 10 |
+| `src/services/workspaceService.test.ts` | 内置工作区、自定义布局、自动更新与旧数据迁移 | 6 |
 | `src/engine/mp3Encoder.test.ts` | 真实 MPEG 输出、采样率选择、空输入边界 | 3 |
+
+当前完整前端回归共 **12 个测试文件、115 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试。
 
 运行测试：
 
@@ -241,7 +251,8 @@ audacity-web/
 │   │   └── audioDb.ts          # IndexedDB 数据库（Dexie，含历史快照表）
 │   ├── engine/
 │   │   ├── audioEngine.ts      # 音频引擎（播放/录音/混音/导出）
-│   │   ├── audioEngine.test.ts # 声像、增益与修剪混音测试
+│   │   ├── timeStretch.ts      # WSOLA JavaScript 降级实现
+│   │   ├── recordingWorklet.test.ts # 真实录音 Worklet 边界测试
 │   │   └── mp3Encoder.ts       # MP3 编码器封装（基于 @breezystack/lamejs）
 │   ├── wasm/
 │   │   ├── processor.ts        # WASM 加载层 + 纯 JS 降级实现
@@ -255,8 +266,10 @@ audacity-web/
 │   ├── services/
 │   │   ├── projectService.ts   # 工程 CRUD / 轨道管理 / 音频导入
 │   │   ├── historyService.ts   # 撤销/重做命令栈 + IndexedDB 持久化
+│   │   ├── workspaceService.ts # 内置与自定义 Workspace 布局
 │   │   └── historyService.test.ts
 │   ├── lib/
+│   │   ├── clipEditing.ts      # 多选片段的成组编辑纯函数
 │   │   ├── audioUtils.ts       # 工具函数（含重采样、声道交叉）
 │   │   └── audioUtils.test.ts
 │   ├── test/

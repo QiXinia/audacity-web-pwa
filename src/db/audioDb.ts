@@ -68,7 +68,16 @@ export function serializeTracks(tracks: ITrack[]): string {
 
 export function deserializeTracks(data: string): ITrack[] {
   try {
-    return JSON.parse(data);
+    const tracks = JSON.parse(data) as ITrack[];
+    return tracks.map((track) => ({
+      ...track,
+      clips: track.clips.map((clip) => ({
+        ...clip,
+        stretchRatio: Number.isFinite(clip.stretchRatio) && (clip.stretchRatio ?? 0) > 0
+          ? clip.stretchRatio
+          : 1,
+      })),
+    }));
   } catch {
     return [];
   }

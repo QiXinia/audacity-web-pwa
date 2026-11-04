@@ -95,6 +95,26 @@ import { historyManager } from '@/services/historyService';
 import { parseAudioClipboard, serializeAudioClipboard, type AudioClipboardData } from '@/services/clipboardService';
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
+import {
+  clipKeyId,
+  deleteClipSelection,
+  getClipStretchRatio,
+  moveClipSelection,
+  resetClipStretch,
+  stretchClipSelection,
+  trimClipSelection,
+  updateClipSelection,
+  type ClipKey,
+} from '@/lib/clipEditing';
+import {
+  createWorkspace,
+  loadWorkspaceStore,
+  removeWorkspace,
+  resetWorkspace,
+  saveWorkspaceStore,
+  updateWorkspaceLayout,
+  type WorkspaceLayout,
+} from '@/services/workspaceService';
 import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -123,13 +143,41 @@ export default function AudioEditorPage() {
   const [micPermissionState, setMicPermissionState] = useState<'granted' | 'denied' | 'unknown'>('unknown');
   const [isDragging, setIsDragging] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [selectedClips, setSelectedClips] = useState<ClipKey[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [workspaceStore, setWorkspaceStore] = useState(loadWorkspaceStore);
+  const initialWorkspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
+    ?? workspaceStore.presets[0];
+  const [showTrackPanel, setShowTrackPanel] = useState(initialWorkspace.layout.showTrackPanel);
+  const [showMixer, setShowMixer] = useState(initialWorkspace.layout.showMixer);
+  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
+  const [workspaceName, setWorkspaceName] = useState('');
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isPlayingRef = useRef(false);
   const recordingSampleRateRef = useRef(44100);
+  const workspaceHydratedRef = useRef(false);
+  const workspaceLayout = useMemo<WorkspaceLayout>(() => ({
+    showTrackPanel,
+    showMixer,
+    viewMode,
+    horizontalZoom,
+    verticalZoom,
+  }), [showTrackPanel, showMixer, viewMode, horizontalZoom, verticalZoom]);
+
+  // Workspace customizations are local and automatically restored on reopen.
+  useEffect(() => {
+    if (!workspaceHydratedRef.current) {
+      workspaceHydratedRef.current = true;
+      return;
+    }
+    setWorkspaceStore((current) => {
+      const updated = updateWorkspaceLayout(current, workspaceLayout);
+      saveWorkspaceStore(updated);
+      return updated;
+    });
+  }, [workspaceLayout]);
 
   // Load project
   useEffect(() => {
@@ -166,6 +214,22 @@ export default function AudioEditorPage() {
     };
   }, [horizontalZoom]);
 
+  useEffect(() => {
+    const handleKeyboard = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches('input, textarea, [contenteditable="true"]')) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'i') {
+        event.preventDefault();
+        void splitClipsAtCursor();
+      } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedClips.length > 0) {
+        event.preventDefault();
+        void handleDeleteSelectedClips();
+      }
+    };
+    window.addEventListener('keydown', handleKeyboard);
+    return () => window.removeEventListener('keydown', handleKeyboard);
+  }, [project, selectedClips, selectedTrackId, cursorPosition]);
+
   async function checkMicPermission() {
     try {
       const result = await (navigator.permissions as any)?.query({ name: 'microphone' });
@@ -186,11 +250,16 @@ export default function AudioEditorPage() {
       const proj = await projectService.openProject(id);
       if (proj) {
         setProject(proj);
-        setViewMode(proj.viewState.viewMode);
-        setHorizontalZoom(proj.viewState.horizontalZoom);
-        setVerticalZoom(proj.viewState.verticalZoom);
+        const workspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
+          ?? workspaceStore.presets[0];
+        setViewMode(workspace.layout.viewMode);
+        setHorizontalZoom(workspace.layout.horizontalZoom);
+        setVerticalZoom(workspace.layout.verticalZoom);
+        setShowTrackPanel(workspace.layout.showTrackPanel);
+        setShowMixer(workspace.layout.showMixer);
         setScrollX(proj.viewState.scrollX);
         setSelection(proj.selection);
+        setSelectedClips([]);
         setSelectedTrackId(proj.tracks[0]?.id ?? null);
         // 加载历史快照（IndexedDB 持久化的撤销/重做栈）
         const snapCount = await historyManager.loadForProject(id);
@@ -276,7 +345,7 @@ export default function AudioEditorPage() {
 
     if (recordingState === 'recording') {
       try {
-        const data = audioEngine.stopRecording();
+        const data = await audioEngine.stopRecording();
         if (!data || data.length === 0 || data[0].length === 0) {
           toast.warning('未采集到音频，请检查麦克风输入');
           return;
@@ -418,9 +487,29 @@ export default function AudioEditorPage() {
   }
 
   // Clip operations
-  function selectClip(trackId: string, clipId: string) {
+  function selectClip(trackId: string, clipId: string, additive = false) {
     setSelectedTrackId(trackId);
-    setSelectedClipId(clipId);
+    setSelectedClips((current) => updateClipSelection(current, { trackId, clipId }, additive));
+  }
+
+  function keysForClip(trackId: string, clipId: string): ClipKey[] {
+    const key = { trackId, clipId };
+    return selectedClips.some((item) => clipKeyId(item) === clipKeyId(key))
+      ? selectedClips
+      : [key];
+  }
+
+  async function commitClipEdit(updated: IProject, label: string) {
+    if (!project || updated === project) return;
+    const before = project;
+    setProject(updated);
+    await projectService.saveProject(updated);
+    pushHistoryCmd({
+      id: generateId(),
+      label,
+      execute: () => updated,
+      undo: () => before,
+    });
   }
 
   async function handleClipEdgeTrim(
@@ -430,52 +519,166 @@ export default function AudioEditorPage() {
     deltaSeconds: number,
   ) {
     if (!project || Math.abs(deltaSeconds) < 0.001) return;
-    const before = project;
-    let changed = false;
+    await commitClipEdit(
+      trimClipSelection(project, keysForClip(trackId, clipId), edge, deltaSeconds),
+      selectedClips.length > 1 ? '成组修剪片段' : '修剪片段',
+    );
+  }
+
+  async function handleClipStretch(
+    trackId: string,
+    clipId: string,
+    edge: 'left' | 'right',
+    deltaSeconds: number,
+  ) {
+    if (!project || Math.abs(deltaSeconds) < 0.001) return;
+    await commitClipEdit(
+      stretchClipSelection(project, keysForClip(trackId, clipId), edge, deltaSeconds),
+      selectedClips.length > 1 ? '成组拉伸片段' : '时间拉伸片段',
+    );
+  }
+
+  async function handleClipMove(trackId: string, clipId: string, deltaSeconds: number) {
+    if (!project || Math.abs(deltaSeconds) < 0.001) return;
+    await commitClipEdit(
+      moveClipSelection(project, keysForClip(trackId, clipId), deltaSeconds),
+      selectedClips.length > 1 ? '成组移动片段' : '移动片段',
+    );
+  }
+
+  async function handleClipReset(trackId: string, clipId: string) {
+    if (!project) return;
+    await commitClipEdit(resetClipStretch(project, keysForClip(trackId, clipId)), '恢复片段速度 100%');
+  }
+
+  async function handleDeleteSelectedClips() {
+    if (!project || selectedClips.length === 0) return;
+    await commitClipEdit(deleteClipSelection(project, selectedClips), `删除 ${selectedClips.length} 个片段`);
+    setSelectedClips([]);
+  }
+
+  async function splitClipsAtCursor() {
+    if (!project) return;
+    const keys = selectedClips.length > 0
+      ? selectedClips
+      : project.tracks
+        .filter((track) => track.id === selectedTrackId)
+        .flatMap((track) => track.clips.map((clip) => ({ trackId: track.id, clipId: clip.id })));
+    const keySet = new Set(keys.map(clipKeyId));
+    let didSplit = false;
     const updated: IProject = {
       ...project,
-      tracks: project.tracks.map((track) => {
-        if (track.id !== trackId) return track;
-        return {
-          ...track,
-          clips: track.clips.map((clip) => {
-            if (clip.id !== clipId) return clip;
-            if (edge === 'left') {
-              const delta = clamp(
-                deltaSeconds,
-                -Math.min(clip.startTime, clip.offset),
-                Math.max(0, clip.duration - 0.05),
-              );
-              if (Math.abs(delta) < 0.001) return clip;
-              changed = true;
-              return {
-                ...clip,
-                startTime: clip.startTime + delta,
-                offset: clip.offset + delta,
-                duration: clip.duration - delta,
-              };
-            }
-            const duration = clamp(
-              clip.duration + deltaSeconds,
-              0.05,
-              Math.max(0.05, clip.originalDuration - clip.offset),
-            );
-            if (Math.abs(duration - clip.duration) < 0.001) return clip;
-            changed = true;
-            return { ...clip, duration };
-          }),
-        };
-      }),
+      tracks: await Promise.all(project.tracks.map(async (track) => ({
+        ...track,
+        clips: (await Promise.all(track.clips.map(async (clip): Promise<IClip[]> => {
+          if (
+            !keySet.has(clipKeyId({ trackId: track.id, clipId: clip.id }))
+            || cursorPosition <= clip.startTime + 0.05
+            || cursorPosition >= clip.startTime + clip.duration - 0.05
+          ) return [clip];
+          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!effective) return [clip];
+          const leftDuration = cursorPosition - clip.startTime;
+          const rightDuration = clip.duration - leftDuration;
+          const sourceStart = Math.floor(effective.sourceOffset * project.sampleRate);
+          const splitSample = sourceStart + Math.floor(leftDuration * project.sampleRate);
+          const sourceEnd = sourceStart + Math.floor(clip.duration * project.sampleRate);
+          const leftChannels = effective.channels.map((channel) => channel.slice(sourceStart, splitSample));
+          const rightChannels = effective.channels.map((channel) => channel.slice(splitSample, sourceEnd));
+          if (leftChannels.some((channel) => channel.length === 0) || rightChannels.some((channel) => channel.length === 0)) {
+            return [clip];
+          }
+          const [leftBufferId, rightBufferId] = await Promise.all([
+            storeProjectBuffer(project.id, leftChannels, project.sampleRate),
+            storeProjectBuffer(project.id, rightChannels, project.sampleRate),
+          ]);
+          didSplit = true;
+          return [
+            {
+              ...clip,
+              id: generateId(),
+              audioBufferId: leftBufferId,
+              duration: leftDuration,
+              originalDuration: leftDuration,
+              offset: 0,
+              stretchRatio: 1,
+              fadeOut: 0,
+            },
+            {
+              ...clip,
+              id: generateId(),
+              audioBufferId: rightBufferId,
+              startTime: cursorPosition,
+              duration: rightDuration,
+              originalDuration: rightDuration,
+              offset: 0,
+              stretchRatio: 1,
+              fadeIn: 0,
+            },
+          ];
+        }))).flat().sort((a, b) => a.startTime - b.startTime),
+      }))),
     };
-    if (!changed) return;
-    setProject(updated);
-    await projectService.saveProject(updated);
-    pushHistoryCmd({
-      id: generateId(),
-      label: '修剪片段',
-      execute: () => updated,
-      undo: () => before,
-    });
+    if (!didSplit) {
+      toast.info('请将播放光标放在选中片段内部');
+      return;
+    }
+    await commitClipEdit(updated, '在光标处分割片段');
+    setSelectedClips([]);
+    toast.success('已分割片段');
+  }
+
+  function applyWorkspaceLayout(layout: WorkspaceLayout) {
+    setShowTrackPanel(layout.showTrackPanel);
+    setShowMixer(layout.showMixer);
+    setViewMode(layout.viewMode);
+    setHorizontalZoom(layout.horizontalZoom);
+    setVerticalZoom(layout.verticalZoom);
+  }
+
+  function applyWorkspace(id: string) {
+    const preset = workspaceStore.presets.find((candidate) => candidate.id === id);
+    if (!preset) return;
+    const updated = { ...workspaceStore, activeId: id };
+    setWorkspaceStore(updated);
+    saveWorkspaceStore(updated);
+    applyWorkspaceLayout(preset.layout);
+  }
+
+  function saveCurrentWorkspace() {
+    try {
+      const updated = createWorkspace(
+        workspaceStore,
+        generateId(),
+        workspaceName,
+        workspaceLayout,
+      );
+      setWorkspaceStore(updated);
+      saveWorkspaceStore(updated);
+      setWorkspaceDialogOpen(false);
+      setWorkspaceName('');
+      toast.success('Workspace 已保存到当前浏览器');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Workspace 保存失败');
+    }
+  }
+
+  function resetActiveWorkspace() {
+    const updated = resetWorkspace(workspaceStore, workspaceStore.activeId);
+    setWorkspaceStore(updated);
+    saveWorkspaceStore(updated);
+    const preset = updated.presets.find((candidate) => candidate.id === updated.activeId);
+    if (preset) applyWorkspaceLayout(preset.layout);
+    toast.info('已恢复内置 Workspace');
+  }
+
+  function deleteActiveWorkspace() {
+    const updated = removeWorkspace(workspaceStore, workspaceStore.activeId);
+    setWorkspaceStore(updated);
+    saveWorkspaceStore(updated);
+    const preset = updated.presets.find((candidate) => candidate.id === updated.activeId);
+    if (preset) applyWorkspaceLayout(preset.layout);
+    toast.info('已删除自定义 Workspace');
   }
 
   // Import audio
@@ -876,6 +1079,18 @@ export default function AudioEditorPage() {
     return bufferId;
   }
 
+  async function loadEffectiveClipChannels(clip: IClip, sampleRate: number): Promise<{
+    channels: Float32Array[];
+    sourceOffset: number;
+  } | null> {
+    const source = await projectService.loadAudioChannels(clip.audioBufferId);
+    if (!source || source.length === 0) return null;
+    return {
+      channels: audioEngine.processClipChannels(clip, source, sampleRate),
+      sourceOffset: clip.offset / getClipStretchRatio(clip),
+    };
+  }
+
   async function copySelection(
     proj: IProject,
     start: number,
@@ -898,14 +1113,15 @@ export default function AudioEditorPage() {
 
         const overlapStart = Math.max(clip.startTime, start);
         const overlapEnd = Math.min(clipEnd, end);
-        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
-        if (!clipChannels || clipChannels.length === 0) continue;
+        const effective = await loadEffectiveClipChannels(clip, proj.sampleRate);
+        if (!effective) continue;
+        const clipChannels = effective.channels;
 
         while (trackBuffers.length < clipChannels.length) {
           trackBuffers.push(new Float32Array(totalSamples));
         }
 
-        const offsetInClip = overlapStart - clip.startTime + clip.offset;
+        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
         const srcStartSample = Math.floor(offsetInClip * sampleRate);
         const srcSamples = Math.floor((overlapEnd - overlapStart) * sampleRate);
         const dstStartSample = Math.floor((overlapStart - start) * sampleRate);
@@ -986,6 +1202,7 @@ export default function AudioEditorPage() {
         offset: 0,
         duration: clipboardData.duration,
         originalDuration: clipboardData.duration,
+        stretchRatio: 1,
         gain: 0,
         fadeIn: 0,
         fadeOut: 0,
@@ -1025,17 +1242,21 @@ export default function AudioEditorPage() {
         }
 
         // Clip overlaps region - split or truncate
-        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
-        if (!clipChannels || clipChannels.length === 0) {
+        const effective = await loadEffectiveClipChannels(clip, proj.sampleRate);
+        if (!effective) {
           newClips.push(clip);
           continue;
         }
+        const clipChannels = effective.channels;
 
         // Left part (before start)
         if (clip.startTime < start) {
           const leftDuration = start - clip.startTime;
           const leftSamples = Math.floor(leftDuration * proj.sampleRate);
-          const leftChannels = clipChannels.map((channel) => wasmProcessor.sliceBuffer(channel, 0, leftSamples));
+          const leftStartSample = Math.floor(effective.sourceOffset * proj.sampleRate);
+          const leftChannels = clipChannels.map((channel) =>
+            wasmProcessor.sliceBuffer(channel, leftStartSample, leftStartSample + leftSamples),
+          );
           const leftBufferId = await storeProjectBuffer(proj.id, leftChannels, proj.sampleRate);
 
           newClips.push({
@@ -1044,6 +1265,7 @@ export default function AudioEditorPage() {
             audioBufferId: leftBufferId,
             duration: leftDuration,
             originalDuration: leftDuration,
+            stretchRatio: 1,
             offset: 0,
             fadeOut: 0, // reset fades for simplicity
           });
@@ -1051,7 +1273,7 @@ export default function AudioEditorPage() {
 
         // Right part (after end) - shift left by duration
         if (clipEnd > end) {
-          const rightOffsetInClip = end - clip.startTime + clip.offset;
+          const rightOffsetInClip = end - clip.startTime + effective.sourceOffset;
           const rightStartSample = Math.floor(rightOffsetInClip * proj.sampleRate);
           const rightChannels = clipChannels.map((channel) =>
             wasmProcessor.sliceBuffer(channel, rightStartSample, channel.length),
@@ -1067,6 +1289,7 @@ export default function AudioEditorPage() {
             offset: 0,
             duration: rightDuration,
             originalDuration: rightDuration,
+            stretchRatio: 1,
             fadeIn: 0,
           });
         }
@@ -1120,8 +1343,9 @@ export default function AudioEditorPage() {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
 
-        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
-        if (!clipChannels || clipChannels.length === 0) continue;
+        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+        if (!effective) continue;
+        const clipChannels = effective.channels;
 
         // Make a mutable copy of every channel.
         const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
@@ -1129,7 +1353,7 @@ export default function AudioEditorPage() {
         const overlapStart = Math.max(clip.startTime, selection.start);
         const overlapEnd = Math.min(clipEnd, selection.end);
 
-        const offsetInClip = overlapStart - clip.startTime + clip.offset;
+        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
         const startSample = Math.floor(offsetInClip * project.sampleRate);
         const endSample = Math.floor((offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate);
 
@@ -1144,6 +1368,9 @@ export default function AudioEditorPage() {
         const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
 
         clip.audioBufferId = newBufferId;
+        clip.offset = effective.sourceOffset;
+        clip.originalDuration = dataCopies[0].length / project.sampleRate;
+        clip.stretchRatio = 1;
       }
     }
 
@@ -1171,15 +1398,16 @@ export default function AudioEditorPage() {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
 
-        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
-        if (!clipChannels || clipChannels.length === 0) continue;
+        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+        if (!effective) continue;
+        const clipChannels = effective.channels;
 
         const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
 
         const overlapStart = Math.max(clip.startTime, selection.start);
         const overlapEnd = Math.min(clipEnd, selection.end);
 
-        const offsetInClip = overlapStart - clip.startTime + clip.offset;
+        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
         const startSample = Math.floor(offsetInClip * project.sampleRate);
         const endSample = Math.floor(
           (offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate,
@@ -1203,6 +1431,9 @@ export default function AudioEditorPage() {
         const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
 
         clip.audioBufferId = newBufferId;
+        clip.offset = effective.sourceOffset;
+        clip.originalDuration = dataCopies[0].length / project.sampleRate;
+        clip.stretchRatio = 1;
       }
     }
 
@@ -1229,15 +1460,16 @@ export default function AudioEditorPage() {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
 
-        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
-        if (!clipChannels || clipChannels.length === 0) continue;
+        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+        if (!effective) continue;
+        const clipChannels = effective.channels;
 
         const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
 
         const overlapStart = Math.max(clip.startTime, selection.start);
         const overlapEnd = Math.min(clipEnd, selection.end);
 
-        const offsetInClip = overlapStart - clip.startTime + clip.offset;
+        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
         const startSample = Math.floor(offsetInClip * project.sampleRate);
         const endSample = Math.floor(
           (offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate,
@@ -1265,6 +1497,9 @@ export default function AudioEditorPage() {
         const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
 
         clip.audioBufferId = newBufferId;
+        clip.offset = effective.sourceOffset;
+        clip.originalDuration = dataCopies[0].length / project.sampleRate;
+        clip.stretchRatio = 1;
       }
     }
 
@@ -1291,15 +1526,16 @@ export default function AudioEditorPage() {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
 
-        const clipChannels = await projectService.loadAudioChannels(clip.audioBufferId);
-        if (!clipChannels || clipChannels.length === 0) continue;
+        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+        if (!effective) continue;
+        const clipChannels = effective.channels;
 
         const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
 
         const overlapStart = Math.max(clip.startTime, selection.start);
         const overlapEnd = Math.min(clipEnd, selection.end);
 
-        const offsetInClip = overlapStart - clip.startTime + clip.offset;
+        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
         const startSample = Math.floor(offsetInClip * project.sampleRate);
         const endSample = Math.floor(
           (offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate,
@@ -1315,6 +1551,9 @@ export default function AudioEditorPage() {
         const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
 
         clip.audioBufferId = newBufferId;
+        clip.offset = effective.sourceOffset;
+        clip.originalDuration = dataCopies[0].length / project.sampleRate;
+        clip.stretchRatio = 1;
       }
     }
 
@@ -1331,9 +1570,18 @@ export default function AudioEditorPage() {
   }
 
   const projectDuration = getProjectDuration();
+  const canSplitAtCursor = project?.tracks.some((track) => track.clips.some((clip) => {
+    const inSelection = selectedClips.length === 0
+      ? track.id === selectedTrackId
+      : selectedClips.some((key) => key.trackId === track.id && key.clipId === clip.id);
+    return inSelection && cursorPosition > clip.startTime + 0.05
+      && cursorPosition < clip.startTime + clip.duration - 0.05;
+  })) ?? false;
   const timelineDuration = Math.max(projectDuration, 30);
   const pxPerSec = horizontalZoom;
   const totalWidth = Math.max(timelineDuration * pxPerSec, 1000);
+  const activeWorkspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
+    ?? workspaceStore.presets[0];
 
   if (isLoading) {
     return (
@@ -1393,6 +1641,7 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={handleCut} disabled={!selection}>剪切</DropdownMenuItem>
               <DropdownMenuItem onClick={handleCopy} disabled={!selection}>复制</DropdownMenuItem>
               <DropdownMenuItem onClick={handlePaste}>粘贴</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void splitClipsAtCursor()} disabled={!canSplitAtCursor}>在光标处分割 (Ctrl+I)</DropdownMenuItem>
               <DropdownMenuItem onClick={handleTrim} disabled={!selection}>裁剪到选区</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1418,6 +1667,13 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setViewMode('waveform')}>波形</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('spectrum')}>频谱</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('both')}>波形与频谱</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setShowTrackPanel((visible) => !visible)}>
+                {showTrackPanel ? '隐藏' : '显示'}轨道面板
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShowMixer((visible) => !visible)}>
+                {showMixer ? '隐藏' : '显示'}混音器
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <DropdownMenu>
@@ -1552,6 +1808,36 @@ export default function AudioEditorPage() {
 
           {/* 右侧：视图 + 保存 + 导出 */}
           <div className="flex items-center gap-1">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-7 w-[228px] justify-between px-2 text-xs" aria-label="Workspace 工作区">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-[#aab0b6]">Workspace</span>
+                    <span className="truncate">{activeWorkspace.name}</span>
+                  </span>
+                  <span aria-hidden="true">▾</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-[228px]">
+                <DropdownMenuLabel>Workspace</DropdownMenuLabel>
+                {workspaceStore.presets.map((preset) => (
+                  <DropdownMenuItem key={preset.id} onClick={() => applyWorkspace(preset.id)}>
+                    <span className="w-4">{preset.id === workspaceStore.activeId ? '✓' : ''}</span>
+                    <span className="flex-1">{preset.name}</span>
+                    {!preset.builtIn && <span className="text-[10px] text-muted-foreground">自定义</span>}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setWorkspaceDialogOpen(true)}>将当前布局另存为…</DropdownMenuItem>
+                {!!activeWorkspace.builtIn && (
+                  <DropdownMenuItem onClick={resetActiveWorkspace}>恢复 {activeWorkspace.name} 预设</DropdownMenuItem>
+                )}
+                {!activeWorkspace.builtIn && (
+                  <DropdownMenuItem onClick={deleteActiveWorkspace}>删除当前 Workspace</DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Separator orientation="vertical" className="mx-1 h-5" />
             <Tabs
               value={viewMode}
               onValueChange={(v) => setViewMode(v as ViewMode)}
@@ -1615,6 +1901,10 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={handlePaste}>
                 <Clipboard className="mr-2 size-4" />
                 粘贴 (Ctrl+V)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void splitClipsAtCursor()} disabled={!canSplitAtCursor}>
+                <Scissors className="mr-2 size-4" />
+                在光标处分割 (Ctrl+I)
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleTrim} disabled={!selection}>
                 <Crop className="mr-2 size-4" />
@@ -1706,6 +1996,29 @@ export default function AudioEditorPage() {
             )}
           </div>
 
+          {selectedClips.length > 0 && (
+            <div className="flex items-center gap-1 rounded-sm border border-[#434a50] px-1.5 py-0.5 text-[11px]">
+              <span>{selectedClips.length} 个片段</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-1.5 text-[10px]"
+                onClick={() => {
+                  const key = selectedClips[selectedClips.length - 1];
+                  void handleClipReset(key.trackId, key.clipId);
+                }}
+              >
+                速度 100%
+              </Button>
+              <Button variant="ghost" size="icon" className="size-6" onClick={() => void handleDeleteSelectedClips()} aria-label="删除选中片段" title="删除选中片段">
+                <Trash2 className="size-3" />
+              </Button>
+              <Button variant="ghost" size="icon" className="size-6" onClick={() => setSelectedClips([])} aria-label="清除片段选择" title="清除片段选择">
+                <X className="size-3" />
+              </Button>
+            </div>
+          )}
+
           <div className="flex-1" />
 
           {/* Zoom controls */}
@@ -1749,6 +2062,7 @@ export default function AudioEditorPage() {
         {/* Main Area */}
         <div className="flex flex-1 overflow-hidden">
           {/* Track Panel (Left) */}
+          {showTrackPanel && (
           <div className="flex w-60 shrink-0 flex-col border-r border-[#434a50] bg-[#252b31]">
             <div className="au-toolbar flex h-7 items-center justify-between border-b px-2 text-xs text-[#aab0b6]">
               <span>轨道</span>
@@ -1787,6 +2101,7 @@ export default function AudioEditorPage() {
               ))}
             </div>
           </div>
+          )}
 
           {/* Timeline Area (Center) */}
           <div
@@ -1885,9 +2200,12 @@ export default function AudioEditorPage() {
                 scrollX={scrollX}
                 verticalZoom={verticalZoom}
                 isSelected={selectedTrackId === track.id}
-                selectedClipId={selectedClipId}
-                onSelectClip={(clipId) => selectClip(track.id, clipId)}
+                selectedClips={selectedClips}
+                onSelectClip={(clipId, additive) => selectClip(track.id, clipId, additive)}
                 onTrimClip={(clipId, edge, delta) => handleClipEdgeTrim(track.id, clipId, edge, delta)}
+                onStretchClip={(clipId, edge, delta) => handleClipStretch(track.id, clipId, edge, delta)}
+                onMoveClip={(clipId, delta) => handleClipMove(track.id, clipId, delta)}
+                onResetClip={(clipId) => handleClipReset(track.id, clipId)}
                 onSelectionChange={handleSelectionChange}
                 onCursorChange={handleCursorChange}
               />
@@ -1915,6 +2233,36 @@ export default function AudioEditorPage() {
             />
           )}
         </div>
+
+        {showMixer && (
+          <section aria-label="混音器" className="au-toolbar flex h-40 shrink-0 items-stretch gap-2 overflow-x-auto border-t p-2">
+            <div className="flex min-w-24 flex-col justify-center border-r border-[#434a50] px-3 text-xs">
+              <span className="font-semibold">混音器</span>
+              <span className="mt-1 text-[10px] text-[#aab0b6]">{project.tracks.length} 条轨道 · 立体声输出</span>
+              <Button variant="secondary" size="sm" className="au-secondary mt-3 h-6 text-[10px]" onClick={() => setExportDialogOpen(true)}>
+                导出混音
+              </Button>
+            </div>
+            {project.tracks.map((track) => (
+              <div key={track.id} className="au-panel flex w-40 shrink-0 flex-col gap-1 rounded-sm p-2 text-[10px]">
+                <div className="flex items-center gap-1">
+                  <span className="size-2 rounded-sm" style={{ backgroundColor: track.color }} />
+                  <span className="flex-1 truncate font-medium">{track.name}</span>
+                  <span>{gainToDb(track.gain).toFixed(1)} dB</span>
+                </div>
+                <div className="flex flex-1 items-center justify-around gap-2">
+                  <GainKnob value={gainToDb(track.gain)} onChange={(db) => updateTrackGain(track.id, db)} />
+                  <div className="flex gap-1">
+                    <Button variant={track.muted ? 'secondary' : 'ghost'} size="icon" className="size-6 text-[10px]" onClick={() => toggleMute(track.id)} aria-label={`混音器静音 ${track.name}`}>M</Button>
+                    <Button variant={track.solo ? 'secondary' : 'ghost'} size="icon" className="size-6 text-[10px]" onClick={() => toggleSolo(track.id)} aria-label={`混音器独奏 ${track.name}`}>S</Button>
+                  </div>
+                </div>
+                <Slider aria-label={`混音器声像 ${track.name}`} value={[track.pan]} min={-1} max={1} step={0.01} onValueChange={(values) => updateTrackPan(track.id, values[0])} />
+                <span className="text-center text-[#aab0b6]">{track.pan < -0.01 ? `左 ${Math.round(-track.pan * 100)}` : track.pan > 0.01 ? `右 ${Math.round(track.pan * 100)}` : '中央'}</span>
+              </div>
+            ))}
+          </section>
+        )}
 
         {/* Audacity 4 selection toolbar */}
         <div className="au-toolbar flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-t px-3 py-1.5 text-[11px]">
@@ -1989,6 +2337,38 @@ export default function AudioEditorPage() {
             <span>缩放 {Math.round(pxPerSec)} px/s</span>
           </div>
         </div>
+
+        <Dialog open={workspaceDialogOpen} onOpenChange={setWorkspaceDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>保存 Workspace</DialogTitle>
+              <DialogDescription>保存当前轨道面板、混音器、波形模式和缩放布局到当前浏览器。</DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                saveCurrentWorkspace();
+              }}
+              className="space-y-4"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="workspace-name">Workspace 名称</Label>
+                <Input
+                  id="workspace-name"
+                  value={workspaceName}
+                  onChange={(event) => setWorkspaceName(event.target.value)}
+                  maxLength={40}
+                  placeholder="例如：播客剪辑"
+                  autoFocus
+                />
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="secondary" onClick={() => setWorkspaceDialogOpen(false)}>取消</Button>
+                <Button type="submit" disabled={!workspaceName.trim()}>保存 Workspace</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
 
         {/* Export Dialog */}
         <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
@@ -2303,9 +2683,12 @@ function TrackTimeline({
   scrollX,
   verticalZoom,
   isSelected,
-  selectedClipId,
+  selectedClips,
   onSelectClip,
   onTrimClip,
+  onStretchClip,
+  onMoveClip,
+  onResetClip,
   onSelectionChange,
   onCursorChange,
 }: {
@@ -2319,9 +2702,12 @@ function TrackTimeline({
   scrollX: number;
   verticalZoom: number;
   isSelected: boolean;
-  selectedClipId: string | null;
-  onSelectClip: (clipId: string) => void;
+  selectedClips: ClipKey[];
+  onSelectClip: (clipId: string, additive: boolean) => void;
   onTrimClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number) => void;
+  onStretchClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number) => void;
+  onMoveClip: (clipId: string, deltaSeconds: number) => void;
+  onResetClip: (clipId: string) => void;
   onSelectionChange: (start: number, end: number) => void;
   onCursorChange: (pos: number) => void;
 }) {
@@ -2382,13 +2768,13 @@ function TrackTimeline({
           trackHeight={trackHeight}
           verticalZoom={verticalZoom}
           viewMode={viewMode}
-          isSelected={selectedClipId === clip.id}
+          isSelected={selectedClips.some((key) => key.trackId === track.id && key.clipId === clip.id)}
           trackColor={track.color}
           onTrim={(edge, delta) => onTrimClip(clip.id, edge, delta)}
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelectClip(clip.id);
-          }}
+          onStretch={(edge, delta) => onStretchClip(clip.id, edge, delta)}
+          onMove={(delta) => onMoveClip(clip.id, delta)}
+          onReset={() => onResetClip(clip.id)}
+          onSelect={(additive) => onSelectClip(clip.id, additive)}
         />
       ))}
     </div>
@@ -2408,7 +2794,10 @@ function ClipItem({
   isSelected,
   trackColor,
   onTrim,
-  onClick,
+  onStretch,
+  onMove,
+  onReset,
+  onSelect,
 }: {
   clip: IClip;
   track: ITrack;
@@ -2421,11 +2810,21 @@ function ClipItem({
   isSelected: boolean;
   trackColor: string;
   onTrim: (edge: 'left' | 'right', deltaSeconds: number) => void;
-  onClick: (e: React.MouseEvent) => void;
+  onStretch: (edge: 'left' | 'right', deltaSeconds: number) => void;
+  onMove: (deltaSeconds: number) => void;
+  onReset: () => void;
+  onSelect: (additive: boolean) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [audioData, setAudioData] = useState<Float32Array | null>(null);
-  const [trimDrag, setTrimDrag] = useState<{ edge: 'left' | 'right'; startX: number; delta: number } | null>(null);
+  const [edgeDrag, setEdgeDrag] = useState<{
+    edge: 'left' | 'right';
+    mode: 'trim' | 'stretch';
+    startX: number;
+    delta: number;
+  } | null>(null);
+  const [moveDrag, setMoveDrag] = useState<{ startX: number; delta: number } | null>(null);
+  const suppressClickRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -2460,58 +2859,119 @@ function ClipItem({
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
 
+    const stretchRatio = getClipStretchRatio(clip);
+
     // Draw waveform or spectrum based on view mode
     if (viewMode === 'waveform' || viewMode === 'both') {
       drawWaveform(ctx, audioData, width, height, '#20252a', clip, sampleRate, verticalZoom, viewMode === 'both' ? 0.8 : 1);
     }
 
     if (viewMode === 'spectrum' || viewMode === 'both') {
-      drawSpectrumMini(ctx, audioData, width, height, sampleRate, viewMode === 'both' ? 0.5 : 1);
+      const sourceStart = Math.max(0, Math.floor(clip.offset * sampleRate));
+      const sourceEnd = Math.min(
+        audioData.length,
+        Math.floor((clip.offset + clip.duration * stretchRatio) * sampleRate),
+      );
+      drawSpectrumMini(
+        ctx,
+        audioData.subarray(sourceStart, Math.max(sourceStart + 1, sourceEnd)),
+        width,
+        height,
+        sampleRate,
+        viewMode === 'both' ? 0.5 : 1,
+      );
     }
-  }, [audioData, pxPerSec, clip.duration, clip.offset, viewMode, trackColor, trackHeight, sampleRate, verticalZoom]);
+  }, [audioData, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, trackColor, trackHeight, sampleRate, verticalZoom]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
-  const trimDelta = trimDrag?.delta ?? 0;
-  const displayLeft = left + (trimDrag?.edge === 'left' ? trimDelta * pxPerSec : 0);
+  const edgeDelta = edgeDrag?.delta ?? 0;
+  const moveDelta = moveDrag?.delta ?? 0;
+  const displayLeft = left + (edgeDrag?.edge === 'left' ? edgeDelta * pxPerSec : 0) + moveDelta * pxPerSec;
   const displayWidth = Math.max(
     2,
-    width + (trimDrag?.edge === 'left' ? -trimDelta : trimDelta) * pxPerSec,
+    width + (edgeDrag?.edge === 'left' ? -edgeDelta : edgeDelta) * pxPerSec,
   );
 
-  function boundedTrimDelta(edge: 'left' | 'right', rawDelta: number) {
+  function boundedEdgeDelta(edge: 'left' | 'right', mode: 'trim' | 'stretch', rawDelta: number) {
+    const ratio = getClipStretchRatio(clip);
+    if (mode === 'stretch') {
+      const currentDuration = Math.max(0.05, clip.duration);
+      const targetDuration = edge === 'left' ? currentDuration + rawDelta : currentDuration - rawDelta;
+      const boundedTarget = edge === 'left'
+        ? clamp(targetDuration, 0.05, currentDuration + Math.min(clip.startTime, currentDuration - 0.05))
+        : clamp(targetDuration, 0.05, currentDuration * 4);
+      const delta = edge === 'left' ? boundedTarget - currentDuration : currentDuration - boundedTarget;
+      const targetRatio = clamp((currentDuration * ratio) / boundedTarget, 0.25, 4);
+      return edge === 'left'
+        ? (currentDuration * ratio) / targetRatio - currentDuration
+        : currentDuration - (currentDuration * ratio) / targetRatio;
+    }
     if (edge === 'left') {
-      return clamp(rawDelta, -Math.min(clip.startTime, clip.offset), Math.max(0, clip.duration - 0.05));
+      return clamp(rawDelta, -Math.min(clip.startTime, clip.offset / ratio), Math.max(0, clip.duration - 0.05));
     }
     return clamp(
       rawDelta,
       0.05 - clip.duration,
-      Math.max(0.05, clip.originalDuration - clip.offset) - clip.duration,
+      Math.max(0.05, (clip.originalDuration - clip.offset) / ratio) - clip.duration,
     );
   }
 
-  function handleTrimMove(e: React.PointerEvent<HTMLButtonElement>) {
-    if (!trimDrag) return;
+  function handleEdgeMove(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!edgeDrag) return;
     e.stopPropagation();
-    const rawDelta = (e.clientX - trimDrag.startX) / pxPerSec;
-    setTrimDrag({ ...trimDrag, delta: boundedTrimDelta(trimDrag.edge, rawDelta) });
+    const rawDelta = (e.clientX - edgeDrag.startX) / pxPerSec;
+    setEdgeDrag({ ...edgeDrag, delta: boundedEdgeDelta(edgeDrag.edge, edgeDrag.mode, rawDelta) });
   }
 
-  function handleTrimEnd(e: React.PointerEvent<HTMLButtonElement>) {
-    if (!trimDrag) return;
+  function handleEdgeEnd(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!edgeDrag) return;
     e.stopPropagation();
-    if (Math.abs(trimDrag.delta) >= 0.001) onTrim(trimDrag.edge, trimDrag.delta);
-    setTrimDrag(null);
+    if (Math.abs(edgeDrag.delta) >= 0.001) {
+      if (edgeDrag.mode === 'trim') onTrim(edgeDrag.edge, edgeDrag.delta);
+      else onStretch(edgeDrag.edge, edgeDrag.delta);
+    }
+    setEdgeDrag(null);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
-  function handleTrimKeyDown(edge: 'left' | 'right', e: React.KeyboardEvent<HTMLButtonElement>) {
+  function handleEdgeKeyDown(
+    edge: 'left' | 'right',
+    mode: 'trim' | 'stretch',
+    e: React.KeyboardEvent<HTMLButtonElement>,
+  ) {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
     e.stopPropagation();
     const direction = e.key === 'ArrowLeft' ? -1 : 1;
-    const delta = boundedTrimDelta(edge, direction * (e.shiftKey ? 1 : 0.1));
-    if (Math.abs(delta) >= 0.001) onTrim(edge, delta);
+    const delta = boundedEdgeDelta(edge, mode, direction * (e.shiftKey ? 1 : 0.1));
+    if (Math.abs(delta) >= 0.001) {
+      if (mode === 'trim') onTrim(edge, delta);
+      else onStretch(edge, delta);
+    }
+  }
+
+  function handleMoveStart(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setMoveDrag({ startX: e.clientX, delta: 0 });
+  }
+
+  function handleMoveMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!moveDrag) return;
+    e.stopPropagation();
+    const delta = Math.max(-clip.startTime, (e.clientX - moveDrag.startX) / pxPerSec);
+    if (Math.abs(delta) >= 0.001) suppressClickRef.current = true;
+    setMoveDrag({ ...moveDrag, delta });
+  }
+
+  function handleMoveEnd(e: React.PointerEvent<HTMLDivElement>) {
+    if (!moveDrag) return;
+    e.stopPropagation();
+    if (Math.abs(moveDrag.delta) >= 0.001) onMove(moveDrag.delta);
+    setMoveDrag(null);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
   return (
@@ -2520,61 +2980,107 @@ function ClipItem({
       data-selected={isSelected}
       role="button"
       tabIndex={0}
-      aria-label={`${clip.name || '音频片段'}，开始 ${formatTime(clip.startTime)}，时长 ${formatTime(clip.duration)}`}
+      aria-label={`${clip.name || '音频片段'}，开始 ${formatTime(clip.startTime)}，时长 ${formatTime(clip.duration)}，速度 ${Math.round(100 / getClipStretchRatio(clip))}%`}
+      aria-pressed={isSelected}
       style={{
         left: displayLeft,
         width: displayWidth,
         backgroundColor: `color-mix(in srgb, ${trackColor} 76%, white)`,
       }}
-      onClick={onClick}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          return;
+        }
+        onSelect(e.shiftKey);
+      }}
       onKeyDown={(e) => {
+        if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+          e.preventDefault();
+          e.stopPropagation();
+          onMove((e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1 : 0.1));
+          return;
+        }
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          e.currentTarget.click();
+          e.stopPropagation();
+          onSelect(e.shiftKey);
         }
       }}
     >
       {/* Audacity 4 clip header */}
       <div
-        className="absolute inset-x-0 top-0 z-10 flex h-5 items-center truncate px-1.5 text-[10px] font-medium"
+        className="absolute inset-x-0 top-0 z-10 flex h-5 cursor-grab items-center gap-1 truncate px-1.5 text-[10px] font-medium active:cursor-grabbing"
         style={{ backgroundColor: trackColor }}
+        title="拖动移动片段；成组选择时同步移动"
+        onPointerDown={handleMoveStart}
+        onPointerMove={handleMoveMove}
+        onPointerUp={handleMoveEnd}
+        onPointerCancel={() => setMoveDrag(null)}
       >
-        <span className="truncate">{clip.name || '音频片段'}</span>
+        <span className="min-w-0 flex-1 truncate">{clip.name || '音频片段'}</span>
+        {getClipStretchRatio(clip) !== 1 && (
+          <button
+            type="button"
+            className="shrink-0 rounded-sm bg-[#20252a]/20 px-1 text-[9px] font-semibold hover:bg-[#20252a]/35"
+            aria-label="恢复片段速度100%"
+            title={`速度 ${Math.round(100 / getClipStretchRatio(clip))}%，点击恢复 100%`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onReset();
+            }}
+          >
+            {Math.round(100 / getClipStretchRatio(clip))}%
+          </button>
+        )}
       </div>
 
       {/* Waveform canvas */}
       <canvas ref={canvasRef} className="absolute inset-x-0 bottom-1 top-5" />
 
-      {/* Functional trim handles */}
-      {(['left', 'right'] as const).map((edge) => (
+      {/* Functional trim and non-destructive stretch handles */}
+      {([
+        { mode: 'trim', edge: 'left' },
+        { mode: 'trim', edge: 'right' },
+        { mode: 'stretch', edge: 'left' },
+        { mode: 'stretch', edge: 'right' },
+      ] as const).map(({ mode, edge }) => (
         <button
-          key={edge}
+          key={`${mode}-${edge}`}
           type="button"
-          aria-label={edge === 'left' ? '修剪片段左边缘' : '修剪片段右边缘'}
-          title={`${edge === 'left' ? '拖拽修剪片段起点' : '拖拽修剪片段终点'}；方向键 0.1 秒，Shift+方向键 1 秒`}
-          className={`absolute top-5 bottom-1 z-20 w-2.5 cursor-ew-resize opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100 ${
-            isSelected || trimDrag?.edge === edge ? 'opacity-100' : ''
-          } ${edge === 'left' ? 'left-0' : 'right-0'}`}
+          aria-label={`${mode === 'trim' ? '修剪' : '拉伸'}片段${edge === 'left' ? '左' : '右'}边缘`}
+          title={`${mode === 'trim' ? '修剪' : '非破坏性时间拉伸'}${edge === 'left' ? '起点' : '终点'}；方向键 0.1 秒，Shift+方向键 1 秒`}
+          className={`absolute z-20 cursor-ew-resize opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100 ${
+            isSelected || (edgeDrag?.edge === edge && edgeDrag.mode === mode) ? 'opacity-100' : ''
+          } ${edge === 'left' ? 'left-0' : 'right-0'} ${
+            mode === 'trim' ? 'top-5 bottom-1 w-2.5' : 'top-6 h-4 w-4'
+          }`}
           onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => handleTrimKeyDown(edge, e)}
+          onKeyDown={(e) => handleEdgeKeyDown(edge, mode, e)}
           onPointerDown={(e) => {
             e.currentTarget.focus();
             e.preventDefault();
             e.stopPropagation();
             e.currentTarget.setPointerCapture(e.pointerId);
-            setTrimDrag({ edge, startX: e.clientX, delta: 0 });
+            setEdgeDrag({ edge, mode, startX: e.clientX, delta: 0 });
           }}
-          onPointerMove={handleTrimMove}
-          onPointerUp={handleTrimEnd}
-          onPointerCancel={() => setTrimDrag(null)}
+          onPointerMove={handleEdgeMove}
+          onPointerUp={handleEdgeEnd}
+          onPointerCancel={() => setEdgeDrag(null)}
         >
-          <span
-            className={`absolute top-1/2 size-0 -translate-y-1/2 border-y-4 border-y-transparent ${
-              edge === 'left'
-                ? 'left-0.5 border-r-[6px] border-r-[#20252a]'
-                : 'right-0.5 border-l-[6px] border-l-[#20252a]'
-            }`}
-          />
+          {mode === 'trim' ? (
+            <span
+              className={`absolute top-1/2 size-0 -translate-y-1/2 border-y-4 border-y-transparent ${
+                edge === 'left'
+                  ? 'left-0.5 border-r-[6px] border-r-[#20252a]'
+                  : 'right-0.5 border-l-[6px] border-l-[#20252a]'
+              }`}
+            />
+          ) : (
+            <span className={`absolute top-0 text-[13px] font-bold leading-none ${edge === 'left' ? 'left-1' : 'right-1'}`}>↔</span>
+          )}
         </button>
       ))}
 
@@ -2617,7 +3123,10 @@ function drawWaveform(
   verticalZoom: number,
   alpha: number,
 ) {
-  const samplesPerPixel = Math.floor((data.length * clip.duration / clip.originalDuration) / width) || 1;
+  const ratio = getClipStretchRatio(clip);
+  const sourceStart = Math.max(0, clip.offset * sampleRate);
+  const sourceEnd = Math.min(data.length, (clip.offset + clip.duration * ratio) * sampleRate);
+  const samplesPerPixel = Math.max(1, (sourceEnd - sourceStart) / width);
   const centerY = height / 2;
   const amplitude = (height / 2 - 4) * verticalZoom;
 
@@ -2628,8 +3137,8 @@ function drawWaveform(
   ctx.moveTo(0, centerY);
 
   for (let x = 0; x < width; x++) {
-    const startSample = Math.floor(clip.offset * sampleRate + x * samplesPerPixel);
-    const endSample = Math.min(startSample + samplesPerPixel, data.length);
+    const startSample = Math.floor(sourceStart + x * samplesPerPixel);
+    const endSample = Math.min(Math.ceil(sourceStart + (x + 1) * samplesPerPixel), data.length, sourceEnd);
 
     let min = 1;
     let max = -1;

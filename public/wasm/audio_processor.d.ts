@@ -127,6 +127,13 @@ export function slice_buffer(buffer: Float32Array | number[], start: number, end
  */
 export function spectrogram(input: Float32Array | number[], window_size: number, hop_size: number): Float32Array;
 
+/**
+ * Pitch-preserving WSOLA stretch on planar multi-channel audio.
+ * All channels share analysis positions, preserving stereo alignment.
+ * speed > 1 shortens; speed < 1 lengthens. Returns planar channels.
+ */
+export function time_stretch(input: Float32Array | number[], channel_count: number, speed: number, sample_rate: number): Float32Array;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -156,6 +163,7 @@ export interface InitOutput {
     readonly reverse: (a: number, b: number, c: any) => void;
     readonly slice_buffer: (a: number, b: number, c: number, d: number) => [number, number];
     readonly spectrogram: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly time_stretch: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly wavdecoderesult_new: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

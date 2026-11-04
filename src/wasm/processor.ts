@@ -1,6 +1,7 @@
 // EXPORTS: wasmProcessor, WasmModule, isWasmAvailable, initWasm
 
 import { logger } from '@/lib/logger';
+import { timeStretchChannelsJs } from '@/engine/timeStretch';
 
 // JS fallback implementations (always available)
 const JS_IMPL = {
@@ -430,6 +431,7 @@ export interface WasmModule {
   concat_buffers(a: Float32Array, b: Float32Array): Float32Array;
   slice_buffer(buffer: Float32Array, start: number, end: number): Float32Array;
   mix_buffers(a: Float32Array, b: Float32Array): Float32Array;
+  time_stretch(input: Float32Array, channelCount: number, speed: number, sampleRate: number): Float32Array;
   encode_wav_pcm16(samples: Float32Array, numChannels: number, sampleRate: number): Uint8Array;
   encode_wav_float32(samples: Float32Array, numChannels: number, sampleRate: number): Uint8Array;
   decode_wav(data: Uint8Array): {
@@ -615,6 +617,26 @@ export const wasmProcessor = {
       return wasmModule.mix_buffers(a, b);
     }
     return JS_IMPL.mixBuffers(a, b);
+  },
+
+  timeStretch(channels: Float32Array[], speed: number, sampleRate: number): Float32Array[] {
+    if (channels.length === 0) return [];
+    if (Math.abs(speed - 1) < 0.000001) return channels.map((channel) => channel.slice());
+    if (!wasmModule || !_isAvailable) return timeStretchChannelsJs(channels, speed, sampleRate);
+
+    const frames = channels[0].length;
+    if (channels.some((channel) => channel.length !== frames)) {
+      throw new Error('Audio channels must have equal lengths');
+    }
+    const planar = new Float32Array(frames * channels.length);
+    for (let channel = 0; channel < channels.length; channel++) {
+      planar.set(channels[channel], channel * frames);
+    }
+    const result = wasmModule.time_stretch(planar, channels.length, speed, sampleRate);
+    const outputFrames = Math.floor(result.length / channels.length);
+    return channels.map((_, channel) =>
+      result.slice(channel * outputFrames, (channel + 1) * outputFrames),
+    );
   },
 
   encodeWavPcm16(samples: Float32Array, numChannels: number, sampleRate: number): Uint8Array {

@@ -3,6 +3,7 @@
 import { logger } from '@/lib/logger';
 import { wasmProcessor } from '@/wasm/processor';
 import { clamp, interleaveChannels } from '@/lib/audioUtils';
+import { getClipStretchRatio } from '@/lib/clipEditing';
 import { encodeMp3, getMp3SampleRate } from '@/engine/mp3Encoder';
 import type { ITrack, IClip, IEffect } from '@/types/project';
 
@@ -41,8 +42,10 @@ export class AudioEngine {
   private _workletNode: AudioWorkletNode | null = null;
   private _workletUrl: string | null = null;
   private _recordingSink: GainNode | null = null;
+  private recordingStopResolver: (() => void) | null = null;
 
   private bufferCache = new Map<string, AudioBufferCacheEntry>();
+  private stretchedBufferCache = new Map<string, { channelData: Float32Array[]; sampleRate: number }>();
   private maxCacheSize = 50;
 
   constructor() {
@@ -177,6 +180,50 @@ export class AudioEngine {
       sampleRate,
       lastUsed: Date.now(),
     });
+    for (const key of this.stretchedBufferCache.keys()) {
+      if (key.startsWith(`${bufferId}:`)) this.stretchedBufferCache.delete(key);
+    }
+  }
+
+  /** Process a clip without altering its original source buffer. */
+  processClipChannels(
+    clip: IClip,
+    channelData: Float32Array[],
+    sampleRate: number,
+  ): Float32Array[] {
+    const ratio = getClipStretchRatio(clip);
+    return Math.abs(ratio - 1) < 0.000001
+      ? channelData
+      : wasmProcessor.timeStretch(channelData, ratio, sampleRate);
+  }
+
+  private getClipPlaybackBuffer(clip: IClip, cachedEntry: AudioBufferCacheEntry): {
+    channelData: Float32Array[];
+    sampleRate: number;
+    sourceOffset: number;
+  } {
+    const ratio = getClipStretchRatio(clip);
+    if (Math.abs(ratio - 1) < 0.000001) {
+      return {
+        channelData: cachedEntry.channelData,
+        sampleRate: cachedEntry.sampleRate,
+        sourceOffset: clip.offset,
+      };
+    }
+    const key = `${clip.audioBufferId}:${ratio.toFixed(6)}:${cachedEntry.sampleRate}`;
+    let processed = this.stretchedBufferCache.get(key);
+    if (!processed) {
+      processed = {
+        channelData: wasmProcessor.timeStretch(cachedEntry.channelData, ratio, cachedEntry.sampleRate),
+        sampleRate: cachedEntry.sampleRate,
+      };
+      if (this.stretchedBufferCache.size >= 20) {
+        const oldest = this.stretchedBufferCache.keys().next().value as string | undefined;
+        if (oldest) this.stretchedBufferCache.delete(oldest);
+      }
+      this.stretchedBufferCache.set(key, processed);
+    }
+    return { ...processed, sourceOffset: clip.offset / ratio };
   }
 
   getCachedBuffer(bufferId: string): Float32Array[] | null {
@@ -190,10 +237,14 @@ export class AudioEngine {
 
   evictBuffer(bufferId: string): void {
     this.bufferCache.delete(bufferId);
+    for (const key of this.stretchedBufferCache.keys()) {
+      if (key.startsWith(`${bufferId}:`)) this.stretchedBufferCache.delete(key);
+    }
   }
 
   clearCache(): void {
     this.bufferCache.clear();
+    this.stretchedBufferCache.clear();
   }
 
   // Simple Web Audio playback using scheduled buffers
@@ -245,7 +296,8 @@ export class AudioEngine {
         if (!cachedEntry || cachedEntry.channelData.length === 0) continue;
         cachedEntry.lastUsed = Date.now();
 
-        const { channelData, sampleRate: bufferSampleRate } = cachedEntry;
+        const playback = this.getClipPlaybackBuffer(clip, cachedEntry);
+        const { channelData, sampleRate: bufferSampleRate, sourceOffset } = playback;
         const channelCount = Math.min(2, channelData.length);
         const frameLength = Math.min(...channelData.slice(0, channelCount).map((channel) => channel.length));
         if (!Number.isFinite(frameLength) || frameLength <= 0) continue;
@@ -270,7 +322,7 @@ export class AudioEngine {
           const when = now + (clipStart - startPosition);
           source.connect(clipGain);
           clipGain.connect(trackGain);
-          source.start(when, clip.offset, clip.duration);
+          source.start(when, sourceOffset, clip.duration);
 
           // Fade in
           if (clip.fadeIn > 0) {
@@ -294,7 +346,7 @@ export class AudioEngine {
           }
         } else if (clipEnd > startPosition) {
           // Clip already started, resume from middle
-          const offsetInClip = startPosition - clipStart + clip.offset;
+          const offsetInClip = startPosition - clipStart + sourceOffset;
           const remaining = clip.duration - (startPosition - clipStart);
           source.connect(clipGain);
           clipGain.connect(trackGain);
@@ -547,10 +599,13 @@ export class AudioEngine {
       throw e;
     }
 
-    const ctx = await this.ensureContext();
-    const source = ctx.createMediaStreamSource(this.mediaStream);
-    const isStereo = options?.stereo ?? false;
-    const recordingSink = ctx.createGain();
+    try {
+      const ctx = await this.ensureContext();
+      const source = ctx.createMediaStreamSource(this.mediaStream);
+      const isStereo = options?.stereo ?? false;
+      const deviceChannels = this.mediaStream.getAudioTracks()[0]?.getSettings().channelCount;
+      const inputChannels = Math.min(2, Math.max(1, deviceChannels ?? (isStereo ? 2 : 1)));
+      const recordingSink = ctx.createGain();
     recordingSink.gain.value = 0;
     recordingSink.connect(ctx.destination);
     this._recordingSink = recordingSink;
@@ -576,16 +631,23 @@ export class AudioEngine {
         workletNode = new AudioWorkletNode(ctx, 'recording-processor', {
           numberOfInputs: 1,
           numberOfOutputs: 1,
-          outputChannelCount: [isStereo ? 2 : 1],
+          outputChannelCount: [inputChannels],
         });
         workletNode.port.onmessage = (event) => {
-          if (event.data?.type === 'data') {
-            if (event.data.left) {
-              this._recordedChunksL!.push(event.data.left);
+          if (event.data?.type === 'recording') {
+            const interleaved = event.data.audioData as Float32Array;
+            const channels = Math.max(1, event.data.numChannels as number);
+            const frames = Math.floor(interleaved.length / channels);
+            const left = new Float32Array(frames);
+            const right = channels > 1 ? new Float32Array(frames) : null;
+            for (let i = 0; i < frames; i++) {
+              left[i] = interleaved[i * channels];
+              if (right) right[i] = interleaved[i * channels + 1];
             }
-            if (event.data.right) {
-              this._recordedChunksR!.push(event.data.right);
-            }
+            this._recordedChunksL?.push(left);
+            if (right) this._recordedChunksR?.push(right);
+          } else if (event.data?.type === 'stopped') {
+            this.recordingStopResolver?.();
           }
         };
         workletNode.port.postMessage({ type: 'init', stereo: isStereo });
@@ -603,13 +665,18 @@ export class AudioEngine {
     if (!workletLoaded) {
       this._recordingMode = 'scriptprocessor';
       const bufferSize = 4096;
-      const processor = ctx.createScriptProcessor(bufferSize, 1, 1);
+      const processor = ctx.createScriptProcessor(bufferSize, inputChannels, 1);
 
       processor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        const chunk = new Float32Array(inputData.length);
-        chunk.set(inputData);
-        this._recordedChunksL!.push(chunk);
+        const channels = Math.min(inputChannels, e.inputBuffer.numberOfChannels);
+        const left = new Float32Array(e.inputBuffer.length);
+        left.set(e.inputBuffer.getChannelData(0));
+        this._recordedChunksL?.push(left);
+        if (channels > 1) {
+          const right = new Float32Array(e.inputBuffer.length);
+          right.set(e.inputBuffer.getChannelData(1));
+          this._recordedChunksR?.push(right);
+        }
       };
 
       source.connect(processor);
@@ -631,10 +698,38 @@ export class AudioEngine {
     } catch {
       this.mediaRecorder = null;
     }
+    } catch (error) {
+      this._cleanupRecording();
+      this._recordingState = 'idle';
+      throw error;
+    }
   }
 
-  stopRecording(): Float32Array[] | null {
+  async stopRecording(): Promise<Float32Array[] | null> {
     if (this._recordingState !== 'recording') return null;
+
+    // Let the Worklet flush its final partial 4096-frame block before stopping
+    // the microphone stream and disconnecting the graph.
+    if (this._workletNode) {
+      const node = this._workletNode;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          this.recordingStopResolver = null;
+          resolve();
+        };
+        const timer = setTimeout(finish, 500);
+        this.recordingStopResolver = finish;
+        try {
+          node.port.postMessage({ type: 'stop' });
+        } catch {
+          finish();
+        }
+      });
+    }
 
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       this.mediaRecorder.stop();
@@ -690,8 +785,10 @@ export class AudioEngine {
   }
 
   private _cleanupRecording(): void {
+    this.recordingStopResolver = null;
     if (this._workletNode) {
       try {
+        this._workletNode.port.onmessage = null;
         this._workletNode.disconnect();
         this._workletNode.port.close();
       } catch {
@@ -700,6 +797,7 @@ export class AudioEngine {
       this._workletNode = null;
     }
     if (this._scriptProcessor) {
+      this._scriptProcessor.onaudioprocess = null;
       this._scriptProcessor.disconnect();
       this._scriptProcessor = null;
     }
@@ -743,11 +841,14 @@ export class AudioEngine {
       const stereoPanR = pan < 0 ? Math.cos((-pan * Math.PI) / 2) : 1;
 
       for (const clip of track.clips) {
-        const cached = this.getCachedBuffer(clip.audioBufferId);
-        if (!cached || cached.length === 0) continue;
+        const cachedEntry = this.bufferCache.get(clip.audioBufferId);
+        if (!cachedEntry || cachedEntry.channelData.length === 0) continue;
+        cachedEntry.lastUsed = Date.now();
+        const playback = this.getClipPlaybackBuffer(clip, cachedEntry);
+        const cached = playback.channelData;
         const numCh = cached.length;
         const startSample = Math.floor(clip.startTime * sampleRate);
-        const offsetSample = Math.floor(clip.offset * sampleRate);
+        const offsetSample = Math.floor(playback.sourceOffset * sampleRate);
         const durationSamples = Math.floor(clip.duration * sampleRate);
         const clipGainLin = trackGainLin * Math.pow(10, clip.gain / 20);
         const endSample = Math.min(startSample + durationSamples, totalSamples);
@@ -818,7 +919,7 @@ export class AudioEngine {
 
   destroy(): void {
     this.stopPlayback();
-    this.stopRecording();
+    void this.stopRecording();
     this.clearCache();
     if (this.audioContext) {
       this.audioContext.close().catch(() => {});
