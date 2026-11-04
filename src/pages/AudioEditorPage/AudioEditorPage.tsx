@@ -2505,6 +2505,15 @@ function ClipItem({
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
+  function handleTrimKeyDown(edge: 'left' | 'right', e: React.KeyboardEvent<HTMLButtonElement>) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const direction = e.key === 'ArrowLeft' ? -1 : 1;
+    const delta = boundedTrimDelta(edge, direction * (e.shiftKey ? 1 : 0.1));
+    if (Math.abs(delta) >= 0.001) onTrim(edge, delta);
+  }
+
   return (
     <div
       className="au-clip group absolute top-1 bottom-1 overflow-hidden rounded-[3px] border text-[#20252a]"
@@ -2542,12 +2551,14 @@ function ClipItem({
           key={edge}
           type="button"
           aria-label={edge === 'left' ? '修剪片段左边缘' : '修剪片段右边缘'}
-          title={edge === 'left' ? '拖拽修剪片段起点' : '拖拽修剪片段终点'}
+          title={`${edge === 'left' ? '拖拽修剪片段起点' : '拖拽修剪片段终点'}；方向键 0.1 秒，Shift+方向键 1 秒`}
           className={`absolute top-5 bottom-1 z-20 w-2.5 cursor-ew-resize opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100 ${
             isSelected || trimDrag?.edge === edge ? 'opacity-100' : ''
           } ${edge === 'left' ? 'left-0' : 'right-0'}`}
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => handleTrimKeyDown(edge, e)}
           onPointerDown={(e) => {
+            e.currentTarget.focus();
             e.preventDefault();
             e.stopPropagation();
             e.currentTarget.setPointerCapture(e.pointerId);
