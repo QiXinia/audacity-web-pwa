@@ -95,6 +95,7 @@ import { historyManager } from '@/services/historyService';
 import { parseAudioClipboard, serializeAudioClipboard, type AudioClipboardData } from '@/services/clipboardService';
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
+import { generateTone, type ToneWaveform } from '@/lib/toneGenerator';
 import {
   clipKeyId,
   deleteClipSelection,
@@ -153,6 +154,12 @@ export default function AudioEditorPage() {
   const [showMixer, setShowMixer] = useState(initialWorkspace.layout.showMixer);
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
+  const [toneDialogOpen, setToneDialogOpen] = useState(false);
+  const [toneWaveform, setToneWaveform] = useState<ToneWaveform>('sine');
+  const [toneFrequency, setToneFrequency] = useState('440');
+  const [toneAmplitude, setToneAmplitude] = useState('0.8');
+  const [toneDuration, setToneDuration] = useState('5');
+  const [isGeneratingTone, setIsGeneratingTone] = useState(false);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -649,6 +656,58 @@ export default function AudioEditorPage() {
     toast.info('已删除自定义 Workspace');
   }
 
+  async function handleGenerateTone() {
+    if (!project) return;
+    const trackId = selectedTrackId ?? project.tracks[0]?.id;
+    if (!trackId) {
+      toast.warning('请先添加一个音频轨道');
+      return;
+    }
+
+    const beforeProject = structuredClone(project);
+    setIsGeneratingTone(true);
+    try {
+      const frequency = Number(toneFrequency);
+      const amplitude = Number(toneAmplitude);
+      const duration = Number(toneDuration);
+      const channels = generateTone({
+        waveform: toneWaveform,
+        frequency,
+        amplitude,
+        duration,
+        sampleRate: project.sampleRate,
+      });
+      const clip = await projectService.addRecordingToTrack(
+        project.id,
+        trackId,
+        [channels],
+        project.sampleRate,
+        cursorPosition,
+        `音调 ${frequency} Hz`,
+      );
+      if (!clip) throw new Error('目标轨道不可用');
+
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('工程保存后无法重新加载');
+      setProject(updated);
+      setSelectedTrackId(trackId);
+      setSelectedClips([{ trackId, clipId: clip.id }]);
+      pushHistoryCmd({
+        id: generateId(),
+        label: '生成音调',
+        execute: () => updated,
+        undo: () => beforeProject,
+      });
+      setToneDialogOpen(false);
+      toast.success(`已在 ${formatTime(cursorPosition)} 生成 ${formatTime(duration)} 音调`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      toast.error(`生成音调失败：${message}`);
+    } finally {
+      setIsGeneratingTone(false);
+    }
+  }
+
   // Import audio
   function handleImportClick() {
     fileInputRef.current?.click();
@@ -658,7 +717,7 @@ export default function AudioEditorPage() {
     if (!project) return;
     const trackId = targetTrackId ?? selectedTrackId ?? project.tracks[0]?.id;
     if (!trackId) return;
-    const beforeProject = project;
+    const beforeProject = structuredClone(project);
 
     const importPos = cursorPosition;
 
@@ -1672,6 +1731,14 @@ export default function AudioEditorPage() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">生成</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={() => setToneDialogOpen(true)}>音调…</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             variant="ghost"
             size="sm"
@@ -2153,13 +2220,17 @@ export default function AudioEditorPage() {
                     <EmptyHeader>
                       <EmptyTitle>空工程</EmptyTitle>
                       <EmptyDescription>
-                        导入音频文件或开始录音来开始编辑
+                        导入音频、生成音调或开始录音来开始编辑
                       </EmptyDescription>
                     </EmptyHeader>
                     <div className="flex gap-2 pt-2">
                       <Button size="sm" onClick={handleImportClick}>
                         <Plus className="mr-1 size-3.5" />
                         导入音频
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={() => setToneDialogOpen(true)}>
+                        <AudioWaveform className="mr-1 size-3.5" />
+                        生成音调
                       </Button>
                       <Button size="sm" variant="secondary" onClick={handleRecord}>
                         <Mic className="mr-1 size-3.5" />
@@ -2350,6 +2421,89 @@ export default function AudioEditorPage() {
               <DialogFooter>
                 <Button type="button" variant="secondary" onClick={() => setWorkspaceDialogOpen(false)}>取消</Button>
                 <Button type="submit" disabled={!workspaceName.trim()}>保存 Workspace</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={toneDialogOpen} onOpenChange={setToneDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>生成音调</DialogTitle>
+              <DialogDescription>
+                按 Audacity Tone 的恒定频率与振幅生成真实单声道音频片段。
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleGenerateTone();
+              }}
+              className="space-y-4"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="tone-waveform">波形</Label>
+                <Select value={toneWaveform} onValueChange={(value) => setToneWaveform(value as ToneWaveform)}>
+                  <SelectTrigger id="tone-waveform" aria-label="音调波形">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sine">正弦波 (Sine)</SelectItem>
+                    <SelectItem value="square">方波 (Square)</SelectItem>
+                    <SelectItem value="sawtooth">锯齿波 (Sawtooth)</SelectItem>
+                    <SelectItem value="squareNoAlias">无混叠方波 (Square, no alias)</SelectItem>
+                    <SelectItem value="triangle">三角波 (Triangle)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="tone-frequency">频率 (Hz)</Label>
+                  <Input
+                    id="tone-frequency"
+                    type="number"
+                    min="1"
+                    max={project.sampleRate / 2}
+                    step="1"
+                    value={toneFrequency}
+                    onChange={(event) => setToneFrequency(event.target.value)}
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="tone-amplitude">振幅 (0–1)</Label>
+                  <Input
+                    id="tone-amplitude"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={toneAmplitude}
+                    onChange={(event) => setToneAmplitude(event.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="tone-duration">时长（秒）</Label>
+                <Input
+                  id="tone-duration"
+                  type="number"
+                  min="0.001"
+                  step="0.1"
+                  value={toneDuration}
+                  onChange={(event) => setToneDuration(event.target.value)}
+                  required
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                采样率 {project.sampleRate} Hz · 插入位置 {formatTime(cursorPosition)} · 频率不得超过 {project.sampleRate / 2} Hz
+              </p>
+              <DialogFooter>
+                <Button type="button" variant="secondary" onClick={() => setToneDialogOpen(false)}>取消</Button>
+                <Button type="submit" disabled={isGeneratingTone}>
+                  {isGeneratingTone ? '正在生成…' : '生成音调'}
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>

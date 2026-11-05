@@ -332,6 +332,7 @@ class ProjectService {
     sampleData: Float32Array[],
     sampleRate: number,
     startTime: number,
+    clipName?: string,
   ): Promise<IClip | null> {
     const project = this.currentProject?.id === projectId
       ? this.currentProject
@@ -370,7 +371,7 @@ class ProjectService {
       gain: 0,
       fadeIn: 0,
       fadeOut: 0,
-      name: `录音 ${new Date().toLocaleTimeString()}`,
+      name: clipName ?? `录音 ${new Date().toLocaleTimeString()}`,
     };
 
     track.clips.push(clip);

@@ -110,5 +110,8 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     mockReset: true,
+    // Bounded CI/container resources can otherwise leave fork workers unstarted.
+    fileParallelism: false,
+    maxWorkers: 1,
   },
 });
