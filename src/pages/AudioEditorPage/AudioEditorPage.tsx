@@ -101,6 +101,7 @@ import {
   getClipStretchRatio,
   moveClipSelection,
   resetClipStretch,
+  splitClipSelectionAtTime,
   stretchClipSelection,
   trimClipSelection,
   updateClipSelection,
@@ -218,9 +219,30 @@ export default function AudioEditorPage() {
     const handleKeyboard = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, textarea, [contenteditable="true"]')) return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'i') {
+      const key = event.key.toLowerCase();
+      const modified = event.ctrlKey || event.metaKey;
+      if (modified && key === 'i') {
         event.preventDefault();
         void splitClipsAtCursor();
+      } else if (modified && key === 'c' && selection) {
+        event.preventDefault();
+        void handleCopy();
+      } else if (modified && key === 'x' && selection) {
+        event.preventDefault();
+        void handleCut();
+      } else if (modified && key === 'v') {
+        event.preventDefault();
+        void handlePaste();
+      } else if (modified && key === 's') {
+        event.preventDefault();
+        void saveProject();
+      } else if (modified && key === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) void handleRedo();
+        else void handleUndo();
+      } else if (modified && key === 'y') {
+        event.preventDefault();
+        void handleRedo();
       } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedClips.length > 0) {
         event.preventDefault();
         void handleDeleteSelectedClips();
@@ -228,7 +250,7 @@ export default function AudioEditorPage() {
     };
     window.addEventListener('keydown', handleKeyboard);
     return () => window.removeEventListener('keydown', handleKeyboard);
-  }, [project, selectedClips, selectedTrackId, cursorPosition]);
+  }, [project, selectedClips, selectedTrackId, cursorPosition, selection]);
 
   async function checkMicPermission() {
     try {
@@ -564,66 +586,12 @@ export default function AudioEditorPage() {
       : project.tracks
         .filter((track) => track.id === selectedTrackId)
         .flatMap((track) => track.clips.map((clip) => ({ trackId: track.id, clipId: clip.id })));
-    const keySet = new Set(keys.map(clipKeyId));
-    let didSplit = false;
-    const updated: IProject = {
-      ...project,
-      tracks: await Promise.all(project.tracks.map(async (track) => ({
-        ...track,
-        clips: (await Promise.all(track.clips.map(async (clip): Promise<IClip[]> => {
-          if (
-            !keySet.has(clipKeyId({ trackId: track.id, clipId: clip.id }))
-            || cursorPosition <= clip.startTime + 0.05
-            || cursorPosition >= clip.startTime + clip.duration - 0.05
-          ) return [clip];
-          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
-          if (!effective) return [clip];
-          const leftDuration = cursorPosition - clip.startTime;
-          const rightDuration = clip.duration - leftDuration;
-          const sourceStart = Math.floor(effective.sourceOffset * project.sampleRate);
-          const splitSample = sourceStart + Math.floor(leftDuration * project.sampleRate);
-          const sourceEnd = sourceStart + Math.floor(clip.duration * project.sampleRate);
-          const leftChannels = effective.channels.map((channel) => channel.slice(sourceStart, splitSample));
-          const rightChannels = effective.channels.map((channel) => channel.slice(splitSample, sourceEnd));
-          if (leftChannels.some((channel) => channel.length === 0) || rightChannels.some((channel) => channel.length === 0)) {
-            return [clip];
-          }
-          const [leftBufferId, rightBufferId] = await Promise.all([
-            storeProjectBuffer(project.id, leftChannels, project.sampleRate),
-            storeProjectBuffer(project.id, rightChannels, project.sampleRate),
-          ]);
-          didSplit = true;
-          return [
-            {
-              ...clip,
-              id: generateId(),
-              audioBufferId: leftBufferId,
-              duration: leftDuration,
-              originalDuration: leftDuration,
-              offset: 0,
-              stretchRatio: 1,
-              fadeOut: 0,
-            },
-            {
-              ...clip,
-              id: generateId(),
-              audioBufferId: rightBufferId,
-              startTime: cursorPosition,
-              duration: rightDuration,
-              originalDuration: rightDuration,
-              offset: 0,
-              stretchRatio: 1,
-              fadeIn: 0,
-            },
-          ];
-        }))).flat().sort((a, b) => a.startTime - b.startTime),
-      }))),
-    };
-    if (!didSplit) {
+    const result = splitClipSelectionAtTime(project, keys, cursorPosition, generateId);
+    if (!result.didSplit) {
       toast.info('请将播放光标放在选中片段内部');
       return;
     }
-    await commitClipEdit(updated, '在光标处分割片段');
+    await commitClipEdit(result.project, '在光标处分割片段');
     setSelectedClips([]);
     toast.success('已分割片段');
   }
@@ -834,39 +802,56 @@ export default function AudioEditorPage() {
   }
 
   // Clipboard operations
+  async function storeSelectionInClipboard(proj: IProject, start: number, end: number): Promise<boolean> {
+    const clipboardData = await copySelection(proj, start, end);
+    if (!clipboardData || clipboardData.tracks.length === 0) return false;
+    await audioDb.clipboard.put({
+      id: 'current',
+      data: serializeAudioClipboard(clipboardData),
+      createdAt: Date.now(),
+    });
+    return true;
+  }
+
   async function handleCut() {
     if (!project || !selection) return;
-    // Save before state
-    const before = JSON.parse(JSON.stringify(project)) as IProject;
-    const result = await cutSelection(project, selection.start, selection.end);
-    if (result) {
-      setProject(result);
-      projectService.saveProject(result);
-      pushHistoryCmd({
-        id: generateId(),
-        label: '剪切',
-        execute: () => result,
-        undo: () => before,
-      });
-      updateHistoryState();
-      setSelection(null);
+    try {
+      if (!await storeSelectionInClipboard(project, selection.start, selection.end)) {
+        toast.info('选区内没有可剪切的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const result = await cutSelection(project, selection.start, selection.end);
+      if (result) {
+        setProject(result);
+        await projectService.saveProject(result);
+        pushHistoryCmd({
+          id: generateId(),
+          label: '剪切',
+          execute: () => result,
+          undo: () => before,
+        });
+        updateHistoryState();
+        setSelection(null);
+        toast.success('已剪切到剪贴板');
+      }
+    } catch (error) {
+      logger.error('剪切失败:', String(error));
+      toast.error('剪切失败');
     }
   }
 
   async function handleCopy() {
     if (!project || !selection) return;
-    const clipboardData = await copySelection(project, selection.start, selection.end);
-    if (clipboardData) {
-      // Store in IndexedDB clipboard
-      try {
-        
-        await audioDb.clipboard.put({
-          id: 'current',
-          data: serializeAudioClipboard(clipboardData),
-          createdAt: Date.now(),
-        });
+    try {
+      if (await storeSelectionInClipboard(project, selection.start, selection.end)) {
         toast.success('已复制到剪贴板');
-      } catch {}
+      } else {
+        toast.info('选区内没有可复制的音频');
+      }
+    } catch (error) {
+      logger.error('复制失败:', String(error));
+      toast.error('复制失败');
     }
   }
 
@@ -1613,7 +1598,7 @@ export default function AudioEditorPage() {
         onDrop={handleDrop}
       >
         {/* Audacity 4 application menu: every item maps to a real local action. */}
-        <nav aria-label="应用菜单" className="au-toolbar flex h-8 shrink-0 items-center gap-0.5 border-b px-2 text-xs">
+        <nav aria-label="应用菜单" className="au-toolbar flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto overflow-y-hidden border-b px-2 text-xs">
           <div className="mr-2 flex items-center gap-1.5 font-semibold">
             <AudioWaveform className="size-4 text-[#ff4d6d]" />
             <span>Audacity Web</span>
@@ -1700,7 +1685,7 @@ export default function AudioEditorPage() {
         </nav>
 
         {/* Top Toolbar - Audacity 4 风格紧凑工具栏 */}
-        <header className="au-toolbar flex h-12 shrink-0 items-center gap-2 border-b px-2">
+        <header className="au-toolbar flex h-12 shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden border-b px-2">
           {/* 左侧：项目 + 撤销重做 */}
           <div className="flex items-center gap-1">
             <Button variant="ghost" size="icon" onClick={() => navigate('/')} className="size-8" aria-label="返回工程列表" title="返回工程列表">
@@ -1881,7 +1866,7 @@ export default function AudioEditorPage() {
         </header>
 
         {/* Edit Toolbar */}
-        <div className="au-toolbar flex h-9 shrink-0 items-center gap-1 border-b px-2">
+        <div className="au-toolbar flex h-9 shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b px-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" className="text-xs">
@@ -2274,13 +2259,13 @@ export default function AudioEditorPage() {
               {selection ? '已选择音频区间' : '在时间轴上拖拽以选择音频'}
             </span>
           </div>
-          <div className="flex flex-wrap items-end gap-2 font-mono tabular-nums">
+          <div className="flex max-w-full flex-wrap items-end gap-2 font-mono tabular-nums">
             <label className="flex flex-col gap-0.5 text-[9px] uppercase tracking-wide text-[#aab0b6]">
               选区开始
               <input
                 aria-label="选区开始时间"
                 readOnly
-                className="au-time-field h-6 w-32 rounded-sm px-2 text-[11px]"
+                className="au-time-field h-6 w-28 rounded-sm px-2 text-[11px] sm:w-32"
                 value={formatAudacityTime(selection?.start ?? 0)}
               />
             </label>
@@ -2289,7 +2274,7 @@ export default function AudioEditorPage() {
               <input
                 aria-label="选区结束时间"
                 readOnly
-                className="au-time-field h-6 w-32 rounded-sm px-2 text-[11px]"
+                className="au-time-field h-6 w-28 rounded-sm px-2 text-[11px] sm:w-32"
                 value={formatAudacityTime(selection?.end ?? 0)}
               />
             </label>
@@ -2298,7 +2283,7 @@ export default function AudioEditorPage() {
               <input
                 aria-label="选区时长"
                 readOnly
-                className="au-time-field h-6 w-32 rounded-sm px-2 text-[11px]"
+                className="au-time-field h-6 w-28 rounded-sm px-2 text-[11px] sm:w-32"
                 value={formatAudacityTime(selection ? selection.end - selection.start : 0)}
               />
             </label>
@@ -2318,7 +2303,7 @@ export default function AudioEditorPage() {
         </div>
 
         {/* Technical status bar */}
-        <div className="flex h-6 shrink-0 items-center justify-between border-t border-[#434a50] bg-[#252b31] px-3 text-[10px] text-[#aab0b6]">
+        <div className="flex h-6 shrink-0 items-center justify-between gap-3 overflow-x-auto border-t border-[#434a50] bg-[#252b31] px-3 text-[10px] text-[#aab0b6]">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
               <AudioWaveform className="size-3" />
@@ -3011,7 +2996,7 @@ function ClipItem({
     >
       {/* Audacity 4 clip header */}
       <div
-        className="absolute inset-x-0 top-0 z-10 flex h-5 cursor-grab items-center gap-1 truncate px-1.5 text-[10px] font-medium active:cursor-grabbing"
+        className="absolute inset-x-0 top-0 z-10 flex h-5 cursor-grab touch-none select-none items-center gap-1 truncate px-1.5 text-[10px] font-medium active:cursor-grabbing"
         style={{ backgroundColor: trackColor }}
         title="拖动移动片段；成组选择时同步移动"
         onPointerDown={handleMoveStart}
@@ -3052,7 +3037,7 @@ function ClipItem({
           type="button"
           aria-label={`${mode === 'trim' ? '修剪' : '拉伸'}片段${edge === 'left' ? '左' : '右'}边缘`}
           title={`${mode === 'trim' ? '修剪' : '非破坏性时间拉伸'}${edge === 'left' ? '起点' : '终点'}；方向键 0.1 秒，Shift+方向键 1 秒`}
-          className={`absolute z-20 cursor-ew-resize opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100 ${
+          className={`absolute z-20 cursor-ew-resize touch-none select-none opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100 ${
             isSelected || (edgeDrag?.edge === edge && edgeDrag.mode === mode) ? 'opacity-100' : ''
           } ${edge === 'left' ? 'left-0' : 'right-0'} ${
             mode === 'trim' ? 'top-5 bottom-1 w-2.5' : 'top-6 h-4 w-4'

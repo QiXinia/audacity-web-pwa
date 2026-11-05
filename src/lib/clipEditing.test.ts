@@ -4,6 +4,7 @@ import {
   getClipStretchRatio,
   moveClipSelection,
   resetClipStretch,
+  splitClipSelectionAtTime,
   stretchClipSelection,
   trimClipSelection,
   updateClipSelection,
@@ -124,12 +125,79 @@ describe('clip selection editing', () => {
     expect(result.tracks[1].clips[0].stretchRatio).toBe(4);
   });
 
-  it('resets stretch and deletes only selected clips across tracks', () => {
+  it('splits a stretched clip while preserving source buffers, ratio, and offsets', () => {
+    const source = project();
+    source.tracks[0].clips[0] = {
+      ...source.tracks[0].clips[0],
+      startTime: 0.1,
+      duration: 5,
+      originalDuration: 4,
+      stretchRatio: 0.8,
+      fadeIn: 0.2,
+      fadeOut: 0.3,
+    };
+    let nextId = 0;
+    const { project: result, didSplit } = splitClipSelectionAtTime(source, [a], 2, () => `split-${++nextId}`);
+    expect(didSplit).toBe(true);
+    const [left, right, untouched] = result.tracks[0].clips;
+    expect(left.audioBufferId).toBe('buffer-a');
+    expect(right.audioBufferId).toBe('buffer-a');
+    expect(left.duration).toBeCloseTo(1.9);
+    expect(left.offset).toBe(0);
+    expect(left.stretchRatio).toBe(0.8);
+    expect(left.originalDuration).toBe(4);
+    expect(left.fadeOut).toBe(0);
+    expect(right.startTime).toBe(2);
+    expect(right.duration).toBeCloseTo(3.1);
+    expect(right.offset).toBeCloseTo(1.52);
+    expect(right.stretchRatio).toBe(0.8);
+    expect(right.originalDuration).toBe(4);
+    expect(right.fadeIn).toBe(0);
+    expect(right.fadeOut).toBe(0.3);
+    expect(untouched.id).toBe('b');
+    expect(splitClipSelectionAtTime(source, [a], 0.11, () => 'unused')).toEqual({ project: source, didSplit: false });
+  });
+
+  it('snaps to project samples and splits every intersected clip in a cross-track selection', () => {
+    const source = project();
+    source.sampleRate = 4;
+    let nextId = 0;
+    const { project: result, didSplit } = splitClipSelectionAtTime(
+      source,
+      [a, c],
+      2.26,
+      () => `part-${++nextId}`,
+    );
+    expect(didSplit).toBe(true);
+    expect(result.tracks[0].clips.map((item) => item.id)).toEqual(['part-1', 'part-2', 'b']);
+    expect(result.tracks[1].clips.map((item) => item.id)).toEqual(['part-3', 'part-4']);
+    const [leftA, rightA, untouched] = result.tracks[0].clips;
+    expect(leftA.duration).toBe(1.25);
+    expect(rightA.startTime).toBe(2.25);
+    expect(rightA.duration).toBe(2.75);
+    expect(rightA.offset).toBe(1.25);
+    expect(leftA.audioBufferId).toBe('buffer-a');
+    expect(rightA.audioBufferId).toBe('buffer-a');
+    const [leftC, rightC] = result.tracks[1].clips;
+    expect(leftC.duration).toBe(0.25);
+    expect(rightC.startTime).toBe(2.25);
+    expect(rightC.duration).toBe(1.75);
+    expect(rightC.offset).toBe(0.25);
+    expect(leftC.audioBufferId).toBe('buffer-c');
+    expect(rightC.audioBufferId).toBe('buffer-c');
+    expect(untouched).toBe(source.tracks[0].clips[1]);
+    expect(source.tracks[0].clips.map((item) => item.id)).toEqual(['a', 'b']);
+    expect(source.tracks[1].clips.map((item) => item.id)).toEqual(['c']);
+  });
+
+  it('resets stretch while preserving the clip start and deletes only selected clips across tracks', () => {
     const source = project();
     source.tracks[0].clips[0].stretchRatio = 2;
     source.tracks[0].clips[0].duration = 2;
     const reset = resetClipStretch(source, [a]);
+    expect(reset.tracks[0].clips[0].startTime).toBe(1);
     expect(reset.tracks[0].clips[0].duration).toBe(4);
+    expect(reset.tracks[0].clips[0].startTime + reset.tracks[0].clips[0].duration).toBe(5);
     const result = deleteClipSelection(reset, [a, c]);
     expect(result.tracks[0].clips.map((item) => item.id)).toEqual(['b']);
     expect(result.tracks[1].clips).toEqual([]);

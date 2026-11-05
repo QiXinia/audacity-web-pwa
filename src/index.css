@@ -34,6 +34,18 @@
   border-color: var(--au-border);
 }
 
+.audacity-editor .au-toolbar > * {
+  flex-shrink: 0;
+}
+
+.audacity-editor .au-toolbar::-webkit-scrollbar {
+  height: 4px;
+}
+
+.audacity-editor .au-toolbar::-webkit-scrollbar-thumb {
+  background: var(--au-border);
+}
+
 .audacity-editor .au-panel {
   background: var(--au-panel);
   border-color: var(--au-border);

@@ -147,6 +147,55 @@ export function stretchClipSelection(
   };
 }
 
+export function splitClipSelectionAtTime(
+  project: IProject,
+  keys: ClipKey[],
+  time: number,
+  createId: () => string,
+): { project: IProject; didSplit: boolean } {
+  if (!Number.isFinite(time)) return { project, didSplit: false };
+  // Match Audacity SplitAt: put the play-region boundary on a project sample.
+  const splitTime = Number.isFinite(project.sampleRate) && project.sampleRate > 0
+    ? Math.round(time * project.sampleRate) / project.sampleRate
+    : time;
+  if (!Number.isFinite(splitTime)) return { project, didSplit: false };
+  const selected = selectedClipSet(keys);
+  let didSplit = false;
+  const updated = {
+    ...project,
+    tracks: project.tracks.map((track) => ({
+      ...track,
+      clips: track.clips.flatMap((clip): IClip[] => {
+        if (
+          !selected.has(clipKeyId({ trackId: track.id, clipId: clip.id }))
+          || splitTime <= clip.startTime + MIN_CLIP_DURATION
+          || splitTime >= clip.startTime + clip.duration - MIN_CLIP_DURATION
+        ) return [clip];
+        const leftDuration = splitTime - clip.startTime;
+        const rightDuration = clip.duration - leftDuration;
+        didSplit = true;
+        return [
+          {
+            ...clip,
+            id: createId(),
+            duration: leftDuration,
+            fadeOut: 0,
+          },
+          {
+            ...clip,
+            id: createId(),
+            startTime: splitTime,
+            duration: rightDuration,
+            offset: clip.offset + leftDuration * getClipStretchRatio(clip),
+            fadeIn: 0,
+          },
+        ];
+      }).sort((a, b) => a.startTime - b.startTime),
+    })),
+  };
+  return { project: didSplit ? updated : project, didSplit };
+}
+
 export function resetClipStretch(project: IProject, keys: ClipKey[]): IProject {
   const selected = selectedClipSet(keys);
   return {
@@ -156,10 +205,8 @@ export function resetClipStretch(project: IProject, keys: ClipKey[]): IProject {
       clips: track.clips.map((clip) => {
         if (!selected.has(clipKeyId({ trackId: track.id, clipId: clip.id }))) return clip;
         const sourceAvailable = Math.max(MIN_CLIP_DURATION, clip.originalDuration - clip.offset);
-        const end = clip.startTime + clip.duration;
         return {
           ...clip,
-          startTime: Math.max(0, end - sourceAvailable),
           duration: sourceAvailable,
           stretchRatio: 1,
         };

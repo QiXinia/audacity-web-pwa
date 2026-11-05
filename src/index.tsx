@@ -5,6 +5,7 @@ import { ErrorBoundary } from "react-error-boundary";
 import { registerSW } from "virtual:pwa-register";
 import { toast } from "sonner";
 import App from "./app";
+import { Toaster } from "@/components/ui/sonner";
 import { logger } from "@/lib/logger";
 import "./index.css";
 
@@ -31,6 +32,7 @@ createRoot(document.getElementById("root")!).render(
         )}
       >
         <App />
+        <Toaster />
       </ErrorBoundary>
     </BrowserRouter>
   </StrictMode>,
