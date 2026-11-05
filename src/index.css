@@ -4,6 +4,18 @@
 @import "./tailwind-theme.css";
 @import "./typography.css";
 
+@layer base {
+  html {
+    background: var(--background);
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+  }
+}
+
 /* Audacity 4 editor palette, measured from the official interactive UI. */
 .audacity-editor {
   --au-bg: #252b31;
