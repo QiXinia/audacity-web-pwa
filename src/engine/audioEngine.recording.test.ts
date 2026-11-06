@@ -225,6 +225,26 @@ describe('AudioEngine recording boundaries', () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
+  it('cleans up a partially connected ScriptProcessor when startup fails', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context, source, processor } = makeContext({ worklet: false });
+    processor.connect.mockImplementation(() => { throw new Error('processor output connection failed'); });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    await expect(engine.startRecording()).rejects.toThrow('processor output connection failed');
+
+    expect(processor.onaudioprocess).toBeNull();
+    expect(processor.disconnect).toHaveBeenCalledOnce();
+    expect(source.disconnect).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(engine.recordingState).toBe('idle');
+  });
+
   it('times out safely when a worklet never acknowledges stop', async () => {
     vi.useFakeTimers();
     const engine = new AudioEngine();

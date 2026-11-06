@@ -602,6 +602,8 @@ export class AudioEngine {
     try {
       const ctx = await this.ensureContext();
       const source = ctx.createMediaStreamSource(this.mediaStream);
+      // Register partial graph nodes immediately so startup failures cannot leak them.
+      this._recordSource = source;
       const isStereo = options?.stereo ?? false;
       const deviceChannels = this.mediaStream.getAudioTracks()[0]?.getSettings().channelCount;
       const inputChannels = Math.min(2, Math.max(1, deviceChannels ?? (isStereo ? 2 : 1)));
@@ -676,6 +678,7 @@ export class AudioEngine {
       this._recordingMode = 'scriptprocessor';
       const bufferSize = 4096;
       const processor = ctx.createScriptProcessor(bufferSize, inputChannels, 1);
+      this._scriptProcessor = processor;
 
       processor.onaudioprocess = (e) => {
         const channels = Math.min(inputChannels, e.inputBuffer.numberOfChannels);
@@ -691,11 +694,9 @@ export class AudioEngine {
 
       source.connect(processor);
       processor.connect(recordingSink);
-      this._scriptProcessor = processor;
       logger.info('录音模式: ScriptProcessor (降级)');
     }
 
-    this._recordSource = source;
     this._workletNode = workletNode;
 
     // MediaRecorder 作为备份（用于显示编码格式等）
