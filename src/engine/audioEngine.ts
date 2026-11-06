@@ -657,7 +657,17 @@ export class AudioEngine {
         logger.info('录音模式: AudioWorklet');
       } catch (e) {
         logger.warn('AudioWorklet 加载失败，降级到 ScriptProcessor:', String(e));
-        workletNode = null;
+        if (workletNode) {
+          // A partially connected worklet must not keep recording alongside the
+          // ScriptProcessor fallback or deliver stale chunks after cleanup.
+          workletNode.port.onmessage = null;
+          try { source.disconnect(workletNode); } catch { /* already disconnected */ }
+          try { workletNode.disconnect(); } catch { /* already disconnected */ }
+          try { workletNode.port.close(); } catch { /* already closed */ }
+          workletNode = null;
+        }
+        this._recordedChunksL = [];
+        this._recordedChunksR = [];
       }
     }
 

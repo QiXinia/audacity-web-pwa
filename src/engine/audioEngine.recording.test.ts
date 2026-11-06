@@ -175,6 +175,56 @@ describe('AudioEngine recording boundaries', () => {
     expect(processor.onaudioprocess).toBeNull();
   });
 
+  it('disconnects a partially initialized worklet before ScriptProcessor fallback', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context, source, processor } = makeContext();
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const nodes: MockWorkletNode[] = [];
+    class MockWorkletNode {
+      port = {
+        onmessage: null as ((event: { data: Record<string, unknown> }) => void) | null,
+        postMessage: vi.fn(),
+        close: vi.fn(),
+      };
+      connect = vi.fn(() => { throw new Error('worklet output connection failed'); });
+      disconnect = vi.fn();
+      constructor() {
+        nodes.push(this);
+      }
+    }
+    vi.stubGlobal('AudioWorkletNode', MockWorkletNode);
+
+    await engine.startRecording();
+
+    const node = nodes[0]!;
+    expect(engine.getRecordingMode()).toBe('scriptprocessor');
+    expect(node.port.onmessage).toBeNull();
+    expect(node.disconnect).toHaveBeenCalledOnce();
+    expect(node.port.close).toHaveBeenCalledOnce();
+    expect(source.disconnect).toHaveBeenCalledWith(node);
+
+    processor.onaudioprocess?.({
+      inputBuffer: {
+        numberOfChannels: 1,
+        length: 2,
+        getChannelData: () => new Float32Array([0.1, 0.2]),
+      },
+    });
+    const result = await engine.stopRecording();
+
+    expect(Array.from(result?.[0] ?? [])).toEqual([
+      0.10000000149011612,
+      0.20000000298023224,
+    ]);
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it('times out safely when a worklet never acknowledges stop', async () => {
     vi.useFakeTimers();
     const engine = new AudioEngine();
