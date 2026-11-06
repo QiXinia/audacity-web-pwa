@@ -1,4 +1,5 @@
 import { clamp } from '@/lib/audioUtils';
+import { barDuration, quarterNoteDuration, type TimeSignature } from '@/lib/musicalTiming';
 import {
   boundClipStretchSelectionDelta,
   boundClipTrimDelta,
@@ -19,6 +20,7 @@ export interface SnapSettings {
   toleranceSeconds: number;
   sampleRate: number;
   tempo: number;
+  timeSignature: TimeSignature;
 }
 
 function finiteTime(value: number): boolean {
@@ -55,7 +57,9 @@ function gridStep(settings: SnapSettings): number {
     case 'seconds':
       return 1;
     case 'beats':
-      return Number.isFinite(settings.tempo) && settings.tempo > 0 ? 60 / settings.tempo : 0;
+      return quarterNoteDuration(settings.tempo);
+    case 'bars':
+      return barDuration(settings.tempo, settings.timeSignature);
     default:
       return 0;
   }

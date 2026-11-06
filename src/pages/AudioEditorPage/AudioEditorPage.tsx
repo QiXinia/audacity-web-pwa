@@ -138,6 +138,8 @@ import {
 } from '@/services/workspaceService';
 import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType, SnapMode } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
+import PlaybackTimingControls from './sections/PlaybackTimingControls';
+import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
   decayDbfs,
@@ -622,6 +624,16 @@ export default function AudioEditorPage() {
     });
   }
 
+  async function handleTempoChange(value: number) {
+    if (!project || playbackState !== 'stopped' || recordingState === 'recording') return;
+    await commitClipEdit(updateProjectTempo(project, value), '调整 BPM');
+  }
+
+  async function handleTimeSignatureChange(numerator: number, denominator: number) {
+    if (!project) return;
+    await commitClipEdit(updateProjectTimeSignature(project, numerator, denominator), '调整拍号');
+  }
+
   function createSnapSettings(points: readonly number[], bypassSnap: boolean): SnapSettings {
     return {
       enabled: snapEnabled && !bypassSnap,
@@ -630,6 +642,7 @@ export default function AudioEditorPage() {
       toleranceSeconds: DEFAULT_SNAP_TOLERANCE_PIXELS / Math.max(1, horizontalZoom),
       sampleRate: project?.sampleRate ?? 48000,
       tempo: project?.tempo ?? 120,
+      timeSignature: project?.timeSignature ?? { numerator: 4, denominator: 4 },
     };
   }
 
@@ -2002,6 +2015,14 @@ export default function AudioEditorPage() {
               <span className="text-2xl font-bold tracking-tight">{formatTime(cursorPosition)}</span>
               <span className="text-sm text-muted-foreground">/ {formatTime(projectDuration)}</span>
             </div>
+            <Separator orientation="vertical" className="h-7" />
+            <PlaybackTimingControls
+              tempo={project.tempo}
+              timeSignature={project.timeSignature}
+              bpmDisabled={playbackState !== 'stopped' || recordingState === 'recording'}
+              onTempoChange={handleTempoChange}
+              onTimeSignatureChange={handleTimeSignatureChange}
+            />
           </div>
 
           {/* 右侧：视图 + 保存 + 导出 */}
@@ -2540,7 +2561,8 @@ export default function AudioEditorPage() {
                 <SelectItem value="samples">采样点</SelectItem>
                 <SelectItem value="milliseconds">毫秒</SelectItem>
                 <SelectItem value="seconds">秒</SelectItem>
-                <SelectItem value="beats">节拍</SelectItem>
+                <SelectItem value="beats">四分音符</SelectItem>
+                <SelectItem value="bars">小节</SelectItem>
               </SelectContent>
             </Select>
           </div>

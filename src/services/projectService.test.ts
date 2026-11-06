@@ -73,4 +73,18 @@ describe('Project loop persistence', () => {
     expect(restored.loopRegion).toBeNull();
     expect(restored.loopEnabled).toBe(false);
   });
+
+  it('round-trips BPM and time signature and normalizes invalid legacy timing', () => {
+    const project = { ...makeProject(), tempo: 90.5, timeSignature: { numerator: 6, denominator: 8 } };
+    const record = converter.projectToRecord(project);
+    const restored = converter.recordToProject(record);
+    expect(restored.tempo).toBe(90.5);
+    expect(restored.timeSignature).toEqual({ numerator: 6, denominator: 8 });
+
+    record.tempo = 0;
+    record.timeSignature = { numerator: 4, denominator: 3 };
+    const legacy = converter.recordToProject(record);
+    expect(legacy.tempo).toBe(120);
+    expect(legacy.timeSignature).toEqual({ numerator: 4, denominator: 4 });
+  });
 });

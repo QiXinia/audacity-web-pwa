@@ -65,6 +65,7 @@ function settings(source: IProject, overrides: Partial<SnapSettings> = {}): Snap
     toleranceSeconds: 0.1,
     sampleRate: source.sampleRate,
     tempo: source.tempo,
+    timeSignature: source.timeSignature,
     ...overrides,
   };
 }
@@ -92,9 +93,26 @@ describe('timeline snapping', () => {
     ['milliseconds', 1.23456, 1.235],
     ['seconds', 1.5, 2],
     ['beats', 1.26, 1.5],
+    ['bars', 0.9, 0],
+    ['bars', 1, 2],
+    ['bars', 1.1, 2],
   ] as const)('snaps to the %s grid', (mode, time, expected) => {
     const source = project();
     expect(snapTimelineTime(time, settings(source, { mode }))).toBeCloseTo(expected, 12);
+  });
+
+  it('uses the project time signature for bar snapping and fails closed for invalid timing', () => {
+    const source = project();
+    expect(snapTimelineTime(1.9, settings(source, {
+      mode: 'bars',
+      tempo: 90,
+      timeSignature: { numerator: 6, denominator: 8 },
+    }))).toBeCloseTo(2, 12);
+    expect(snapTimelineTime(1.234, settings(source, { mode: 'beats', tempo: 0 }))).toBe(1.234);
+    expect(snapTimelineTime(1.234, settings(source, {
+      mode: 'bars',
+      timeSignature: { numerator: 4, denominator: 3 },
+    }))).toBe(1.234);
   });
 
   it('leaves time unchanged for an invalid grid or when snapping is disabled', () => {

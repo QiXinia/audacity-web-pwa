@@ -11,6 +11,7 @@ import {
 } from '@/db/audioDb';
 import { generateId, getTrackColor } from '@/lib/audioUtils';
 import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect } from '@/types/project';
+import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
 
@@ -565,8 +566,9 @@ class ProjectService {
       id: record.id,
       name: record.name,
       sampleRate: record.sampleRate,
-      timeSignature: record.timeSignature,
-      tempo: record.tempo,
+      timeSignature: validateTimeSignature(record.timeSignature?.numerator, record.timeSignature?.denominator)
+        ?? { numerator: 4, denominator: 4 },
+      tempo: validateTempo(record.tempo) ?? 120,
       tracks: deserializeTracks(record.tracksData),
       cursorPosition: 0,
       selection: deserializeSelection(record.selectionData),

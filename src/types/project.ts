@@ -4,7 +4,7 @@ export type ViewMode = 'waveform' | 'spectrum' | 'both';
 export type ProjectStatus = 'active' | 'deleted';
 export type EffectType = 'eq' | 'compressor' | 'reverb' | 'delay' | 'noiseGate' | 'gain' | 'highPass' | 'lowPass';
 export type TrackType = 'audio';
-export type SnapMode = 'clips' | 'samples' | 'milliseconds' | 'seconds' | 'beats';
+export type SnapMode = 'clips' | 'samples' | 'milliseconds' | 'seconds' | 'beats' | 'bars';
 
 export interface IProjectSummary {
   id: string;
