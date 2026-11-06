@@ -570,6 +570,8 @@ class ProjectService {
       tracks: deserializeTracks(record.tracksData),
       cursorPosition: 0,
       selection: deserializeSelection(record.selectionData),
+      loopRegion: deserializeSelection(record.loopRegionData ?? null),
+      loopEnabled: record.loopEnabled ?? false,
       viewState: record.viewStateData ? JSON.parse(record.viewStateData) : {
         horizontalZoom: 50,
         verticalZoom: 1,
@@ -606,6 +608,8 @@ class ProjectService {
       timeSignature: project.timeSignature,
       cursorPosition: project.cursorPosition,
       selectionData: serializeSelection(project.selection),
+      loopRegionData: serializeSelection(project.loopRegion ?? null),
+      loopEnabled: project.loopEnabled ?? false,
       thumbnail: undefined,
       deletedAt: undefined,
     };
