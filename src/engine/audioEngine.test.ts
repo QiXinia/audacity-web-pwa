@@ -33,6 +33,93 @@ function makeTrack(pan = 0, overrides: Partial<ITrack> = {}): ITrack {
   };
 }
 
+describe('loop playback scheduling', () => {
+  function makePlaybackContext(currentTime = 10) {
+    const sources: Array<Record<string, any>> = [];
+    const buffers: Array<{ data: Float32Array[]; duration: number }> = [];
+    const context = {
+      currentTime,
+      state: 'running',
+      sampleRate: 48000,
+      destination: {},
+      close: vi.fn(() => Promise.resolve()),
+      createGain: vi.fn(() => ({
+        gain: { value: 0, setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+        connect: vi.fn(),
+      })),
+      createStereoPanner: vi.fn(() => ({ pan: { value: 0 }, connect: vi.fn() })),
+      createBuffer: vi.fn((channelCount: number, frameLength: number, sampleRate: number) => {
+        const data = Array.from({ length: channelCount }, () => new Float32Array(frameLength));
+        const buffer = { data, duration: frameLength / sampleRate };
+        buffers.push(buffer);
+        return { getChannelData: (index: number) => data[index] };
+      }),
+      createBufferSource: vi.fn(() => {
+        const source: Record<string, any> = { connect: vi.fn(), start: vi.fn() };
+        sources.push(source);
+        return source;
+      }),
+    } as unknown as AudioContext;
+    return { context, sources, buffers };
+  }
+
+  it('uses one region period for every clip and wraps the engine playhead', async () => {
+    const engine = new AudioEngine();
+    engine.cacheBuffer('loop-pcm', [new Float32Array([1, 2])], 2);
+    const { context, sources, buffers } = makePlaybackContext();
+    const masterGain = { connect: vi.fn() };
+    vi.spyOn(engine, 'ensureContext').mockImplementation(async () => {
+      (engine as any).audioContext = context;
+      (engine as any).masterGain = masterGain;
+      return context;
+    });
+    let frame: FrameRequestCallback | undefined;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frame = callback;
+      return 1;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const cursor = vi.fn();
+    engine.setCursorChangeCallback(cursor);
+
+    try {
+      await engine.play([
+        makeTrack(0, {
+          clips: [
+            makeClip({ id: 'first', audioBufferId: 'loop-pcm', startTime: 1, duration: 1 }),
+            makeClip({ id: 'second', audioBufferId: 'loop-pcm', startTime: 2, duration: 1 }),
+          ],
+        }),
+      ], 0, false, { loop: { start: 1, end: 3 } });
+
+      expect(sources).toHaveLength(2);
+      expect(sources.map((source) => source.loop)).toEqual([true, true]);
+      expect(sources.map((source) => source.loopEnd)).toEqual([2, 2]);
+      expect(sources.map((source) => source.start.mock.calls[0])).toEqual([[10, 0], [10, 0]]);
+      expect(Array.from(buffers[0].data[0])).toEqual([1, 2, 0, 0]);
+      expect(Array.from(buffers[1].data[0])).toEqual([0, 0, 1, 2]);
+
+      (context as any).currentTime = 14;
+      frame?.(14);
+      expect(engine.cursorPosition).toBe(1);
+      expect(cursor).toHaveBeenLastCalledWith(1);
+    } finally {
+      engine.stopPlayback();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('rejects an invalid loop before opening an AudioContext', async () => {
+    const engine = new AudioEngine();
+    const ensure = vi.spyOn(engine, 'ensureContext');
+    await expect(engine.play([], 0, false, { loop: { start: 2, end: 2 } }))
+      .rejects.toThrow('循环区域');
+    expect(ensure).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+});
+
 describe('AudioEngine stereo mixdown', () => {
   it('preserves stereo channel levels at centre pan and applies gain to both channels', async () => {
     const engine = new AudioEngine();

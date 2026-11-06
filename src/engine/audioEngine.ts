@@ -4,6 +4,13 @@ import { logger } from '@/lib/logger';
 import { wasmProcessor } from '@/wasm/processor';
 import { clamp, interleaveChannels } from '@/lib/audioUtils';
 import { getClipStretchRatio } from '@/lib/clipEditing';
+import {
+  buildClipLoopChannels,
+  getLoopPlaybackStart,
+  normalizeLoopRegion,
+  wrapLoopCursor,
+  type LoopRegion,
+} from '@/lib/loopPlayback';
 import { encodeMp3, getMp3SampleRate } from '@/engine/mp3Encoder';
 import {
   readAnalyserPeakDbfs,
@@ -37,6 +44,7 @@ export class AudioEngine {
   private _recordingState: RecordingState = 'idle';
   private startTime = 0;
   private pausePosition = 0;
+  private playbackLoop: LoopRegion | null = null;
   private _cursorPosition = 0;
   private sampleRate = 44100;
   private animationFrameId: number | null = null;
@@ -307,19 +315,29 @@ export class AudioEngine {
   }
 
   // Simple Web Audio playback using scheduled buffers
-  async play(tracks: ITrack[], startPosition: number, isSoloActive: boolean): Promise<void> {
+  async play(
+    tracks: ITrack[],
+    startPosition: number,
+    isSoloActive: boolean,
+    options?: { loop?: LoopRegion | null },
+  ): Promise<void> {
+    const loop = options?.loop === undefined ? null : normalizeLoopRegion(options.loop);
+    if (options?.loop && !loop) throw new Error('循环区域必须是有限的正时长区间');
+    const playbackStart = loop ? getLoopPlaybackStart(loop, startPosition) : startPosition;
+
     // Stop and dispose the previous context before creating a fresh one.
     // Calling stopPlayback after ensureContext would close the context we are about to use.
     this.stopPlayback();
+    this.playbackLoop = loop;
     const ctx = await this.ensureContext();
 
     this._playbackState = 'playing';
-    this._cursorPosition = startPosition;
+    this._cursorPosition = playbackStart;
     this.onStateChange?.(this._playbackState);
 
     // For each track, schedule buffer playback
     const now = ctx.currentTime;
-    this.startTime = now - startPosition;
+    this.startTime = now - playbackStart;
 
     for (const track of tracks) {
       if (track.muted) continue;
@@ -358,12 +376,26 @@ export class AudioEngine {
         const playback = this.getClipPlaybackBuffer(clip, cachedEntry);
         const { channelData, sampleRate: bufferSampleRate, sourceOffset } = playback;
         const channelCount = Math.min(2, channelData.length);
-        const frameLength = Math.min(...channelData.slice(0, channelCount).map((channel) => channel.length));
+        const loopChannels = loop ? buildClipLoopChannels({
+          channelData,
+          sampleRate: bufferSampleRate,
+          sourceOffset,
+          clipStart: clip.startTime,
+          clipDuration: clip.duration,
+          fadeIn: clip.fadeIn,
+          fadeOut: clip.fadeOut,
+        }, loop) : null;
+        if (loop && !loopChannels) continue;
+
+        const scheduledChannels = loopChannels ?? channelData;
+        const frameLength = loopChannels?.[0]?.length ?? Math.min(
+          ...channelData.slice(0, channelCount).map((channel) => channel.length),
+        );
         if (!Number.isFinite(frameLength) || frameLength <= 0) continue;
 
         const buffer = ctx.createBuffer(channelCount, frameLength, bufferSampleRate);
         for (let channelIndex = 0; channelIndex < channelCount; channelIndex++) {
-          buffer.getChannelData(channelIndex).set(channelData[channelIndex].subarray(0, frameLength));
+          buffer.getChannelData(channelIndex).set(scheduledChannels[channelIndex].subarray(0, frameLength));
         }
 
         const source = ctx.createBufferSource();
@@ -371,16 +403,26 @@ export class AudioEngine {
 
         const clipGain = ctx.createGain();
         clipGain.gain.value = Math.pow(10, clip.gain / 20);
+        source.connect(clipGain);
+        clipGain.connect(trackGain);
+
+        if (loop) {
+          // Every clip occupies a full region-sized buffer, so all clips repeat
+          // on the same period even when their audible segments have gaps.
+          source.loop = true;
+          source.loopStart = 0;
+          source.loopEnd = loop.end - loop.start;
+          source.start(now, playbackStart - loop.start);
+          continue;
+        }
 
         // Apply fade in/out via gain automation
         const clipStart = clip.startTime;
         const clipEnd = clip.startTime + clip.duration;
 
-        if (clipStart >= startPosition) {
+        if (clipStart >= playbackStart) {
           // Clip starts after current position
-          const when = now + (clipStart - startPosition);
-          source.connect(clipGain);
-          clipGain.connect(trackGain);
+          const when = now + (clipStart - playbackStart);
           source.start(when, sourceOffset, clip.duration);
 
           // Fade in
@@ -403,17 +445,15 @@ export class AudioEngine {
               clipGain.gain.linearRampToValueAtTime(0, when + clip.duration);
             }
           }
-        } else if (clipEnd > startPosition) {
+        } else if (clipEnd > playbackStart) {
           // Clip already started, resume from middle
-          const offsetInClip = startPosition - clipStart + sourceOffset;
-          const remaining = clip.duration - (startPosition - clipStart);
-          source.connect(clipGain);
-          clipGain.connect(trackGain);
+          const offsetInClip = playbackStart - clipStart + sourceOffset;
+          const remaining = clip.duration - (playbackStart - clipStart);
           source.start(now, offsetInClip, remaining);
 
           // Fade out
           if (clip.fadeOut > 0) {
-            const timeToEnd = clipEnd - startPosition;
+            const timeToEnd = clipEnd - playbackStart;
             if (clip.fadeOut < timeToEnd) {
               const fadeStart = timeToEnd - clip.fadeOut;
               clipGain.gain.setValueAtTime(
@@ -568,6 +608,10 @@ export class AudioEngine {
 
     const ctx = this.audioContext;
     if (ctx) {
+      if (this.playbackLoop) {
+        const wrapped = wrapLoopCursor(this.startTime, ctx.currentTime, this.playbackLoop);
+        this.startTime = wrapped.startTime;
+      }
       this.pausePosition = ctx.currentTime - this.startTime;
       this._cursorPosition = this.pausePosition;
       // Suspend context to pause all scheduled sources
@@ -595,6 +639,7 @@ export class AudioEngine {
 
   stopPlayback(): void {
     const ctx = this.audioContext;
+    this.playbackLoop = null;
     this.disposeStereoMeter(this.playbackMeter);
     this.playbackMeter = null;
     if (ctx) {
@@ -625,7 +670,12 @@ export class AudioEngine {
     const tick = () => {
       const ctx = this.audioContext;
       if (ctx && this._playbackState === 'playing') {
-        const pos = ctx.currentTime - this.startTime;
+        let pos = ctx.currentTime - this.startTime;
+        if (this.playbackLoop) {
+          const wrapped = wrapLoopCursor(this.startTime, ctx.currentTime, this.playbackLoop);
+          this.startTime = wrapped.startTime;
+          pos = wrapped.position;
+        }
         this._cursorPosition = pos;
         this.onCursorChange?.(pos);
       }

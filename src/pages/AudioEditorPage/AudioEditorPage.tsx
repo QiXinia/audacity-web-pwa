@@ -38,6 +38,7 @@ import {
   MousePointer2,
   AudioWaveform,
   Magnet,
+  Repeat,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -119,6 +120,11 @@ import {
   type SnapSettings,
 } from '@/lib/snapping';
 import {
+  getLoopPlaybackStart,
+  normalizeLoopRegion,
+  type LoopRegion,
+} from '@/lib/loopPlayback';
+import {
   createWorkspace,
   loadWorkspaceStore,
   removeWorkspace,
@@ -149,6 +155,8 @@ export default function AudioEditorPage() {
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [cursorPosition, setCursorPosition] = useState(0);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
+  const [loopRegion, setLoopRegion] = useState<LoopRegion | null>(null);
+  const [loopEnabled, setLoopEnabled] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('waveform');
   const [horizontalZoom, setHorizontalZoom] = useState(50);
   const [verticalZoom, setVerticalZoom] = useState(1);
@@ -277,7 +285,21 @@ export default function AudioEditorPage() {
     };
     window.addEventListener('keydown', handleKeyboard);
     return () => window.removeEventListener('keydown', handleKeyboard);
-  }, [project, selectedClips, selectedTrackId, cursorPosition, selection]);
+  }, [
+    project,
+    selectedClips,
+    selectedTrackId,
+    cursorPosition,
+    selection,
+    loopRegion,
+    loopEnabled,
+    snapEnabled,
+    snapMode,
+    horizontalZoom,
+    verticalZoom,
+    scrollX,
+    viewMode,
+  ]);
 
   async function checkMicPermission() {
     try {
@@ -310,6 +332,9 @@ export default function AudioEditorPage() {
         setShowMixer(workspace.layout.showMixer);
         setScrollX(proj.viewState.scrollX);
         setSelection(proj.selection);
+        const restoredLoop = normalizeLoopRegion(proj.loopRegion);
+        setLoopRegion(restoredLoop);
+        setLoopEnabled(restoredLoop ? (proj.loopEnabled ?? false) : false);
         setSelectedClips([]);
         setSelectedTrackId(proj.tracks[0]?.id ?? null);
         // 加载历史快照（IndexedDB 持久化的撤销/重做栈）
@@ -344,6 +369,8 @@ export default function AudioEditorPage() {
           snapMode,
         },
         selection,
+        loopRegion,
+        loopEnabled,
       };
       await projectService.saveProject(updated);
       setProject(updated);
@@ -364,14 +391,36 @@ export default function AudioEditorPage() {
     } else if (playbackState === 'paused') {
       audioEngine.resume();
     } else {
-      // Start playing from cursor position
+      // Audacity 4 uses an independent loop region with the normal transport.
+      const activeLoop = loopEnabled ? normalizeLoopRegion(loopRegion) : null;
       const isSoloActive = project.tracks.some((t) => t.solo);
       const duration = getProjectDuration();
-      if (cursorPosition >= duration) {
-        setCursorPosition(0);
-      }
-      await audioEngine.play(project.tracks, cursorPosition, isSoloActive);
+      let playbackStart = cursorPosition;
+      if (activeLoop) playbackStart = getLoopPlaybackStart(activeLoop, cursorPosition);
+      else if (cursorPosition >= duration) playbackStart = 0;
+      setCursorPosition(playbackStart);
+      await audioEngine.play(project.tracks, playbackStart, isSoloActive, { loop: activeLoop });
     }
+  }
+
+  function toggleLoopEnabled() {
+    if (loopRegion) {
+      setLoopEnabled((enabled) => !enabled);
+    } else if (selection && selection.end > selection.start) {
+      setLoopRegion({ ...selection });
+      setLoopEnabled(true);
+    }
+  }
+
+  function setLoopFromSelection() {
+    if (!selection || selection.end <= selection.start) return;
+    setLoopRegion({ ...selection });
+    setLoopEnabled(true);
+  }
+
+  function clearLoopRegion() {
+    setLoopRegion(null);
+    setLoopEnabled(false);
   }
 
   function handleStop() {
@@ -1906,6 +1955,23 @@ export default function AudioEditorPage() {
                 </TooltipTrigger>
                 <TooltipContent>跳到末尾</TooltipContent>
               </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={loopEnabled ? 'secondary' : 'ghost'}
+                    size="icon"
+                    onClick={toggleLoopEnabled}
+                    disabled={playbackState !== 'stopped' || (!loopRegion && (!selection || selection.end <= selection.start))}
+                    className="size-8"
+                    aria-label="切换循环播放"
+                    aria-pressed={loopEnabled}
+                    title={loopRegion ? '启用或停用循环区域；按播放开始循环' : '将当前选区设为循环区域'}
+                  >
+                    <Repeat className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{loopRegion ? '启用或停用循环区域；按播放开始循环' : '将当前选区设为循环区域'}</TooltipContent>
+              </Tooltip>
               <Separator orientation="vertical" className="mx-1.5 h-6" />
               <Button
                 variant={recordingState === 'recording' ? 'destructive' : 'ghost'}
@@ -2270,6 +2336,25 @@ export default function AudioEditorPage() {
               />
             )}
 
+            {/* Independent Audacity 4 loop region overlay */}
+            {loopRegion && (
+              <div
+                aria-label="循环区域"
+                data-loop-enabled={loopEnabled}
+                data-loop-start={loopRegion.start}
+                data-loop-end={loopRegion.end}
+                className={`pointer-events-none absolute top-7 bottom-0 z-[6] border-x ${loopEnabled ? 'border-[#8bd5a7] bg-[#8bd5a7]/10' : 'border-[#aab0b6]/60 bg-[#aab0b6]/5'}`}
+                style={{
+                  left: loopRegion.start * pxPerSec,
+                  width: (loopRegion.end - loopRegion.start) * pxPerSec,
+                }}
+              >
+                <span className={`sticky left-1 top-1 inline-block rounded-sm px-1 text-[9px] ${loopEnabled ? 'bg-[#8bd5a7] text-[#1c1e21]' : 'bg-[#5b6168] text-white'}`}>
+                  循环 {formatTime(loopRegion.start)}–{formatTime(loopRegion.end)}
+                </span>
+              </div>
+            )}
+
             {/* Drag overlay */}
             <AnimatePresence>
               {isDragOver && (
@@ -2440,6 +2525,39 @@ export default function AudioEditorPage() {
                 <SelectItem value="beats">节拍</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5" aria-label="循环区域工具栏">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[10px]"
+              aria-label="将选区设为循环区域"
+              disabled={playbackState !== 'stopped' || !selection || selection.end <= selection.start}
+              onClick={setLoopFromSelection}
+            >
+              <Repeat className="mr-1 size-3.5" />
+              选区→循环
+            </Button>
+            {loopRegion && (
+              <>
+                <span className="font-mono text-[10px] text-[#aab0b6]" aria-label="循环区域时间">
+                  {formatTime(loopRegion.start)}–{formatTime(loopRegion.end)} · {loopEnabled ? '开' : '关'}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-6"
+                  aria-label="清除循环区域"
+                  title="清除循环区域"
+                  disabled={playbackState !== 'stopped'}
+                  onClick={clearLoopRegion}
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </>
+            )}
           </div>
           <div className="flex max-w-full flex-wrap items-end gap-2 font-mono tabular-nums">
             <label className="flex flex-col gap-0.5 text-[9px] uppercase tracking-wide text-[#aab0b6]">

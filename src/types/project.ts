@@ -73,6 +73,9 @@ export interface IProject {
   tracks: ITrack[];
   cursorPosition: number;
   selection: { start: number; end: number } | null;
+  /** Independent Audacity 4-style loop region; legacy projects omit both fields. */
+  loopRegion?: { start: number; end: number } | null;
+  loopEnabled?: boolean;
   viewState: IViewState;
   updatedAt: number;
   createdAt: number;
