@@ -183,19 +183,26 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | 测试文件 | 覆盖内容 | 用例数 |
 |----------|----------|--------|
 | `src/lib/audioUtils.test.ts` | 格式化工具、数学计算、重采样、声道交叉 | 24 |
+| `src/lib/snapping.test.ts` | 时间／小节吸附、跨片段边界、移动／修剪／拉伸边界 | 20 |
+| `src/lib/musicalTiming.test.ts` | BPM／拍号校验、四分音符与小节时长、不可变更新 | 4 |
+| `src/lib/loopPlayback.test.ts` | 循环区编辑、跨周期播放头、片段循环渲染与淡入淡出 | 14 |
+| `src/lib/clipEditing.test.ts` | 跨轨多选、成组编辑、速度复位起点保持、非破坏性分割与删除边界 | 15 |
+| `src/lib/levelMeter.test.ts` | 峰值读取、dBFS 换算、表头位置与即时上升／衰减 | 11 |
+| `src/lib/toneGenerator.test.ts` | Audacity 兼容波形、抗混叠方波与参数边界 | 4 |
 | `src/wasm/processor.test.ts` | WAV 编解码、DSP 函数（normalize/reverse/gain/fade/phase/peak/rms）、缓冲区工具 | 24 |
 | `src/wasm/selection-ops.test.ts` | 选区截取、删除、插入、替换操作 | 18 |
 | `src/services/historyService.test.ts` | 撤销/重做命令栈、push/undo/redo/clear | 9 |
 | `src/services/clipboardService.test.ts` | 多声道剪贴板序列化、旧格式恢复、异常输入 | 4 |
-| `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴 | 5 |
-| `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 4 |
+| `src/services/workspaceService.test.ts` | 内置工作区、自定义布局、自动更新与旧数据迁移 | 6 |
+| `src/services/projectService.test.ts` | 循环启用状态、独立循环区、BPM／拍号及旧工程持久化 | 4 |
+| `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴 | 12 |
+| `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 7 |
 | `src/engine/recordingWorklet.test.ts` | 真实 Worklet 任意尾块 flush、停止确认与去重 | 2 |
 | `src/engine/timeStretch.test.ts` | WSOLA 时长、音高、立体声对齐与归一化幅度 | 6 |
-| `src/lib/clipEditing.test.ts` | 跨轨多选、成组编辑、速度复位起点保持、非破坏性分割与删除边界 | 12 |
-| `src/services/workspaceService.test.ts` | 内置工作区、自定义布局、自动更新与旧数据迁移 | 6 |
 | `src/engine/mp3Encoder.test.ts` | 真实 MPEG 输出、采样率选择、空输入边界 | 3 |
+| `src/pages/AudioEditorPage/sections/PlaybackTimingControls.test.tsx` | BPM 小数草稿与连续步进、边界禁用、拍号编辑与非法输入恢复 | 6 |
 
-当前完整前端回归共 **12 个测试文件、117 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试。
+当前完整前端回归共 **19 个测试文件、193 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试。
 
 运行测试：
 

@@ -24,8 +24,9 @@ describe('PlaybackTimingControls', () => {
     expect(view.getByTestId('playback-timing-controls').getAttribute('data-time-signature')).toBe('4/4');
     fireEvent.click(view.getByLabelText('增加 BPM'));
     expect(view.props.onTempoChange).toHaveBeenCalledWith(121);
+    view.rerender(<PlaybackTimingControls {...view.props} tempo={121} />);
     fireEvent.click(view.getByLabelText('减少 BPM'));
-    expect(view.props.onTempoChange).toHaveBeenCalledWith(119);
+    expect(view.props.onTempoChange).toHaveBeenCalledWith(120);
     view.unmount();
 
     const minimum = renderControls({ tempo: 1 });
@@ -33,6 +34,15 @@ describe('PlaybackTimingControls', () => {
     minimum.unmount();
     const maximum = renderControls({ tempo: 999 });
     expect((maximum.getByLabelText('增加 BPM') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('steps from the displayed fractional draft instead of the previous project BPM', () => {
+    const view = renderControls();
+    const input = view.getByLabelText('BPM') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '90.5' } });
+    fireEvent.click(view.getByLabelText('增加 BPM'));
+    expect(view.props.onTempoChange).toHaveBeenCalledWith(91.5);
+    expect(input.value).toBe('91.5');
   });
 
   it('commits a valid fractional BPM and restores an invalid draft without writing', () => {

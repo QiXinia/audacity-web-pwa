@@ -51,7 +51,8 @@ export default function PlaybackTimingControls({
   }
 
   function stepTempo(delta: number) {
-    const next = Math.min(MAX_TEMPO, Math.max(MIN_TEMPO, tempo + delta));
+    const displayed = tempoDraft.trim() === '' ? null : validateTempo(Number(tempoDraft));
+    const next = Math.min(MAX_TEMPO, Math.max(MIN_TEMPO, (displayed ?? tempo) + delta));
     setTempoDraft(String(next));
     if (next !== tempo) onTempoChange(next);
   }
