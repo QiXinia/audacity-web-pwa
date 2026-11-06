@@ -25,10 +25,20 @@ function makeContext(options: { worklet?: boolean; workletError?: boolean } = {}
     disconnect: vi.fn(),
   };
   const createScriptProcessor = vi.fn(() => processor);
+  const splitter = { connect: vi.fn(), disconnect: vi.fn() };
+  const analysers = Array.from({ length: 2 }, () => ({
+    fftSize: 0,
+    smoothingTimeConstant: 1,
+    disconnect: vi.fn(),
+    getFloatTimeDomainData: vi.fn((buffer: Float32Array) => { buffer.fill(0); }),
+  }));
+  let analyserIndex = 0;
   const context = {
     destination: {},
     createMediaStreamSource: vi.fn(() => source),
     createGain: vi.fn(() => sink),
+    createChannelSplitter: vi.fn(() => splitter),
+    createAnalyser: vi.fn(() => analysers[analyserIndex++]),
     createScriptProcessor,
     audioWorklet: options.worklet === false ? undefined : {
       addModule: options.workletError
@@ -36,7 +46,7 @@ function makeContext(options: { worklet?: boolean; workletError?: boolean } = {}
         : vi.fn().mockResolvedValue(undefined),
     },
   };
-  return { context, source, sink, processor, createScriptProcessor };
+  return { context, source, sink, processor, createScriptProcessor, splitter, analysers };
 }
 
 class MockMediaRecorder {
@@ -288,5 +298,44 @@ describe('AudioEngine recording boundaries', () => {
     await expect(engine.startRecording({ stereo: true })).rejects.toThrow('context failed');
     expect(stop).toHaveBeenCalledOnce();
     expect(engine.recordingState).toBe('idle');
+  });
+
+  it('monitors recording input independently and clears the analyser branch on stop', async () => {
+    const engine = new AudioEngine();
+    const { stream } = makeMediaStream(2);
+    const { context, source, sink, processor, splitter, analysers } = makeContext({ worklet: false });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    await engine.startRecording({ stereo: true });
+    expect(source.connect).toHaveBeenCalledWith(splitter);
+    expect(source.connect).toHaveBeenCalledWith(processor);
+    expect(splitter.connect).toHaveBeenCalledWith(analysers[0], 0);
+    expect(splitter.connect).toHaveBeenCalledWith(analysers[1], 1);
+    expect(processor.connect).toHaveBeenCalledWith(sink);
+    expect(sink.gain.value).toBe(0);
+
+    analysers[0].getFloatTimeDomainData.mockImplementation((buffer: Float32Array) => {
+      buffer.fill(0);
+      buffer[0] = -0.5;
+    });
+    analysers[1].getFloatTimeDomainData.mockImplementation((buffer: Float32Array) => {
+      buffer.fill(0);
+      buffer[0] = 0.25;
+    });
+    const levels = engine.getRecordingLevels();
+    expect(levels.left).toBeCloseTo(-6.0206, 3);
+    expect(levels.right).toBeCloseTo(-12.0412, 3);
+
+    await engine.stopRecording();
+    expect(splitter.disconnect).toHaveBeenCalledOnce();
+    expect(analysers[0].disconnect).toHaveBeenCalledOnce();
+    expect(analysers[1].disconnect).toHaveBeenCalledOnce();
+    expect(source.disconnect).toHaveBeenCalledOnce();
+    expect(engine.recordingState).toBe('idle');
+    expect(engine.getRecordingLevels()).toEqual({ left: -60, right: -60 });
   });
 });

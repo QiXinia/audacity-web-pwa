@@ -5,6 +5,11 @@ import { wasmProcessor } from '@/wasm/processor';
 import { clamp, interleaveChannels } from '@/lib/audioUtils';
 import { getClipStretchRatio } from '@/lib/clipEditing';
 import { encodeMp3, getMp3SampleRate } from '@/engine/mp3Encoder';
+import {
+  readAnalyserPeakDbfs,
+  silentStereoLevels,
+  type StereoLevels,
+} from '@/lib/levelMeter';
 import type { ITrack, IClip, IEffect } from '@/types/project';
 
 export type PlaybackState = 'stopped' | 'playing' | 'paused';
@@ -17,9 +22,17 @@ interface AudioBufferCacheEntry {
   lastUsed: number;
 }
 
+interface StereoMeterNodes {
+  splitter: ChannelSplitterNode;
+  analysers: [AnalyserNode, AnalyserNode];
+  buffers: [Float32Array<ArrayBuffer>, Float32Array<ArrayBuffer>];
+}
+
 export class AudioEngine {
   private audioContext: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private playbackMeter: StereoMeterNodes | null = null;
+  private recordingMeter: StereoMeterNodes | null = null;
   private _playbackState: PlaybackState = 'stopped';
   private _recordingState: RecordingState = 'idle';
   private startTime = 0;
@@ -80,6 +93,50 @@ export class AudioEngine {
     this.onRecordingData = cb;
   }
 
+  private createStereoMeter(ctx: AudioContext, input: AudioNode): StereoMeterNodes {
+    const splitter = ctx.createChannelSplitter(2);
+    const left = ctx.createAnalyser();
+    const right = ctx.createAnalyser();
+    for (const analyser of [left, right]) {
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0;
+    }
+    input.connect(splitter);
+    splitter.connect(left, 0);
+    splitter.connect(right, 1);
+    return {
+      splitter,
+      analysers: [left, right],
+      buffers: [new Float32Array(left.fftSize), new Float32Array(right.fftSize)],
+    };
+  }
+
+  private disposeStereoMeter(meter: StereoMeterNodes | null): void {
+    if (!meter) return;
+    try { meter.splitter.disconnect(); } catch { /* already disconnected */ }
+    for (const analyser of meter.analysers) {
+      try { analyser.disconnect(); } catch { /* already disconnected */ }
+    }
+  }
+
+  private readMeterLevels(meter: StereoMeterNodes | null): StereoLevels {
+    if (!meter) return silentStereoLevels();
+    return {
+      left: readAnalyserPeakDbfs(meter.analysers[0], meter.buffers[0]),
+      right: readAnalyserPeakDbfs(meter.analysers[1], meter.buffers[1]),
+    };
+  }
+
+  getPlaybackLevels(): StereoLevels {
+    if (this._playbackState !== 'playing') return silentStereoLevels();
+    return this.readMeterLevels(this.playbackMeter);
+  }
+
+  getRecordingLevels(): StereoLevels {
+    if (this._recordingState !== 'recording') return silentStereoLevels();
+    return this.readMeterLevels(this.recordingMeter);
+  }
+
   private _resolveWorkletUrl(): string {
     // vite 开发模式下，public 目录可以直接通过根路径访问
     // 发布态也用相对路径，配合 basePath 正常工作
@@ -107,6 +164,8 @@ export class AudioEngine {
       this.masterGain = this.audioContext.createGain();
       this.masterGain.gain.value = 1;
       this.masterGain.connect(this.audioContext.destination);
+      // Metering is a read-only branch: the audible master path is unchanged.
+      this.playbackMeter = this.createStereoMeter(this.audioContext, this.masterGain);
       return this.audioContext;
     } catch (e) {
       logger.error('Failed to create AudioContext:', String(e));
@@ -536,6 +595,8 @@ export class AudioEngine {
 
   stopPlayback(): void {
     const ctx = this.audioContext;
+    this.disposeStereoMeter(this.playbackMeter);
+    this.playbackMeter = null;
     if (ctx) {
       // Close and recreate for clean stop (simpler than tracking all sources)
       ctx.close().catch(() => {});
@@ -604,6 +665,8 @@ export class AudioEngine {
       const source = ctx.createMediaStreamSource(this.mediaStream);
       // Register partial graph nodes immediately so startup failures cannot leak them.
       this._recordSource = source;
+      // A separate analyser branch never feeds back into the captured samples.
+      this.recordingMeter = this.createStereoMeter(ctx, source);
       const isStereo = options?.stereo ?? false;
       const deviceChannels = this.mediaStream.getAudioTracks()[0]?.getSettings().channelCount;
       const inputChannels = Math.min(2, Math.max(1, deviceChannels ?? (isStereo ? 2 : 1)));
@@ -797,6 +860,8 @@ export class AudioEngine {
 
   private _cleanupRecording(): void {
     this.recordingStopResolver = null;
+    this.disposeStereoMeter(this.recordingMeter);
+    this.recordingMeter = null;
     if (this._workletNode) {
       try {
         this._workletNode.port.onmessage = null;

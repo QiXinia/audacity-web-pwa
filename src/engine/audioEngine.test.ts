@@ -176,3 +176,69 @@ describe('AudioEngine effect parameter wiring', () => {
     expect(filter.frequency.value).toBe(fallback);
   });
 });
+
+describe('playback level meter', () => {
+  it('taps the master output without replacing audio and disconnects on stop', async () => {
+    const engine = new AudioEngine();
+    const masterGain = { gain: { value: 0 }, connect: vi.fn() };
+    const splitter = { connect: vi.fn(), disconnect: vi.fn() };
+    const analysers = Array.from({ length: 2 }, () => ({
+      fftSize: 0,
+      smoothingTimeConstant: 1,
+      disconnect: vi.fn(),
+      getFloatTimeDomainData: vi.fn((buffer: Float32Array) => { buffer.fill(0); }),
+    }));
+    let analyserIndex = 0;
+    const context = {
+      state: 'running',
+      sampleRate: 48000,
+      destination: { name: 'destination' },
+      createGain: vi.fn(() => masterGain),
+      createChannelSplitter: vi.fn(() => splitter),
+      createAnalyser: vi.fn(() => analysers[analyserIndex++]),
+      close: vi.fn(() => Promise.resolve()),
+    };
+    const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'AudioContext');
+    Object.defineProperty(window, 'AudioContext', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(function () { return context; }),
+    });
+
+    try {
+      await engine.ensureContext();
+      expect(masterGain.gain.value).toBe(1);
+      expect(masterGain.connect).toHaveBeenCalledWith(context.destination);
+      expect(masterGain.connect).toHaveBeenCalledWith(splitter);
+      expect(splitter.connect).toHaveBeenCalledWith(analysers[0], 0);
+      expect(splitter.connect).toHaveBeenCalledWith(analysers[1], 1);
+      expect(analysers.map((analyser) => analyser.fftSize)).toEqual([256, 256]);
+
+      analysers[0].getFloatTimeDomainData.mockImplementation((buffer: Float32Array) => {
+        buffer.fill(0);
+        buffer[0] = -0.5;
+      });
+      analysers[1].getFloatTimeDomainData.mockImplementation((buffer: Float32Array) => {
+        buffer.fill(0);
+        buffer[0] = 0.25;
+      });
+      (engine as any)._playbackState = 'playing';
+      const levels = engine.getPlaybackLevels();
+      expect(levels.left).toBeCloseTo(-6.0206, 3);
+      expect(levels.right).toBeCloseTo(-12.0412, 3);
+
+      engine.stopPlayback();
+      expect(splitter.disconnect).toHaveBeenCalledOnce();
+      expect(analysers[0].disconnect).toHaveBeenCalledOnce();
+      expect(analysers[1].disconnect).toHaveBeenCalledOnce();
+      expect(context.close).toHaveBeenCalledOnce();
+      expect(engine.getPlaybackLevels()).toEqual({ left: -60, right: -60 });
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(window, 'AudioContext', originalDescriptor);
+      } else {
+        delete (window as unknown as { AudioContext?: unknown }).AudioContext;
+      }
+    }
+  });
+});

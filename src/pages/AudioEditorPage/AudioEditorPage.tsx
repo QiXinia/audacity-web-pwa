@@ -121,6 +121,14 @@ import {
 import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
+import {
+  decayDbfs,
+  dbfsToMeterPercent,
+  formatDbfs,
+  MIN_METER_DBFS,
+  silentStereoLevels,
+  type StereoLevels,
+} from '@/lib/levelMeter';
 
 export default function AudioEditorPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -1933,6 +1941,16 @@ export default function AudioEditorPage() {
           </div>
         </header>
 
+        <section
+          aria-label="录音与播放电平表"
+          data-testid="audio-level-meters"
+          className="au-toolbar flex h-9 shrink-0 items-center justify-end gap-6 overflow-x-auto overflow-y-hidden border-b px-3"
+        >
+          <LevelMeter mode="recording" active={recordingState === 'recording'} />
+          <LevelMeter mode="playback" active={playbackState === 'playing'} />
+          <span className="shrink-0 text-[9px] text-[#7f8992]">-60 … 0 dBFS · 峰值</span>
+        </section>
+
         {/* Edit Toolbar */}
         <div className="au-toolbar flex h-9 shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b px-2">
           <DropdownMenu>
@@ -2741,6 +2759,70 @@ function TrackPanelRow({
           <span className="ml-auto rounded-sm bg-[#252b31]/70 px-1 text-[9px]">{track.effects.length}</span>
         )}
       </Button>
+    </div>
+  );
+}
+
+function LevelMeter({ mode, active }: { mode: 'recording' | 'playback'; active: boolean }) {
+  const [levels, setLevels] = useState<StereoLevels>(silentStereoLevels);
+  const label = mode === 'recording' ? '录音' : '播放';
+
+  useEffect(() => {
+    if (!active) {
+      setLevels(silentStereoLevels());
+      return;
+    }
+
+    let frame = 0;
+    let previousTime: number | null = null;
+    let current = silentStereoLevels();
+    const tick = (now: number) => {
+      const elapsed = previousTime === null ? 1 / 60 : Math.min(0.1, Math.max(0, (now - previousTime) / 1000));
+      previousTime = now;
+      const instantaneous = mode === 'recording'
+        ? audioEngine.getRecordingLevels()
+        : audioEngine.getPlaybackLevels();
+      current = {
+        left: decayDbfs(current.left, instantaneous.left, elapsed),
+        right: decayDbfs(current.right, instantaneous.right, elapsed),
+      };
+      setLevels(current);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [active, mode]);
+
+  return (
+    <div className="flex shrink-0 items-center gap-2" aria-label={`${label}电平表`} title={`${label}峰值电平 · dBFS`}>
+      {mode === 'recording' ? <Mic className="size-3.5 text-red-400" /> : <Volume2 className="size-3.5 text-emerald-400" />}
+      <span className="w-7 text-[10px] text-[#c1c7cc]">{label}</span>
+      <div className="space-y-1">
+        {(['left', 'right'] as const).map((channel, index) => {
+          const value = levels[channel];
+          const channelLabel = index === 0 ? '左' : '右';
+          return (
+            <div key={channel} className="flex items-center gap-1 text-[8px] leading-none text-[#9ca4ab]">
+              <span className="w-2">{index === 0 ? 'L' : 'R'}</span>
+              <div
+                role="meter"
+                aria-label={`${label}${channelLabel}声道峰值电平`}
+                aria-valuemin={MIN_METER_DBFS}
+                aria-valuemax={0}
+                aria-valuenow={Number(value.toFixed(1))}
+                aria-valuetext={`${formatDbfs(value)} dBFS`}
+                className={`h-1.5 w-24 overflow-hidden rounded-[1px] bg-[#161b20] ${value >= -0.05 ? 'ring-1 ring-red-400' : ''}`}
+              >
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 via-yellow-400 to-red-500 transition-[width] duration-75"
+                  style={{ width: `${dbfsToMeterPercent(value)}%` }}
+                />
+              </div>
+              <span className="w-7 text-right font-mono">{formatDbfs(value)}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
