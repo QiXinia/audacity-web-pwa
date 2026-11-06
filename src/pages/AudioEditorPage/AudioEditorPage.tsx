@@ -120,8 +120,11 @@ import {
   type SnapSettings,
 } from '@/lib/snapping';
 import {
+  getLoopInteractionMode,
   getLoopPlaybackStart,
   normalizeLoopRegion,
+  updateLoopRegionFromInteraction,
+  type LoopInteractionMode,
   type LoopRegion,
 } from '@/lib/loopPlayback';
 import {
@@ -421,6 +424,11 @@ export default function AudioEditorPage() {
   function clearLoopRegion() {
     setLoopRegion(null);
     setLoopEnabled(false);
+  }
+
+  function changeLoopRegion(region: LoopRegion | null, enabled?: boolean) {
+    setLoopRegion(region);
+    if (enabled !== undefined) setLoopEnabled(region ? enabled : false);
   }
 
   function handleStop() {
@@ -2315,6 +2323,16 @@ export default function AudioEditorPage() {
               style={{ width: totalWidth }}
             >
               <TimeRuler duration={timelineDuration} pxPerSec={pxPerSec} />
+              <LoopRulerInteraction
+                region={loopRegion}
+                enabled={loopEnabled}
+                pxPerSec={pxPerSec}
+                maxTime={totalWidth / pxPerSec}
+                disabled={playbackState !== 'stopped'}
+                onSnapTime={resolveTimelineSnap}
+                onChange={changeLoopRegion}
+                onToggle={toggleLoopEnabled}
+              />
             </div>
 
             {/* Playhead */}
@@ -3664,6 +3682,130 @@ function formatRulerTime(seconds: number, interval: number) {
     ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
     : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   return interval < 1 ? `${base}.${String(ms).padStart(3, '0')}` : base;
+}
+
+interface ActiveLoopInteraction {
+  mode: LoopInteractionMode;
+  region: LoopRegion | null;
+  anchorTime: number;
+  startX: number;
+  moved: boolean;
+  pointerId: number;
+}
+
+function LoopRulerInteraction({
+  region,
+  enabled,
+  pxPerSec,
+  maxTime,
+  disabled,
+  onSnapTime,
+  onChange,
+  onToggle,
+}: {
+  region: LoopRegion | null;
+  enabled: boolean;
+  pxPerSec: number;
+  maxTime: number;
+  disabled: boolean;
+  onSnapTime: (time: number, bypassSnap?: boolean) => number;
+  onChange: (region: LoopRegion | null, enabled?: boolean) => void;
+  onToggle: () => void;
+}) {
+  const interaction = useRef<ActiveLoopInteraction | null>(null);
+
+  function eventTime(e: React.PointerEvent<HTMLDivElement>): number {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return clamp((e.clientX - rect.left) / Math.max(1, pxPerSec), 0, maxTime);
+  }
+
+  function interactionMode(e: React.PointerEvent<HTMLDivElement>): LoopInteractionMode | null {
+    return getLoopInteractionMode(region, eventTime(e), pxPerSec, e.ctrlKey || e.metaKey);
+  }
+
+  function updateCursor(e: React.PointerEvent<HTMLDivElement>) {
+    if (interaction.current) {
+      e.currentTarget.style.cursor = interaction.current.mode === 'move' ? 'grabbing' : 'ew-resize';
+      return;
+    }
+    const mode = interactionMode(e);
+    e.currentTarget.style.cursor = mode === 'move' ? 'grab'
+      : mode === 'resize-start' || mode === 'resize-end' ? 'ew-resize'
+        : mode === 'create' ? 'crosshair' : 'default';
+  }
+
+  function finishInteraction(e: React.PointerEvent<HTMLDivElement>, toggleOnClick: boolean) {
+    const active = interaction.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    interaction.current = null;
+    if (toggleOnClick && active.mode === 'move' && !active.moved) onToggle();
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    updateCursor(e);
+  }
+
+  return (
+    <div
+      role="group"
+      aria-label="循环时间线：Ctrl 或 Command 拖拽创建循环，拖动循环移动，拖动边缘调整，单击循环切换播放"
+      title="Ctrl/Cmd+拖拽创建循环 · 拖动循环移动 · 拖动边缘调整 · 单击切换 · Alt 临时禁用吸附"
+      data-testid="loop-ruler-interaction"
+      aria-disabled={disabled}
+      className="absolute inset-0 z-[21] touch-none select-none"
+      onPointerDown={(e) => {
+        if (disabled || e.button !== 0) return;
+        const mode = interactionMode(e);
+        if (!mode) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        interaction.current = {
+          mode,
+          region,
+          anchorTime: eventTime(e),
+          startX: e.clientX,
+          moved: false,
+          pointerId: e.pointerId,
+        };
+        updateCursor(e);
+      }}
+      onPointerMove={(e) => {
+        const active = interaction.current;
+        if (!active || active.pointerId !== e.pointerId) {
+          updateCursor(e);
+          return;
+        }
+        if (!active.moved && Math.abs(e.clientX - active.startX) <= 3) return;
+        active.moved = true;
+        const next = updateLoopRegionFromInteraction({
+          mode: active.mode,
+          region: active.region,
+          anchorTime: active.anchorTime,
+          currentTime: eventTime(e),
+          maxTime,
+          snapTime: (time) => onSnapTime(time, e.altKey),
+        });
+        if (next || active.mode === 'create') onChange(next, active.mode === 'create' ? true : undefined);
+        updateCursor(e);
+      }}
+      onPointerUp={(e) => finishInteraction(e, true)}
+      onPointerCancel={(e) => finishInteraction(e, false)}
+      onLostPointerCapture={(e) => {
+        if (interaction.current?.pointerId === e.pointerId) interaction.current = null;
+      }}
+    >
+      {region && (
+        <div
+          aria-hidden="true"
+          data-testid="loop-ruler-region"
+          className={`pointer-events-none absolute inset-y-0 border-x ${enabled ? 'border-[#8bd5a7] bg-[#8bd5a7]/25' : 'border-[#aab0b6]/70 bg-[#aab0b6]/15'}`}
+          style={{ left: region.start * pxPerSec, width: (region.end - region.start) * pxPerSec }}
+        >
+          <span className={`absolute left-1 top-0.5 text-[9px] ${enabled ? 'text-[#b8f4cd]' : 'text-[#c7ccd1]'}`}>循环</span>
+          <span data-testid="loop-ruler-start-handle" className="absolute inset-y-0 -left-1 w-2 bg-[#8bd5a7]/70" />
+          <span data-testid="loop-ruler-end-handle" className="absolute inset-y-0 -right-1 w-2 bg-[#8bd5a7]/70" />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function TimeRuler({ duration, pxPerSec }: { duration: number; pxPerSec: number }) {

@@ -21,6 +21,84 @@ export function normalizeLoopRegion(region: LoopRegion | null | undefined): Loop
   return { start, end };
 }
 
+export type LoopInteractionMode = 'create' | 'move' | 'resize-start' | 'resize-end';
+
+export interface LoopInteractionUpdate {
+  mode: LoopInteractionMode;
+  region: LoopRegion | null;
+  anchorTime: number;
+  currentTime: number;
+  maxTime: number;
+  snapTime: (time: number) => number;
+}
+
+export function getLoopInteractionMode(
+  region: LoopRegion | null,
+  time: number,
+  pxPerSec: number,
+  createModifierPressed: boolean,
+): LoopInteractionMode | null {
+  if (!region) return createModifierPressed ? 'create' : null;
+  const toleranceSeconds = 6 / Math.max(1, pxPerSec);
+  if (Math.abs(time - region.start) <= toleranceSeconds) return 'resize-start';
+  if (Math.abs(time - region.end) <= toleranceSeconds) return 'resize-end';
+  return time > region.start && time < region.end ? 'move' : null;
+}
+
+function cleanInteractionTime(value: number): number {
+  return Number(value.toPrecision(15));
+}
+
+function clampInteractionTime(value: number, maxTime: number): number {
+  return Math.min(Math.max(0, value), Math.max(0, maxTime));
+}
+
+/** Apply Audacity-style loop creation, edge resizing, or duration-preserving drag. */
+export function updateLoopRegionFromInteraction(update: LoopInteractionUpdate): LoopRegion | null {
+  const { mode, region, maxTime, snapTime } = update;
+  if (!Number.isFinite(update.anchorTime) || !Number.isFinite(update.currentTime) || maxTime <= 0) return null;
+  const anchorTime = clampInteractionTime(snapTime(update.anchorTime), maxTime);
+  const currentTime = clampInteractionTime(update.currentTime, maxTime);
+
+  if (mode === 'create') {
+    const endTime = clampInteractionTime(snapTime(currentTime), maxTime);
+    return normalizeLoopRegion({
+      start: cleanInteractionTime(Math.min(anchorTime, endTime)),
+      end: cleanInteractionTime(Math.max(anchorTime, endTime)),
+    });
+  }
+
+  const initialRegion = normalizeLoopRegion(region);
+  if (!initialRegion) return null;
+
+  if (mode === 'resize-start' || mode === 'resize-end') {
+    const movingEdge = clampInteractionTime(snapTime(currentTime), maxTime);
+    const fixedEdge = mode === 'resize-start' ? initialRegion.end : initialRegion.start;
+    const next = normalizeLoopRegion({
+      start: cleanInteractionTime(Math.min(movingEdge, fixedEdge)),
+      end: cleanInteractionTime(Math.max(movingEdge, fixedEdge)),
+    });
+    // A sub-pixel/zero-length resize must not accidentally delete an existing loop.
+    return next ?? initialRegion;
+  }
+
+  const duration = initialRegion.end - initialRegion.start;
+  const boundedMax = Math.max(0, maxTime - duration);
+  const rawStart = Math.min(Math.max(0, initialRegion.start + currentTime - anchorTime), boundedMax);
+  const rawEnd = rawStart + duration;
+  const snappedStart = clampInteractionTime(snapTime(rawStart), boundedMax);
+  const snappedEnd = snapTime(rawEnd);
+  let nextStart = rawStart;
+  if (Math.abs(snappedStart - rawStart) > 1e-9) nextStart = snappedStart;
+  else if (Math.abs(snappedEnd - rawEnd) > 1e-9) {
+    nextStart = Math.min(Math.max(0, snappedEnd - duration), boundedMax);
+  }
+  return {
+    start: cleanInteractionTime(nextStart),
+    end: cleanInteractionTime(nextStart + duration),
+  };
+}
+
 /** Loop playback starts at the region edge whenever the cursor is outside it. */
 export function getLoopPlaybackStart(region: LoopRegion, cursorPosition: number): number {
   return cursorPosition >= region.start && cursorPosition < region.end
