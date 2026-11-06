@@ -97,6 +97,7 @@ import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
 import { generateTone, type ToneWaveform } from '@/lib/toneGenerator';
 import {
+  boundClipStretchDelta,
   clipKeyId,
   deleteClipSelection,
   getClipStretchRatio,
@@ -3034,18 +3035,7 @@ function ClipItem({
 
   function boundedEdgeDelta(edge: 'left' | 'right', mode: 'trim' | 'stretch', rawDelta: number) {
     const ratio = getClipStretchRatio(clip);
-    if (mode === 'stretch') {
-      const currentDuration = Math.max(0.05, clip.duration);
-      const targetDuration = edge === 'left' ? currentDuration + rawDelta : currentDuration - rawDelta;
-      const boundedTarget = edge === 'left'
-        ? clamp(targetDuration, 0.05, currentDuration + Math.min(clip.startTime, currentDuration - 0.05))
-        : clamp(targetDuration, 0.05, currentDuration * 4);
-      const delta = edge === 'left' ? boundedTarget - currentDuration : currentDuration - boundedTarget;
-      const targetRatio = clamp((currentDuration * ratio) / boundedTarget, 0.25, 4);
-      return edge === 'left'
-        ? (currentDuration * ratio) / targetRatio - currentDuration
-        : currentDuration - (currentDuration * ratio) / targetRatio;
-    }
+    if (mode === 'stretch') return boundClipStretchDelta(clip, edge, rawDelta);
     if (edge === 'left') {
       return clamp(rawDelta, -Math.min(clip.startTime, clip.offset / ratio), Math.max(0, clip.duration - 0.05));
     }

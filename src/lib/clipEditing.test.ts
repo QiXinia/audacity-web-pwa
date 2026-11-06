@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  boundClipStretchDelta,
   deleteClipSelection,
   getClipStretchRatio,
   moveClipSelection,
@@ -91,6 +92,55 @@ describe('clip selection editing', () => {
     source.tracks[0].clips[0] = clip('a', { duration: 2, originalDuration: 4, stretchRatio: 2 });
     const result = trimClipSelection(source, [a], 'right', 10);
     expect(result.tracks[0].clips[0].duration).toBeCloseTo(2);
+  });
+
+  it('preserves the trimmed source window when stretching a clip again', () => {
+    const source = project();
+    source.tracks[0].clips[0] = clip('a', {
+      offset: 1,
+      duration: 2,
+      originalDuration: 10,
+      stretchRatio: 2,
+    });
+    const result = stretchClipSelection(source, [a], 'right', 1);
+    const edited = result.tracks[0].clips[0];
+    expect(edited.duration).toBe(3);
+    expect(edited.stretchRatio).toBeCloseTo(4 / 3);
+    expect(edited.offset + edited.duration * edited.stretchRatio).toBeCloseTo(5);
+  });
+
+  it('resets speed without restoring audio removed by trimming', () => {
+    const source = project();
+    source.tracks[0].clips[0] = clip('a', {
+      offset: 1,
+      duration: 2,
+      originalDuration: 10,
+      stretchRatio: 2,
+    });
+    const result = resetClipStretch(source, [a]);
+    const edited = result.tracks[0].clips[0];
+    expect(edited.startTime).toBe(1);
+    expect(edited.offset).toBe(1);
+    expect(edited.duration).toBe(4);
+    expect(edited.stretchRatio).toBe(1);
+  });
+
+  it('uses current-source and timeline bounds for stretch pointer deltas', () => {
+    const original = clip('a');
+    expect(boundClipStretchDelta(original, 'right', 40)).toBe(12);
+    expect(boundClipStretchDelta(original, 'left', 10)).toBe(3);
+    expect(boundClipStretchDelta(original, 'left', -10)).toBe(-1);
+
+    const trimmed = clip('trimmed', {
+      startTime: 2,
+      offset: 1,
+      duration: 2,
+      originalDuration: 10,
+      stretchRatio: 2,
+    });
+    expect(boundClipStretchDelta(trimmed, 'right', 40)).toBe(14);
+    expect(boundClipStretchDelta(trimmed, 'left', 10)).toBe(1);
+    expect(boundClipStretchDelta(trimmed, 'left', -10)).toBe(-2);
   });
 
   it('moves every selected clip together and clamps the leftmost to zero', () => {

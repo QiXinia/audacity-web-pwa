@@ -22,6 +22,35 @@ export function getClipStretchRatio(clip: IClip): number {
     : 1;
 }
 
+function getClipSourceDuration(clip: IClip): number {
+  const sourceDuration = clip.duration * getClipStretchRatio(clip);
+  return Number.isFinite(sourceDuration) ? Math.max(0, sourceDuration) : 0;
+}
+
+function getClipStretchDeltaBounds(clip: IClip, edge: 'left' | 'right') {
+  // Stretching changes playback speed, not the trimmed source window.
+  const sourceDuration = getClipSourceDuration(clip);
+  const shortest = Math.max(MIN_CLIP_DURATION, sourceDuration / MAX_STRETCH_RATIO);
+  const longest = Math.max(shortest, sourceDuration / MIN_STRETCH_RATIO);
+  return edge === 'right'
+    ? { lower: shortest - clip.duration, upper: longest - clip.duration }
+    : {
+      lower: Math.max(-clip.startTime, clip.duration - longest),
+      upper: clip.duration - shortest,
+    };
+}
+
+/** Bound pointer/keyboard deltas with the same source-window rules as the edit. */
+export function boundClipStretchDelta(
+  clip: IClip,
+  edge: 'left' | 'right',
+  requestedDelta: number,
+): number {
+  if (!Number.isFinite(requestedDelta)) return 0;
+  const { lower, upper } = getClipStretchDeltaBounds(clip, edge);
+  return clamp(requestedDelta, lower, upper);
+}
+
 export function updateClipSelection(
   current: ClipKey[],
   key: ClipKey,
@@ -108,16 +137,9 @@ export function stretchClipSelection(
   let lower = -Infinity;
   let upper = Infinity;
   for (const clip of clips) {
-    const sourceAvailable = Math.max(0, clip.originalDuration - clip.offset);
-    const shortest = Math.max(MIN_CLIP_DURATION, sourceAvailable / MAX_STRETCH_RATIO);
-    const longest = Math.max(shortest, sourceAvailable / MIN_STRETCH_RATIO);
-    if (edge === 'right') {
-      lower = Math.max(lower, shortest - clip.duration);
-      upper = Math.min(upper, longest - clip.duration);
-    } else {
-      lower = Math.max(lower, -clip.startTime, clip.duration - longest);
-      upper = Math.min(upper, clip.duration - shortest);
-    }
+    const bounds = getClipStretchDeltaBounds(clip, edge);
+    lower = Math.max(lower, bounds.lower);
+    upper = Math.min(upper, bounds.upper);
   }
   if (upper < lower) return project;
   const delta = clamp(requestedDelta, lower, upper);
@@ -130,14 +152,14 @@ export function stretchClipSelection(
       ...track,
       clips: track.clips.map((clip) => {
         if (!selected.has(clipKeyId({ trackId: track.id, clipId: clip.id }))) return clip;
-        const sourceAvailable = Math.max(0, clip.originalDuration - clip.offset);
+        const sourceDuration = getClipSourceDuration(clip);
         const duration = edge === 'right' ? clip.duration + delta : clip.duration - delta;
         return {
           ...clip,
           startTime: edge === 'left' ? clip.startTime + delta : clip.startTime,
           duration,
           stretchRatio: clamp(
-            sourceAvailable / duration,
+            sourceDuration / duration,
             MIN_STRETCH_RATIO,
             MAX_STRETCH_RATIO,
           ),
@@ -204,10 +226,10 @@ export function resetClipStretch(project: IProject, keys: ClipKey[]): IProject {
       ...track,
       clips: track.clips.map((clip) => {
         if (!selected.has(clipKeyId({ trackId: track.id, clipId: clip.id }))) return clip;
-        const sourceAvailable = Math.max(MIN_CLIP_DURATION, clip.originalDuration - clip.offset);
+        const sourceDuration = Math.max(MIN_CLIP_DURATION, getClipSourceDuration(clip));
         return {
           ...clip,
-          duration: sourceAvailable,
+          duration: sourceDuration,
           stretchRatio: 1,
         };
       }),
