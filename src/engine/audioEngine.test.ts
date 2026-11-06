@@ -1,5 +1,5 @@
 import { AudioEngine } from './audioEngine';
-import type { IClip, ITrack } from '@/types/project';
+import type { IClip, IEffect, ITrack } from '@/types/project';
 
 function makeClip(overrides: Partial<IClip> = {}): IClip {
   return {
@@ -119,5 +119,60 @@ describe('AudioEngine stereo mixdown', () => {
     expect(right[1000]).toBe(0);
     expect(left[1999]).toBe(0);
     expect(right[1999]).toBe(0);
+  });
+});
+
+describe('AudioEngine effect parameter wiring', () => {
+  function makeBiquadContext() {
+    const filter = {
+      type: '',
+      frequency: { value: 0 },
+      Q: { value: 0 },
+      connect: vi.fn(),
+    };
+    const context = { createBiquadFilter: () => filter } as unknown as AudioContext;
+    return { context, filter };
+  }
+
+  it.each([
+    ['highPass', 'highpass', 240],
+    ['lowPass', 'lowpass', 6400],
+  ] as const)('uses the EffectPanel cutoff and Q values for %s', (type, filterType, cutoff) => {
+    const engine = new AudioEngine();
+    const { context, filter } = makeBiquadContext();
+    const effect: IEffect = {
+      id: 'filter',
+      type,
+      bypassed: false,
+      params: { cutoff, q: 0.9 },
+    };
+
+    const pair = (engine as any).createEffectNode(context, effect);
+
+    expect(pair?.input).toBe(filter);
+    expect(filter.type).toBe(filterType);
+    expect(filter.frequency.value).toBe(cutoff);
+    expect(filter.Q.value).toBe(0.9);
+  });
+
+  it.each([
+    ['highPass', 80],
+    ['lowPass', 8000],
+  ] as const)('keeps legacy frequency projects compatible for %s', (type, fallback) => {
+    const engine = new AudioEngine();
+    const { context, filter } = makeBiquadContext();
+    const legacy: IEffect = {
+      id: 'legacy-filter',
+      type,
+      bypassed: false,
+      params: { frequency: 1234 },
+    };
+
+    (engine as any).createEffectNode(context, legacy);
+    expect(filter.frequency.value).toBe(1234);
+    expect(filter.Q.value).toBe(0.707);
+
+    (engine as any).createEffectNode(context, { ...legacy, params: {} });
+    expect(filter.frequency.value).toBe(fallback);
   });
 });

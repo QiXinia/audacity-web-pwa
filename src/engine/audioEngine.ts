@@ -386,15 +386,15 @@ export class AudioEngine {
         case 'highPass': {
           const filter = ctx.createBiquadFilter();
           filter.type = 'highpass';
-          filter.frequency.value = effect.params.frequency ?? 80;
-          filter.Q.value = effect.params.q ?? 1;
+          filter.frequency.value = effect.params.cutoff ?? effect.params.frequency ?? 80;
+          filter.Q.value = effect.params.q ?? 0.707;
           return { input: filter, output: filter };
         }
         case 'lowPass': {
           const filter = ctx.createBiquadFilter();
           filter.type = 'lowpass';
-          filter.frequency.value = effect.params.frequency ?? 8000;
-          filter.Q.value = effect.params.q ?? 1;
+          filter.frequency.value = effect.params.cutoff ?? effect.params.frequency ?? 8000;
+          filter.Q.value = effect.params.q ?? 0.707;
           return { input: filter, output: filter };
         }
         case 'eq': {
