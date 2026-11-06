@@ -37,6 +37,7 @@ import {
   X,
   MousePointer2,
   AudioWaveform,
+  Magnet,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -110,6 +111,14 @@ import {
   type ClipKey,
 } from '@/lib/clipEditing';
 import {
+  collectClipSnapPoints,
+  DEFAULT_SNAP_TOLERANCE_PIXELS,
+  snapClipSelectionDelta,
+  snapTimelineTime,
+  type ClipSnapOperation,
+  type SnapSettings,
+} from '@/lib/snapping';
+import {
   createWorkspace,
   loadWorkspaceStore,
   removeWorkspace,
@@ -118,7 +127,7 @@ import {
   updateWorkspaceLayout,
   type WorkspaceLayout,
 } from '@/services/workspaceService';
-import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType } from '@/types/project';
+import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType, SnapMode } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -143,6 +152,8 @@ export default function AudioEditorPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('waveform');
   const [horizontalZoom, setHorizontalZoom] = useState(50);
   const [verticalZoom, setVerticalZoom] = useState(1);
+  const [snapEnabled, setSnapEnabled] = useState(false);
+  const [snapMode, setSnapMode] = useState<SnapMode>('clips');
   const [scrollX, setScrollX] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -293,6 +304,8 @@ export default function AudioEditorPage() {
         setViewMode(workspace.layout.viewMode);
         setHorizontalZoom(workspace.layout.horizontalZoom);
         setVerticalZoom(workspace.layout.verticalZoom);
+        setSnapEnabled(proj.viewState.snapEnabled ?? false);
+        setSnapMode(proj.viewState.snapMode ?? 'clips');
         setShowTrackPanel(workspace.layout.showTrackPanel);
         setShowMixer(workspace.layout.showMixer);
         setScrollX(proj.viewState.scrollX);
@@ -327,6 +340,8 @@ export default function AudioEditorPage() {
           verticalZoom,
           scrollX,
           viewMode,
+          snapEnabled,
+          snapMode,
         },
         selection,
       };
@@ -550,16 +565,57 @@ export default function AudioEditorPage() {
     });
   }
 
+  function createSnapSettings(points: readonly number[], bypassSnap: boolean): SnapSettings {
+    return {
+      enabled: snapEnabled && !bypassSnap,
+      mode: snapMode,
+      points,
+      toleranceSeconds: DEFAULT_SNAP_TOLERANCE_PIXELS / Math.max(1, horizontalZoom),
+      sampleRate: project?.sampleRate ?? 48000,
+      tempo: project?.tempo ?? 120,
+    };
+  }
+
+  function resolveClipSnapDelta(
+    trackId: string,
+    clipId: string,
+    operation: ClipSnapOperation,
+    deltaSeconds: number,
+    bypassSnap = false,
+  ): number {
+    if (!project) return deltaSeconds;
+    const keys = keysForClip(trackId, clipId);
+    return snapClipSelectionDelta(
+      project,
+      keys,
+      operation,
+      deltaSeconds,
+      createSnapSettings(collectClipSnapPoints(project, keys), bypassSnap),
+    );
+  }
+
+  function resolveTimelineSnap(time: number, bypassSnap = false): number {
+    if (!project) return time;
+    const points = collectClipSnapPoints(project);
+    if (Number.isFinite(cursorPosition) && cursorPosition >= 0) points.push(cursorPosition);
+    if (selection) points.push(selection.start, selection.end);
+    return snapTimelineTime(time, createSnapSettings(points, bypassSnap));
+  }
+
   async function handleClipEdgeTrim(
     trackId: string,
     clipId: string,
     edge: 'left' | 'right',
     deltaSeconds: number,
+    bypassSnap = false,
   ) {
-    if (!project || Math.abs(deltaSeconds) < 0.001) return;
+    if (!project) return;
+    const keys = keysForClip(trackId, clipId);
+    const delta = resolveClipSnapDelta(trackId, clipId, `trim-${edge}`, deltaSeconds, bypassSnap);
+    if (Math.abs(delta) < 0.001) return;
     await commitClipEdit(
-      trimClipSelection(project, keysForClip(trackId, clipId), edge, deltaSeconds),
-      selectedClips.length > 1 ? '成组修剪片段' : '修剪片段',
+      trimClipSelection(project, keys, edge, delta),
+      keys.length > 1 ? '成组修剪片段' : '修剪片段',
     );
   }
 
@@ -568,19 +624,26 @@ export default function AudioEditorPage() {
     clipId: string,
     edge: 'left' | 'right',
     deltaSeconds: number,
+    bypassSnap = false,
   ) {
-    if (!project || Math.abs(deltaSeconds) < 0.001) return;
+    if (!project) return;
+    const keys = keysForClip(trackId, clipId);
+    const delta = resolveClipSnapDelta(trackId, clipId, `stretch-${edge}`, deltaSeconds, bypassSnap);
+    if (Math.abs(delta) < 0.001) return;
     await commitClipEdit(
-      stretchClipSelection(project, keysForClip(trackId, clipId), edge, deltaSeconds),
-      selectedClips.length > 1 ? '成组拉伸片段' : '时间拉伸片段',
+      stretchClipSelection(project, keys, edge, delta),
+      keys.length > 1 ? '成组拉伸片段' : '时间拉伸片段',
     );
   }
 
-  async function handleClipMove(trackId: string, clipId: string, deltaSeconds: number) {
-    if (!project || Math.abs(deltaSeconds) < 0.001) return;
+  async function handleClipMove(trackId: string, clipId: string, deltaSeconds: number, bypassSnap = false) {
+    if (!project) return;
+    const keys = keysForClip(trackId, clipId);
+    const delta = resolveClipSnapDelta(trackId, clipId, 'move', deltaSeconds, bypassSnap);
+    if (Math.abs(delta) < 0.001) return;
     await commitClipEdit(
-      moveClipSelection(project, keysForClip(trackId, clipId), deltaSeconds),
-      selectedClips.length > 1 ? '成组移动片段' : '移动片段',
+      moveClipSelection(project, keys, delta),
+      keys.length > 1 ? '成组移动片段' : '移动片段',
     );
   }
 
@@ -2277,12 +2340,14 @@ export default function AudioEditorPage() {
                 isSelected={selectedTrackId === track.id}
                 selectedClips={selectedClips}
                 onSelectClip={(clipId, additive) => selectClip(track.id, clipId, additive)}
-                onTrimClip={(clipId, edge, delta) => handleClipEdgeTrim(track.id, clipId, edge, delta)}
-                onStretchClip={(clipId, edge, delta) => handleClipStretch(track.id, clipId, edge, delta)}
-                onMoveClip={(clipId, delta) => handleClipMove(track.id, clipId, delta)}
+                onTrimClip={(clipId, edge, delta, bypassSnap) => handleClipEdgeTrim(track.id, clipId, edge, delta, bypassSnap)}
+                onStretchClip={(clipId, edge, delta, bypassSnap) => handleClipStretch(track.id, clipId, edge, delta, bypassSnap)}
+                onMoveClip={(clipId, delta, bypassSnap) => handleClipMove(track.id, clipId, delta, bypassSnap)}
+                onResolveClipDelta={(clipId, operation, delta, bypassSnap) => resolveClipSnapDelta(track.id, clipId, operation, delta, bypassSnap)}
                 onResetClip={(clipId) => handleClipReset(track.id, clipId)}
                 onSelectionChange={handleSelectionChange}
                 onCursorChange={handleCursorChange}
+                onSnapTime={resolveTimelineSnap}
               />
             ))}
 
@@ -2348,6 +2413,33 @@ export default function AudioEditorPage() {
             <span className="text-[#aab0b6]">
               {selection ? '已选择音频区间' : '在时间轴上拖拽以选择音频'}
             </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5" aria-label="吸附工具栏">
+            <Button
+              type="button"
+              variant={snapEnabled ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 px-2 text-[10px]"
+              aria-label={snapEnabled ? '关闭吸附' : '启用吸附'}
+              aria-pressed={snapEnabled}
+              title="吸附到片段边界或时间网格；8 px 容差，Alt 拖动临时关闭"
+              onClick={() => setSnapEnabled((enabled) => !enabled)}
+            >
+              <Magnet className="mr-1 size-3.5" />
+              吸附
+            </Button>
+            <Select value={snapMode} onValueChange={(value) => setSnapMode(value as SnapMode)} disabled={!snapEnabled}>
+              <SelectTrigger aria-label="吸附目标" className="h-7 w-28 text-[10px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="clips">片段边界</SelectItem>
+                <SelectItem value="samples">采样点</SelectItem>
+                <SelectItem value="milliseconds">毫秒</SelectItem>
+                <SelectItem value="seconds">秒</SelectItem>
+                <SelectItem value="beats">节拍</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex max-w-full flex-wrap items-end gap-2 font-mono tabular-nums">
             <label className="flex flex-col gap-0.5 text-[9px] uppercase tracking-wide text-[#aab0b6]">
@@ -2509,7 +2601,7 @@ export default function AudioEditorPage() {
                   id="tone-duration"
                   type="number"
                   min="0.001"
-                  step="0.1"
+                  step="0.001"
                   value={toneDuration}
                   onChange={(event) => setToneDuration(event.target.value)}
                   required
@@ -2910,9 +3002,11 @@ function TrackTimeline({
   onTrimClip,
   onStretchClip,
   onMoveClip,
+  onResolveClipDelta,
   onResetClip,
   onSelectionChange,
   onCursorChange,
+  onSnapTime,
 }: {
   track: ITrack;
   trackIndex: number;
@@ -2926,12 +3020,14 @@ function TrackTimeline({
   isSelected: boolean;
   selectedClips: ClipKey[];
   onSelectClip: (clipId: string, additive: boolean) => void;
-  onTrimClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number) => void;
-  onStretchClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number) => void;
-  onMoveClip: (clipId: string, deltaSeconds: number) => void;
+  onTrimClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number, bypassSnap?: boolean) => void;
+  onStretchClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number, bypassSnap?: boolean) => void;
+  onMoveClip: (clipId: string, deltaSeconds: number, bypassSnap?: boolean) => void;
+  onResolveClipDelta: (clipId: string, operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onResetClip: (clipId: string) => void;
   onSelectionChange: (start: number, end: number) => void;
   onCursorChange: (pos: number) => void;
+  onSnapTime: (time: number, bypassSnap: boolean) => number;
 }) {
   const trackHeight = 100;
   const [isDragging, setIsDragging] = useState(false);
@@ -2940,7 +3036,8 @@ function TrackTimeline({
   function handleMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const pos = x / pxPerSec;
+    const rawPosition = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
+    const pos = onSnapTime(rawPosition, e.altKey);
     setIsDragging(true);
     setDragStart(pos);
     onCursorChange(pos);
@@ -2950,7 +3047,8 @@ function TrackTimeline({
     if (!isDragging) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const pos = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
+    const rawPosition = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
+    const pos = onSnapTime(rawPosition, e.altKey);
     onSelectionChange(dragStart, pos);
   }
 
@@ -2992,9 +3090,10 @@ function TrackTimeline({
           viewMode={viewMode}
           isSelected={selectedClips.some((key) => key.trackId === track.id && key.clipId === clip.id)}
           trackColor={track.color}
-          onTrim={(edge, delta) => onTrimClip(clip.id, edge, delta)}
-          onStretch={(edge, delta) => onStretchClip(clip.id, edge, delta)}
-          onMove={(delta) => onMoveClip(clip.id, delta)}
+          onTrim={(edge, delta, bypassSnap) => onTrimClip(clip.id, edge, delta, bypassSnap)}
+          onStretch={(edge, delta, bypassSnap) => onStretchClip(clip.id, edge, delta, bypassSnap)}
+          onMove={(delta, bypassSnap) => onMoveClip(clip.id, delta, bypassSnap)}
+          onResolveDelta={(operation, delta, bypassSnap) => onResolveClipDelta(clip.id, operation, delta, bypassSnap)}
           onReset={() => onResetClip(clip.id)}
           onSelect={(additive) => onSelectClip(clip.id, additive)}
         />
@@ -3018,6 +3117,7 @@ function ClipItem({
   onTrim,
   onStretch,
   onMove,
+  onResolveDelta,
   onReset,
   onSelect,
 }: {
@@ -3031,9 +3131,10 @@ function ClipItem({
   viewMode: ViewMode;
   isSelected: boolean;
   trackColor: string;
-  onTrim: (edge: 'left' | 'right', deltaSeconds: number) => void;
-  onStretch: (edge: 'left' | 'right', deltaSeconds: number) => void;
-  onMove: (deltaSeconds: number) => void;
+  onTrim: (edge: 'left' | 'right', deltaSeconds: number, bypassSnap?: boolean) => void;
+  onStretch: (edge: 'left' | 'right', deltaSeconds: number, bypassSnap?: boolean) => void;
+  onMove: (deltaSeconds: number, bypassSnap?: boolean) => void;
+  onResolveDelta: (operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onReset: () => void;
   onSelect: (additive: boolean) => void;
 }) {
@@ -3132,15 +3233,17 @@ function ClipItem({
     if (!edgeDrag) return;
     e.stopPropagation();
     const rawDelta = (e.clientX - edgeDrag.startX) / pxPerSec;
-    setEdgeDrag({ ...edgeDrag, delta: boundedEdgeDelta(edgeDrag.edge, edgeDrag.mode, rawDelta) });
+    const bounded = boundedEdgeDelta(edgeDrag.edge, edgeDrag.mode, rawDelta);
+    const operation: ClipSnapOperation = `${edgeDrag.mode}-${edgeDrag.edge}`;
+    setEdgeDrag({ ...edgeDrag, delta: onResolveDelta(operation, bounded, e.altKey) });
   }
 
   function handleEdgeEnd(e: React.PointerEvent<HTMLButtonElement>) {
     if (!edgeDrag) return;
     e.stopPropagation();
     if (Math.abs(edgeDrag.delta) >= 0.001) {
-      if (edgeDrag.mode === 'trim') onTrim(edgeDrag.edge, edgeDrag.delta);
-      else onStretch(edgeDrag.edge, edgeDrag.delta);
+      if (edgeDrag.mode === 'trim') onTrim(edgeDrag.edge, edgeDrag.delta, e.altKey);
+      else onStretch(edgeDrag.edge, edgeDrag.delta, e.altKey);
     }
     setEdgeDrag(null);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
@@ -3155,7 +3258,8 @@ function ClipItem({
     e.preventDefault();
     e.stopPropagation();
     const direction = e.key === 'ArrowLeft' ? -1 : 1;
-    const delta = boundedEdgeDelta(edge, mode, direction * (e.shiftKey ? 1 : 0.1));
+    const bounded = boundedEdgeDelta(edge, mode, direction * (e.shiftKey ? 1 : 0.1));
+    const delta = onResolveDelta(`${mode}-${edge}`, bounded, false);
     if (Math.abs(delta) >= 0.001) {
       if (mode === 'trim') onTrim(edge, delta);
       else onStretch(edge, delta);
@@ -3172,7 +3276,8 @@ function ClipItem({
   function handleMoveMove(e: React.PointerEvent<HTMLDivElement>) {
     if (!moveDrag) return;
     e.stopPropagation();
-    const delta = Math.max(-clip.startTime, (e.clientX - moveDrag.startX) / pxPerSec);
+    const rawDelta = Math.max(-clip.startTime, (e.clientX - moveDrag.startX) / pxPerSec);
+    const delta = onResolveDelta('move', rawDelta, e.altKey);
     if (Math.abs(delta) >= 0.001) suppressClickRef.current = true;
     setMoveDrag({ ...moveDrag, delta });
   }
@@ -3180,7 +3285,7 @@ function ClipItem({
   function handleMoveEnd(e: React.PointerEvent<HTMLDivElement>) {
     if (!moveDrag) return;
     e.stopPropagation();
-    if (Math.abs(moveDrag.delta) >= 0.001) onMove(moveDrag.delta);
+    if (Math.abs(moveDrag.delta) >= 0.001) onMove(moveDrag.delta, e.altKey);
     setMoveDrag(null);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }

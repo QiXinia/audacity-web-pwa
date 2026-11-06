@@ -74,14 +74,14 @@ function clipsForKeys(project: IProject, keys: ClipKey[]): IClip[] {
   );
 }
 
-export function trimClipSelection(
+export function boundClipTrimDelta(
   project: IProject,
   keys: ClipKey[],
   edge: 'left' | 'right',
   requestedDelta: number,
-): IProject {
+): number {
   const clips = clipsForKeys(project, keys);
-  if (clips.length === 0 || !Number.isFinite(requestedDelta)) return project;
+  if (clips.length === 0 || !Number.isFinite(requestedDelta)) return 0;
 
   let lower = -Infinity;
   let upper = Infinity;
@@ -98,8 +98,16 @@ export function trimClipSelection(
       );
     }
   }
-  if (upper < lower) return project;
-  const delta = clamp(requestedDelta, lower, upper);
+  return upper < lower ? 0 : clamp(requestedDelta, lower, upper);
+}
+
+export function trimClipSelection(
+  project: IProject,
+  keys: ClipKey[],
+  edge: 'left' | 'right',
+  requestedDelta: number,
+): IProject {
+  const delta = boundClipTrimDelta(project, keys, edge, requestedDelta);
   if (Math.abs(delta) < 0.000001) return project;
 
   const selected = selectedClipSet(keys);
@@ -125,14 +133,14 @@ export function trimClipSelection(
   };
 }
 
-export function stretchClipSelection(
+export function boundClipStretchSelectionDelta(
   project: IProject,
   keys: ClipKey[],
   edge: 'left' | 'right',
   requestedDelta: number,
-): IProject {
+): number {
   const clips = clipsForKeys(project, keys);
-  if (clips.length === 0 || !Number.isFinite(requestedDelta)) return project;
+  if (clips.length === 0 || !Number.isFinite(requestedDelta)) return 0;
 
   let lower = -Infinity;
   let upper = Infinity;
@@ -141,8 +149,16 @@ export function stretchClipSelection(
     lower = Math.max(lower, bounds.lower);
     upper = Math.min(upper, bounds.upper);
   }
-  if (upper < lower) return project;
-  const delta = clamp(requestedDelta, lower, upper);
+  return upper < lower ? 0 : clamp(requestedDelta, lower, upper);
+}
+
+export function stretchClipSelection(
+  project: IProject,
+  keys: ClipKey[],
+  edge: 'left' | 'right',
+  requestedDelta: number,
+): IProject {
+  const delta = boundClipStretchSelectionDelta(project, keys, edge, requestedDelta);
   if (Math.abs(delta) < 0.000001) return project;
 
   const selected = selectedClipSet(keys);
