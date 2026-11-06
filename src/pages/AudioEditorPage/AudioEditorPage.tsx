@@ -98,6 +98,7 @@ import { parseAudioClipboard, serializeAudioClipboard, type AudioClipboardData }
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
 import { generateTone, type ToneWaveform } from '@/lib/toneGenerator';
+import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import {
   boundClipStretchDelta,
   clipKeyId,
@@ -139,6 +140,7 @@ import {
 import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType, SnapMode } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
+import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -193,6 +195,8 @@ export default function AudioEditorPage() {
   const [toneAmplitude, setToneAmplitude] = useState('0.8');
   const [toneDuration, setToneDuration] = useState('5');
   const [isGeneratingTone, setIsGeneratingTone] = useState(false);
+  const [noiseDialogOpen, setNoiseDialogOpen] = useState(false);
+  const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -847,6 +851,56 @@ export default function AudioEditorPage() {
       toast.error(`生成音调失败：${message}`);
     } finally {
       setIsGeneratingTone(false);
+    }
+  }
+
+  async function handleGenerateNoise(settings: NoiseRequest) {
+    if (!project) return;
+    const trackId = selectedTrackId ?? project.tracks[0]?.id;
+    if (!trackId) {
+      toast.warning('请先添加一个音频轨道');
+      return;
+    }
+
+    const beforeProject = structuredClone(project);
+    setIsGeneratingNoise(true);
+    try {
+      const randomSeed = new Uint32Array(1);
+      globalThis.crypto?.getRandomValues(randomSeed);
+      const seed = randomSeed[0] || ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0) || 1;
+      const channels = generateNoise({
+        ...settings,
+        sampleRate: project.sampleRate,
+        seed,
+      });
+      const clip = await projectService.addRecordingToTrack(
+        project.id,
+        trackId,
+        [channels],
+        project.sampleRate,
+        cursorPosition,
+        `噪声 ${settings.type}`,
+      );
+      if (!clip) throw new Error('目标轨道不可用');
+
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('工程保存后无法重新加载');
+      setProject(updated);
+      setSelectedTrackId(trackId);
+      setSelectedClips([{ trackId, clipId: clip.id }]);
+      pushHistoryCmd({
+        id: generateId(),
+        label: '生成噪声',
+        execute: () => updated,
+        undo: () => beforeProject,
+      });
+      setNoiseDialogOpen(false);
+      toast.success(`已在 ${formatTime(cursorPosition)} 生成 ${formatTime(settings.duration)} 噪声`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      toast.error(`生成噪声失败：${message}`);
+    } finally {
+      setIsGeneratingNoise(false);
     }
   }
 
@@ -1879,6 +1933,7 @@ export default function AudioEditorPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuItem onClick={() => setToneDialogOpen(true)}>音调…</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setNoiseDialogOpen(true)}>噪声…</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button
@@ -2777,6 +2832,16 @@ export default function AudioEditorPage() {
             </form>
           </DialogContent>
         </Dialog>
+
+        <NoiseGeneratorDialog
+          open={noiseDialogOpen}
+          onOpenChange={setNoiseDialogOpen}
+          sampleRate={project.sampleRate}
+          cursorPosition={cursorPosition}
+          defaultDuration={selection ? Math.max(0.001, selection.end - selection.start) : 5}
+          isGenerating={isGeneratingNoise}
+          onGenerate={handleGenerateNoise}
+        />
 
         {/* Export Dialog */}
         <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
