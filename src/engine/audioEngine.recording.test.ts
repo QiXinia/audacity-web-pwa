@@ -185,6 +185,90 @@ describe('AudioEngine recording boundaries', () => {
     expect(processor.onaudioprocess).toBeNull();
   });
 
+  it('forces mono worklet input on a stereo device', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(2);
+    const { context } = makeContext();
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    let receivedOptions: {
+      channelCount?: number;
+      channelCountMode?: string;
+      outputChannelCount?: number[];
+    } | undefined;
+    class MockWorkletNode {
+      port = {
+        onmessage: null as ((event: { data: Record<string, unknown> }) => void) | null,
+        postMessage: vi.fn(),
+        close: vi.fn(),
+      };
+      connect = vi.fn();
+      disconnect = vi.fn();
+      constructor(
+        _context: unknown,
+        _name: string,
+        options: {
+          channelCount?: number;
+          channelCountMode?: string;
+          outputChannelCount?: number[];
+        },
+      ) {
+        receivedOptions = options;
+        this.port.postMessage.mockImplementation((message: { type: string }) => {
+          if (message.type === 'stop') {
+            queueMicrotask(() => this.port.onmessage?.({ data: { type: 'stopped' } }));
+          }
+        });
+      }
+    }
+    vi.stubGlobal('AudioWorkletNode', MockWorkletNode);
+
+    await engine.startRecording();
+    await engine.stopRecording();
+
+    expect(receivedOptions).toMatchObject({
+      channelCount: 1,
+      channelCountMode: 'explicit',
+      outputChannelCount: [1],
+    });
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('keeps mono recording mono during ScriptProcessor fallback on a stereo device', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(2);
+    const { context, processor, createScriptProcessor } = makeContext({ worklet: false });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    await engine.startRecording();
+    expect(createScriptProcessor).toHaveBeenCalledWith(4096, 1, 1);
+    processor.onaudioprocess?.({
+      inputBuffer: {
+        numberOfChannels: 2,
+        length: 2,
+        getChannelData: (channel: number) => channel === 0
+          ? new Float32Array([0.1, 0.2])
+          : new Float32Array([0.8, 0.9]),
+      },
+    });
+    const result = await engine.stopRecording();
+
+    expect(result).toHaveLength(1);
+    expect(Array.from(result?.[0] ?? [])).toEqual([
+      0.10000000149011612,
+      0.20000000298023224,
+    ]);
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it('disconnects a partially initialized worklet before ScriptProcessor fallback', async () => {
     const engine = new AudioEngine();
     const { stream, stop } = makeMediaStream(1);

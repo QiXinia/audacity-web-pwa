@@ -719,7 +719,9 @@ export class AudioEngine {
       this.recordingMeter = this.createStereoMeter(ctx, source);
       const isStereo = options?.stereo ?? false;
       const deviceChannels = this.mediaStream.getAudioTracks()[0]?.getSettings().channelCount;
-      const inputChannels = Math.min(2, Math.max(1, deviceChannels ?? (isStereo ? 2 : 1)));
+      const inputChannels = isStereo
+        ? Math.min(2, Math.max(1, deviceChannels ?? 2))
+        : 1;
       const recordingSink = ctx.createGain();
     recordingSink.gain.value = 0;
     recordingSink.connect(ctx.destination);
@@ -746,6 +748,8 @@ export class AudioEngine {
         workletNode = new AudioWorkletNode(ctx, 'recording-processor', {
           numberOfInputs: 1,
           numberOfOutputs: 1,
+          channelCount: inputChannels,
+          channelCountMode: 'explicit',
           outputChannelCount: [inputChannels],
         });
         workletNode.port.onmessage = (event) => {
