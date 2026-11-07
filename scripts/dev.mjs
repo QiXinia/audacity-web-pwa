@@ -64,7 +64,7 @@ function startProcess({ name, command, args, logFileName }) {
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
     cwd: ROOT,
-    env: process.env,
+    env: { ...process.env, VITE_APP_BASE: process.env.VITE_APP_BASE || '/' },
     detached: true,
   });
 

@@ -1,13 +1,18 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import NoiseGeneratorDialog from '@/pages/AudioEditorPage/sections/NoiseGeneratorDialog';
 import { GeneratorPreviewPlayer } from '@/lib/generatorPreview';
 import { generateNoise } from '@/lib/noiseGenerator';
 
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -87,5 +92,30 @@ describe('NoiseGeneratorDialog', () => {
     fireEvent.click(view.getByRole('button', { name: '取消' }));
     expect(stop).toHaveBeenCalled();
     expect(view.props.onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('keeps the locked duration when applying and deleting noise presets', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const view = renderDialog({ defaultDuration: 0.5, selectionActive: true });
+    const duration = view.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(duration.value).toBe('0.5'));
+    fireEvent.change(view.getByLabelText('振幅 (0–1)'), { target: { value: '0.2' } });
+    fireEvent.click(view.getByRole('button', { name: '保存预设' }));
+    fireEvent.change(view.getByLabelText('预设名称'), { target: { value: 'Quiet noise' } });
+    fireEvent.click(view.getByRole('button', { name: '确认保存' }));
+
+    fireEvent.change(view.getByLabelText('噪声预设'), { target: { value: 'factory' } });
+    expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.8);
+    expect(duration).toHaveValue(0.5);
+    expect(duration.readOnly).toBe(true);
+
+    const customId = Array.from((view.getByLabelText('噪声预设') as HTMLSelectElement).options)
+      .find((option) => option.text === 'Quiet noise')?.value;
+    expect(customId).toBeTruthy();
+    fireEvent.change(view.getByLabelText('噪声预设'), { target: { value: customId } });
+    fireEvent.click(view.getByRole('button', { name: '删除' }));
+    expect(view.getByLabelText('噪声预设')).toHaveDisplayValue('Audacity 默认');
+    expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.8);
+    expect(duration).toHaveValue(0.5);
   });
 });

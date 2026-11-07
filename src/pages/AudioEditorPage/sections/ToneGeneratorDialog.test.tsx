@@ -1,13 +1,18 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import ToneGeneratorDialog from '@/pages/AudioEditorPage/sections/ToneGeneratorDialog';
 import { GeneratorPreviewPlayer } from '@/lib/generatorPreview';
 import { generateTone } from '@/lib/toneGenerator';
 
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -106,5 +111,41 @@ describe('ToneGeneratorDialog', () => {
     await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
     act(() => finishPreview());
     expect(view.getByRole('button', { name: '试听' })).toBeInTheDocument();
+  });
+
+  it('saves, resets and restores the last-used tone preset across remounts', () => {
+    const view = renderDialog();
+    fireEvent.change(view.getByLabelText('频率 (Hz)'), { target: { value: '880' } });
+    fireEvent.change(view.getByLabelText('振幅 (0–1)'), { target: { value: '0.33' } });
+    fireEvent.click(view.getByRole('button', { name: '保存预设' }));
+    fireEvent.change(view.getByLabelText('预设名称'), { target: { value: 'Lead tone' } });
+    fireEvent.click(view.getByRole('button', { name: '确认保存' }));
+
+    fireEvent.change(view.getByLabelText('频率 (Hz)'), { target: { value: '100' } });
+    expect(view.getByText(/当前参数有未保存修改/)).toBeInTheDocument();
+    fireEvent.click(view.getByRole('button', { name: '重置' }));
+    expect(view.getByLabelText('频率 (Hz)')).toHaveValue(880);
+    expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.33);
+
+    view.unmount();
+    const restored = renderDialog();
+    expect(restored.getByLabelText('频率 (Hz)')).toHaveValue(880);
+    expect(restored.getByLabelText('振幅 (0–1)')).toHaveValue(0.33);
+    expect(restored.getByLabelText('音调预设')).toHaveDisplayValue('Lead tone');
+  });
+
+  it('applies presets without changing a selection-locked duration', async () => {
+    const view = renderDialog({ defaultDuration: 0.5, selectionActive: true });
+    const duration = view.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(duration.value).toBe('0.5'));
+    fireEvent.change(view.getByLabelText('频率 (Hz)'), { target: { value: '880' } });
+    fireEvent.click(view.getByRole('button', { name: '保存预设' }));
+    fireEvent.change(view.getByLabelText('预设名称'), { target: { value: 'Selection safe' } });
+    fireEvent.click(view.getByRole('button', { name: '确认保存' }));
+
+    fireEvent.change(view.getByLabelText('音调预设'), { target: { value: 'factory' } });
+    expect(view.getByLabelText('频率 (Hz)')).toHaveValue(440);
+    expect(duration).toHaveValue(0.5);
+    expect(duration.readOnly).toBe(true);
   });
 });

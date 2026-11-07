@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { nanoid } from 'nanoid';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -19,7 +20,19 @@ import {
 } from '@/components/ui/select';
 import { formatTime } from '@/lib/audioUtils';
 import { formatGeneratorDuration } from '@/lib/generatorDuration';
+import {
+  deleteGeneratorPreset,
+  GENERATOR_PRESET_FACTORY_ID,
+  isValidGeneratorPresetSettings,
+  loadGeneratorPresetStore,
+  saveGeneratorPresetStore,
+  upsertGeneratorPreset,
+  type GeneratorPreset,
+  type GeneratorPresetStore,
+  type TonePresetSettings,
+} from '@/lib/generatorPresets';
 import { generateTone, type ToneRequest, type ToneWaveform } from '@/lib/toneGenerator';
+import GeneratorPresetsBar from './GeneratorPresetsBar';
 import { useGeneratorPreview } from './useGeneratorPreview';
 
 interface ToneGeneratorDialogProps {
@@ -47,11 +60,20 @@ export default function ToneGeneratorDialog({
   isGenerating,
   onGenerate,
 }: ToneGeneratorDialogProps) {
-  const [waveform, setWaveform] = useState<ToneWaveform>('sine');
-  const [frequency, setFrequency] = useState('440');
-  const [amplitude, setAmplitude] = useState('0.8');
+  const [presetStore, setPresetStore] = useState(() => loadGeneratorPresetStore('tone'));
+  const initialPreset = presetStore.presets.find((preset) => preset.id === presetStore.activeId)
+    ?? presetStore.presets[0];
+  const [waveform, setWaveform] = useState<ToneWaveform>(initialPreset.settings.waveform);
+  const [frequency, setFrequency] = useState(String(initialPreset.settings.frequency));
+  const [amplitude, setAmplitude] = useState(String(initialPreset.settings.amplitude));
   const [duration, setDuration] = useState('30');
+  const [presetError, setPresetError] = useState<string | null>(null);
   const { isPreviewing, previewError, startPreview, stopPreview } = useGeneratorPreview();
+  const activePreset = presetStore.presets.find((preset) => preset.id === presetStore.activeId)
+    ?? presetStore.presets[0];
+  const presetDirty = waveform !== activePreset.settings.waveform
+    || Number(frequency) !== activePreset.settings.frequency
+    || Number(amplitude) !== activePreset.settings.amplitude;
 
   useEffect(() => {
     if (open && Number.isFinite(defaultDuration) && defaultDuration > 0) {
@@ -89,6 +111,79 @@ export default function ToneGeneratorDialog({
     }), sampleRate);
   }
 
+  function applyPreset(preset: GeneratorPreset<'tone'>) {
+    stopPreview();
+    setWaveform(preset.settings.waveform);
+    setFrequency(String(preset.settings.frequency));
+    setAmplitude(String(preset.settings.amplitude));
+  }
+
+  function commitPresetStore(next: GeneratorPresetStore<'tone'>): boolean {
+    if (!saveGeneratorPresetStore('tone', next)) {
+      setPresetError('预设保存失败：浏览器存储不可用。');
+      return false;
+    }
+    setPresetStore(next);
+    setPresetError(null);
+    return true;
+  }
+
+  function selectPreset(id: string) {
+    const preset = presetStore.presets.find((candidate) => candidate.id === id);
+    if (!preset) return;
+    if (preset.settings.frequency > sampleRate / 2) {
+      setPresetError('该预设的频率超过当前工程的奈奎斯特频率，未应用。');
+      return;
+    }
+    if (commitPresetStore({ ...presetStore, activeId: id })) applyPreset(preset);
+  }
+
+  function savePreset(name: string): boolean {
+    const settings: TonePresetSettings = {
+      waveform,
+      frequency: Number(frequency),
+      amplitude: Number(amplitude),
+    };
+    if (!isValidGeneratorPresetSettings('tone', settings) || settings.frequency > sampleRate / 2) {
+      setPresetError('请先输入有效的波形、频率和振幅。');
+      return false;
+    }
+    const existing = presetStore.presets.find((preset) => (
+      preset.name.toLocaleLowerCase() === name.trim().toLocaleLowerCase()
+    ));
+    if (existing?.builtIn) {
+      setPresetError('内置预设不可覆盖，请使用其他名称。');
+      return false;
+    }
+    if (existing && !window.confirm(`预设“${existing.name}”已存在，是否替换？`)) return false;
+    try {
+      const next = upsertGeneratorPreset(
+        presetStore,
+        existing?.id ?? nanoid(10),
+        name,
+        settings,
+      );
+      return commitPresetStore(next);
+    } catch (error) {
+      setPresetError(error instanceof Error ? error.message : '预设保存失败。');
+      return false;
+    }
+  }
+
+  function resetPreset() {
+    applyPreset(activePreset);
+    setPresetError(null);
+  }
+
+  function deleteActivePreset() {
+    if (activePreset.id === GENERATOR_PRESET_FACTORY_ID) return;
+    if (!window.confirm(`确定删除预设“${activePreset.name}”？`)) return;
+    const next = deleteGeneratorPreset(presetStore, activePreset.id);
+    if (commitPresetStore(next)) {
+      applyPreset(next.presets.find((preset) => preset.id === next.activeId) ?? next.presets[0]);
+    }
+  }
+
   const selectionDescription = replacementPosition !== undefined && replacementEnd !== undefined
     ? `替换选区 ${formatTime(replacementPosition)}–${formatTime(replacementEnd)}`
     : `替换选区起点 ${formatTime(replacementPosition ?? cursorPosition)}`;
@@ -103,6 +198,17 @@ export default function ToneGeneratorDialog({
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
+          <GeneratorPresetsBar
+            kind="tone"
+            store={presetStore}
+            dirty={presetDirty}
+            disabled={isGenerating}
+            error={presetError}
+            onSelect={selectPreset}
+            onSave={savePreset}
+            onReset={resetPreset}
+            onDelete={deleteActivePreset}
+          />
           <div className="space-y-2">
             <Label htmlFor="tone-waveform">波形</Label>
             <Select value={waveform} onValueChange={(value) => setWaveform(value as ToneWaveform)}>

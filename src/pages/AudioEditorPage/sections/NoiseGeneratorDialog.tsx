@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { nanoid } from 'nanoid';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -18,9 +19,21 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { formatTime } from '@/lib/audioUtils';
-import { generateNoise, type NoiseRequest, type NoiseType } from '@/lib/noiseGenerator';
-import { useGeneratorPreview } from './useGeneratorPreview';
 import { formatGeneratorDuration } from '@/lib/generatorDuration';
+import {
+  deleteGeneratorPreset,
+  GENERATOR_PRESET_FACTORY_ID,
+  isValidGeneratorPresetSettings,
+  loadGeneratorPresetStore,
+  saveGeneratorPresetStore,
+  upsertGeneratorPreset,
+  type GeneratorPreset,
+  type GeneratorPresetStore,
+  type NoisePresetSettings,
+} from '@/lib/generatorPresets';
+import { generateNoise, type NoiseRequest, type NoiseType } from '@/lib/noiseGenerator';
+import GeneratorPresetsBar from './GeneratorPresetsBar';
+import { useGeneratorPreview } from './useGeneratorPreview';
 
 interface NoiseGeneratorDialogProps {
   open: boolean;
@@ -45,10 +58,18 @@ export default function NoiseGeneratorDialog({
   isGenerating,
   onGenerate,
 }: NoiseGeneratorDialogProps) {
-  const [type, setType] = useState<NoiseType>('white');
-  const [amplitude, setAmplitude] = useState('0.8');
+  const [presetStore, setPresetStore] = useState(() => loadGeneratorPresetStore('noise'));
+  const initialPreset = presetStore.presets.find((preset) => preset.id === presetStore.activeId)
+    ?? presetStore.presets[0];
+  const [type, setType] = useState<NoiseType>(initialPreset.settings.type);
+  const [amplitude, setAmplitude] = useState(String(initialPreset.settings.amplitude));
   const [duration, setDuration] = useState('30');
+  const [presetError, setPresetError] = useState<string | null>(null);
   const { isPreviewing, previewError, startPreview, stopPreview } = useGeneratorPreview();
+  const activePreset = presetStore.presets.find((preset) => preset.id === presetStore.activeId)
+    ?? presetStore.presets[0];
+  const presetDirty = type !== activePreset.settings.type
+    || Number(amplitude) !== activePreset.settings.amplitude;
 
   useEffect(() => {
     if (open && Number.isFinite(defaultDuration) && defaultDuration > 0) {
@@ -80,6 +101,69 @@ export default function NoiseGeneratorDialog({
     }), sampleRate);
   }
 
+  function applyPreset(preset: GeneratorPreset<'noise'>) {
+    stopPreview();
+    setType(preset.settings.type);
+    setAmplitude(String(preset.settings.amplitude));
+  }
+
+  function commitPresetStore(next: GeneratorPresetStore<'noise'>): boolean {
+    if (!saveGeneratorPresetStore('noise', next)) {
+      setPresetError('预设保存失败：浏览器存储不可用。');
+      return false;
+    }
+    setPresetStore(next);
+    setPresetError(null);
+    return true;
+  }
+
+  function selectPreset(id: string) {
+    const preset = presetStore.presets.find((candidate) => candidate.id === id);
+    if (preset && commitPresetStore({ ...presetStore, activeId: id })) applyPreset(preset);
+  }
+
+  function savePreset(name: string): boolean {
+    const settings: NoisePresetSettings = { type, amplitude: Number(amplitude) };
+    if (!isValidGeneratorPresetSettings('noise', settings)) {
+      setPresetError('请先输入有效的噪声类型和振幅。');
+      return false;
+    }
+    const existing = presetStore.presets.find((preset) => (
+      preset.name.toLocaleLowerCase() === name.trim().toLocaleLowerCase()
+    ));
+    if (existing?.builtIn) {
+      setPresetError('内置预设不可覆盖，请使用其他名称。');
+      return false;
+    }
+    if (existing && !window.confirm(`预设“${existing.name}”已存在，是否替换？`)) return false;
+    try {
+      const next = upsertGeneratorPreset(
+        presetStore,
+        existing?.id ?? nanoid(10),
+        name,
+        settings,
+      );
+      return commitPresetStore(next);
+    } catch (error) {
+      setPresetError(error instanceof Error ? error.message : '预设保存失败。');
+      return false;
+    }
+  }
+
+  function resetPreset() {
+    applyPreset(activePreset);
+    setPresetError(null);
+  }
+
+  function deleteActivePreset() {
+    if (activePreset.id === GENERATOR_PRESET_FACTORY_ID) return;
+    if (!window.confirm(`确定删除预设“${activePreset.name}”？`)) return;
+    const next = deleteGeneratorPreset(presetStore, activePreset.id);
+    if (commitPresetStore(next)) {
+      applyPreset(next.presets.find((preset) => preset.id === next.activeId) ?? next.presets[0]);
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent>
@@ -90,6 +174,17 @@ export default function NoiseGeneratorDialog({
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
+          <GeneratorPresetsBar
+            kind="noise"
+            store={presetStore}
+            dirty={presetDirty}
+            disabled={isGenerating}
+            error={presetError}
+            onSelect={selectPreset}
+            onSave={savePreset}
+            onReset={resetPreset}
+            onDelete={deleteActivePreset}
+          />
           <div className="space-y-2">
             <Label htmlFor="noise-type">噪声类型</Label>
             <Select value={type} onValueChange={(value) => setType(value as NoiseType)}>

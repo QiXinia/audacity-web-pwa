@@ -3,12 +3,12 @@ import { fileURLToPath } from 'url';
 import { defineConfig } from 'vitest/config';
 import { VitePWA } from 'vite-plugin-pwa';
 import tailwindcss from '@tailwindcss/vite';
+import { resolveAppBase } from './src/lib/appBase.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// 支持通过环境变量配置 base，用于 GitHub Pages 子路径部署
-// 默认 '/'，部署到 Pages 时设为 '/audacity-web-pwa/'
-const APP_BASE = process.env.VITE_APP_BASE || '/';
+// 生产构建与 preview 默认使用 Pages 子路径；开发服务器显式使用根路径。
+const APP_BASE = resolveAppBase(process.env.VITE_APP_BASE);
 
 export default defineConfig({
   base: APP_BASE,
