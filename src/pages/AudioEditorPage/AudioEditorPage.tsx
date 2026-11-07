@@ -97,14 +97,13 @@ import { historyManager } from '@/services/historyService';
 import { parseAudioClipboard, serializeAudioClipboard, type AudioClipboardData } from '@/services/clipboardService';
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
-import { generateTone, type ToneWaveform } from '@/lib/toneGenerator';
+import { generateTone, type ToneRequest } from '@/lib/toneGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
 import { quantizeSelectionToSamples } from '@/lib/generatorEditing';
 import {
   loadGeneratorDuration,
   saveGeneratorDuration,
-  formatGeneratorDuration,
   type GeneratorKind,
 } from '@/lib/generatorDuration';
 import {
@@ -148,6 +147,7 @@ import {
 import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType, SnapMode } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
+import ToneGeneratorDialog from './sections/ToneGeneratorDialog';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
@@ -204,10 +204,6 @@ export default function AudioEditorPage() {
     silence: loadGeneratorDuration('silence'),
   }));
   const [toneDialogOpen, setToneDialogOpen] = useState(false);
-  const [toneWaveform, setToneWaveform] = useState<ToneWaveform>('sine');
-  const [toneFrequency, setToneFrequency] = useState('440');
-  const [toneAmplitude, setToneAmplitude] = useState('0.8');
-  const [toneDuration, setToneDuration] = useState(() => formatGeneratorDuration(generatorDurations.tone));
   const [isGeneratingTone, setIsGeneratingTone] = useState(false);
   const [noiseDialogOpen, setNoiseDialogOpen] = useState(false);
   const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
@@ -245,11 +241,6 @@ export default function AudioEditorPage() {
       return updated;
     });
   }, [workspaceLayout]);
-
-  useEffect(() => {
-    if (!toneDialogOpen) return;
-    setToneDuration(formatGeneratorDuration(generatorSelectionDuration ?? generatorDurations.tone));
-  }, [toneDialogOpen, generatorSelectionDuration, generatorDurations.tone]);
 
   // Load project
   useEffect(() => {
@@ -834,7 +825,7 @@ export default function AudioEditorPage() {
     saveGeneratorDuration(kind, duration);
   }
 
-  async function handleGenerateTone() {
+  async function handleGenerateTone(settings: ToneRequest) {
     if (!project) return;
     const trackId = selectedTrackId ?? project.tracks[0]?.id;
     if (!trackId) {
@@ -846,15 +837,13 @@ export default function AudioEditorPage() {
     const beforeProject = structuredClone(project);
     setIsGeneratingTone(true);
     try {
-      const frequency = Number(toneFrequency);
-      const amplitude = Number(toneAmplitude);
       const duration = activeSelection
         ? activeSelection.end - activeSelection.start
-        : Number(toneDuration);
+        : settings.duration;
       const channels = generateTone({
-        waveform: toneWaveform,
-        frequency,
-        amplitude,
+        waveform: settings.waveform,
+        frequency: settings.frequency,
+        amplitude: settings.amplitude,
         duration,
         sampleRate: project.sampleRate,
       });
@@ -864,7 +853,7 @@ export default function AudioEditorPage() {
         [channels],
         project.sampleRate,
         activeSelection?.start ?? cursorPosition,
-        `音调 ${frequency} Hz`,
+        `音调 ${settings.frequency} Hz`,
         activeSelection ?? undefined,
       );
       if (!clip) throw new Error('目标轨道不可用');
@@ -2869,91 +2858,18 @@ export default function AudioEditorPage() {
           </DialogContent>
         </Dialog>
 
-        <Dialog open={toneDialogOpen} onOpenChange={setToneDialogOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>生成音调</DialogTitle>
-              <DialogDescription>
-                按 Audacity Tone 的恒定频率与振幅生成真实单声道音频片段。
-              </DialogDescription>
-            </DialogHeader>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleGenerateTone();
-              }}
-              className="space-y-4"
-            >
-              <div className="space-y-2">
-                <Label htmlFor="tone-waveform">波形</Label>
-                <Select value={toneWaveform} onValueChange={(value) => setToneWaveform(value as ToneWaveform)}>
-                  <SelectTrigger id="tone-waveform" aria-label="音调波形">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="sine">正弦波 (Sine)</SelectItem>
-                    <SelectItem value="square">方波 (Square)</SelectItem>
-                    <SelectItem value="sawtooth">锯齿波 (Sawtooth)</SelectItem>
-                    <SelectItem value="squareNoAlias">无混叠方波 (Square, no alias)</SelectItem>
-                    <SelectItem value="triangle">三角波 (Triangle)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="tone-frequency">频率 (Hz)</Label>
-                  <Input
-                    id="tone-frequency"
-                    type="number"
-                    min="1"
-                    max={project.sampleRate / 2}
-                    step="1"
-                    value={toneFrequency}
-                    onChange={(event) => setToneFrequency(event.target.value)}
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="tone-amplitude">振幅 (0–1)</Label>
-                  <Input
-                    id="tone-amplitude"
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={toneAmplitude}
-                    onChange={(event) => setToneAmplitude(event.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="tone-duration">时长（秒）</Label>
-                <Input
-                  id="tone-duration"
-                  type="number"
-                  min={1 / project.sampleRate}
-                  step="any"
-                  value={toneDuration}
-                  readOnly={Boolean(quantizedGeneratorSelection)}
-                  onChange={(event) => setToneDuration(event.target.value)}
-                  required
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {quantizedGeneratorSelection
-                  ? `采样率 ${project.sampleRate} Hz · 替换选区 ${formatTime(quantizedGeneratorSelection.start)}–${formatTime(quantizedGeneratorSelection.end)} · 时长已锁定到音频采样`
-                  : `采样率 ${project.sampleRate} Hz · 插入位置 ${formatTime(cursorPosition)} · 默认 30 秒并记住上次时长 · 频率不得超过 ${project.sampleRate / 2} Hz`}
-              </p>
-              <DialogFooter>
-                <Button type="button" variant="secondary" onClick={() => setToneDialogOpen(false)}>取消</Button>
-                <Button type="submit" disabled={isGeneratingTone}>
-                  {isGeneratingTone ? '正在生成…' : '生成音调'}
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
+        <ToneGeneratorDialog
+          open={toneDialogOpen}
+          onOpenChange={setToneDialogOpen}
+          sampleRate={project.sampleRate}
+          cursorPosition={cursorPosition}
+          defaultDuration={generatorSelectionDuration ?? generatorDurations.tone}
+          selectionActive={Boolean(quantizedGeneratorSelection)}
+          replacementPosition={quantizedGeneratorSelection?.start}
+          replacementEnd={quantizedGeneratorSelection?.end}
+          isGenerating={isGeneratingTone}
+          onGenerate={handleGenerateTone}
+        />
 
         <NoiseGeneratorDialog
           open={noiseDialogOpen}

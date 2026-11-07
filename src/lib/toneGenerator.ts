@@ -8,6 +8,8 @@ export interface ToneSettings {
   sampleRate: number;
 }
 
+export type ToneRequest = Pick<ToneSettings, 'waveform' | 'frequency' | 'amplitude' | 'duration'>;
+
 function fraction(value: number): number {
   return value - Math.floor(value);
 }
