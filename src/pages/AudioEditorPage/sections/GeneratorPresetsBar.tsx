@@ -1,5 +1,12 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { MoreHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -14,10 +21,13 @@ interface GeneratorPresetsBarProps<K extends GeneratorPresetKind> {
   dirty: boolean;
   disabled?: boolean;
   error?: string | null;
+  notice?: string | null;
   onSelect: (id: string) => void;
   onSave: (name: string) => boolean;
   onReset: () => void;
   onDelete: () => void;
+  onImport: (file: File) => void | Promise<void>;
+  onExport: () => void;
 }
 
 export default function GeneratorPresetsBar<K extends GeneratorPresetKind>({
@@ -26,21 +36,37 @@ export default function GeneratorPresetsBar<K extends GeneratorPresetKind>({
   dirty,
   disabled = false,
   error,
+  notice,
   onSelect,
   onSave,
   onReset,
   onDelete,
+  onImport,
+  onExport,
 }: GeneratorPresetsBarProps<K>) {
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [name, setName] = useState('');
+  const fileInput = useRef<HTMLInputElement>(null);
   const label = kind === 'tone' ? '音调预设' : '噪声预设';
   const active = store.presets.find((preset) => preset.id === store.activeId)
     ?? store.presets[0];
+  const controlsDisabled = disabled || importing;
 
   function save() {
     if (onSave(name)) {
       setName('');
       setSaving(false);
+    }
+  }
+
+  async function importFile(file: File | undefined) {
+    if (!file) return;
+    setImporting(true);
+    try {
+      await onImport(file);
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -54,7 +80,7 @@ export default function GeneratorPresetsBar<K extends GeneratorPresetKind>({
             aria-label={label}
             className="border-input bg-transparent focus-visible:border-ring focus-visible:ring-ring/20 h-9 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50"
             value={store.activeId}
-            disabled={disabled}
+            disabled={controlsDisabled}
             onChange={(event) => onSelect(event.target.value)}
           >
             {store.presets.map((preset) => (
@@ -62,18 +88,49 @@ export default function GeneratorPresetsBar<K extends GeneratorPresetKind>({
             ))}
           </select>
         </div>
-        <Button type="button" variant="outline" disabled={disabled} onClick={() => setSaving((value) => !value)}>
+        <Button type="button" variant="outline" disabled={controlsDisabled} onClick={() => setSaving((value) => !value)}>
           保存预设
         </Button>
-        <Button type="button" variant="outline" disabled={disabled} onClick={onReset}>重置</Button>
+        <Button type="button" variant="outline" disabled={controlsDisabled} onClick={onReset}>重置</Button>
         <Button
           type="button"
           variant="outline"
-          disabled={disabled || active?.id === GENERATOR_PRESET_FACTORY_ID}
+          disabled={controlsDisabled || active?.id === GENERATOR_PRESET_FACTORY_ID}
           onClick={onDelete}
         >
           删除
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              aria-label="预设选项"
+              disabled={controlsDisabled}
+            >
+              <MoreHorizontal aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => fileInput.current?.click()}>
+              导入预设…
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onExport}>导出预设</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <input
+          ref={fileInput}
+          type="file"
+          accept=".txt,text/plain"
+          aria-label={`${label}文件`}
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            void importFile(file);
+          }}
+        />
       </div>
       <p className="text-xs text-muted-foreground">
         {dirty ? '当前参数有未保存修改；重置可恢复所选预设。' : `当前：${active?.name ?? label}。时长独立记忆，不随预设覆盖。`}
@@ -101,6 +158,7 @@ export default function GeneratorPresetsBar<K extends GeneratorPresetKind>({
         </div>
       )}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}
     </div>
   );
 }

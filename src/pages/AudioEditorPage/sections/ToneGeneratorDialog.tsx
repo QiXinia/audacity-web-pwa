@@ -22,9 +22,13 @@ import { formatTime } from '@/lib/audioUtils';
 import { formatGeneratorDuration } from '@/lib/generatorDuration';
 import {
   deleteGeneratorPreset,
+  downloadGeneratorPreset,
   GENERATOR_PRESET_FACTORY_ID,
+  GENERATOR_PRESET_FILE_MAX_BYTES,
+  GeneratorPresetFileError,
   isValidGeneratorPresetSettings,
   loadGeneratorPresetStore,
+  parseGeneratorPresetFile,
   saveGeneratorPresetStore,
   upsertGeneratorPreset,
   type GeneratorPreset,
@@ -68,6 +72,7 @@ export default function ToneGeneratorDialog({
   const [amplitude, setAmplitude] = useState(String(initialPreset.settings.amplitude));
   const [duration, setDuration] = useState('30');
   const [presetError, setPresetError] = useState<string | null>(null);
+  const [presetNotice, setPresetNotice] = useState<string | null>(null);
   const { isPreviewing, previewError, startPreview, stopPreview } = useGeneratorPreview();
   const activePreset = presetStore.presets.find((preset) => preset.id === presetStore.activeId)
     ?? presetStore.presets[0];
@@ -116,6 +121,7 @@ export default function ToneGeneratorDialog({
     setWaveform(preset.settings.waveform);
     setFrequency(String(preset.settings.frequency));
     setAmplitude(String(preset.settings.amplitude));
+    setPresetNotice(null);
   }
 
   function commitPresetStore(next: GeneratorPresetStore<'tone'>): boolean {
@@ -184,6 +190,52 @@ export default function ToneGeneratorDialog({
     }
   }
 
+  async function importPreset(file: File) {
+    setPresetNotice(null);
+    if (file.size > GENERATOR_PRESET_FILE_MAX_BYTES) {
+      setPresetError('预设文件过大，未应用。');
+      return;
+    }
+    try {
+      const settings = parseGeneratorPresetFile('tone', await file.text());
+      if (settings.frequency > sampleRate / 2) {
+        throw new GeneratorPresetFileError(
+          'invalid',
+          '预设频率超过当前工程的奈奎斯特频率，未应用。',
+        );
+      }
+      stopPreview();
+      setWaveform(settings.waveform);
+      setFrequency(String(settings.frequency));
+      setAmplitude(String(settings.amplitude));
+      setPresetError(null);
+      setPresetNotice(`已从 ${file.name || '预设文件'} 导入参数；时长未改变。`);
+    } catch (error) {
+      setPresetError(error instanceof Error ? error.message : '读取预设文件失败，未应用。');
+    }
+  }
+
+  function exportPreset() {
+    const settings: TonePresetSettings = {
+      waveform,
+      frequency: Number(frequency),
+      amplitude: Number(amplitude),
+    };
+    if (!isValidGeneratorPresetSettings('tone', settings) || settings.frequency > sampleRate / 2) {
+      setPresetNotice(null);
+      setPresetError('请先输入有效的波形、频率和振幅，再导出。');
+      return;
+    }
+    try {
+      downloadGeneratorPreset('tone', settings);
+      setPresetError(null);
+      setPresetNotice('已导出当前音调参数；时长不包含在文件中。');
+    } catch (error) {
+      setPresetNotice(null);
+      setPresetError(error instanceof Error ? error.message : '导出预设失败。');
+    }
+  }
+
   const selectionDescription = replacementPosition !== undefined && replacementEnd !== undefined
     ? `替换选区 ${formatTime(replacementPosition)}–${formatTime(replacementEnd)}`
     : `替换选区起点 ${formatTime(replacementPosition ?? cursorPosition)}`;
@@ -204,10 +256,13 @@ export default function ToneGeneratorDialog({
             dirty={presetDirty}
             disabled={isGenerating}
             error={presetError}
+            notice={presetNotice}
             onSelect={selectPreset}
             onSave={savePreset}
             onReset={resetPreset}
             onDelete={deleteActivePreset}
+            onImport={importPreset}
+            onExport={exportPreset}
           />
           <div className="space-y-2">
             <Label htmlFor="tone-waveform">波形</Label>

@@ -14,6 +14,7 @@ afterEach(() => {
   cleanup();
   window.localStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function renderDialog(overrides: Partial<Parameters<typeof ToneGeneratorDialog>[0]> = {}) {
@@ -28,6 +29,26 @@ function renderDialog(overrides: Partial<Parameters<typeof ToneGeneratorDialog>[
     ...overrides,
   };
   return { ...render(<ToneGeneratorDialog {...props} />), props };
+}
+
+async function openPresetMenu(view: ReturnType<typeof renderDialog>) {
+  fireEvent.pointerDown(view.getByRole('button', { name: '预设选项' }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse',
+  });
+  await view.findByRole('menu');
+}
+
+function stubObjectUrls() {
+  const createObjectURL = vi.fn((_blob: Blob) => 'blob:tone-preset');
+  const revokeObjectURL = vi.fn();
+  class MockURL extends URL {
+    static createObjectURL = createObjectURL;
+    static revokeObjectURL = revokeObjectURL;
+  }
+  vi.stubGlobal('URL', MockURL);
+  return { createObjectURL, revokeObjectURL };
 }
 
 describe('ToneGeneratorDialog', () => {
@@ -147,5 +168,66 @@ describe('ToneGeneratorDialog', () => {
     expect(view.getByLabelText('频率 (Hz)')).toHaveValue(440);
     expect(duration).toHaveValue(0.5);
     expect(duration.readOnly).toBe(true);
+  });
+
+  it('imports and exports official Tone text through the preset options menu', async () => {
+    const view = renderDialog({ defaultDuration: 0.5, selectionActive: true });
+    const duration = view.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(duration.value).toBe('0.5'));
+    const input = view.getByLabelText('音调预设文件') as HTMLInputElement;
+    const inputClick = vi.spyOn(input, 'click');
+
+    await openPresetMenu(view);
+    fireEvent.click(view.getByRole('menuitem', { name: '导入预设…' }));
+    expect(inputClick).toHaveBeenCalledOnce();
+    fireEvent.change(input, {
+      target: {
+        files: [new File([
+          'Tone:Amplitude="0.25" Frequency="880" Interpolation="Linear" Waveform="Square, no alias"',
+        ], 'official-tone.txt', { type: 'text/plain' })],
+      },
+    });
+
+    await waitFor(() => expect(view.getByLabelText('频率 (Hz)')).toHaveValue(880));
+    expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.25);
+    expect(view.getByLabelText('音调波形')).toHaveTextContent('无混叠方波 (Square, no alias)');
+    expect(duration).toHaveValue(0.5);
+    expect(view.getByRole('status')).toHaveTextContent('official-tone.txt');
+    expect((view.getByLabelText('音调预设') as HTMLSelectElement).options).toHaveLength(1);
+
+    const { createObjectURL } = stubObjectUrls();
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    await openPresetMenu(view);
+    fireEvent.click(view.getByRole('menuitem', { name: '导出预设' }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledOnce());
+    expect(anchorClick).toHaveBeenCalledOnce();
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    await expect(blob.text()).resolves.toBe(
+      'Tone:Amplitude="0.25" Frequency="880" Interpolation="Linear" Waveform="Square, no alias"',
+    );
+    expect(view.getByRole('status')).toHaveTextContent('时长不包含在文件中');
+  });
+
+  it('rejects cross-effect and over-Nyquist files without changing current parameters', async () => {
+    const view = renderDialog({ sampleRate: 44100 });
+    fireEvent.change(view.getByLabelText('频率 (Hz)'), { target: { value: '220' } });
+    const input = view.getByLabelText('音调预设文件');
+    fireEvent.change(input, {
+      target: { files: [new File(['Noise:Amplitude="0.1" Type="Pink"'], 'noise.txt')] },
+    });
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('其他效果'));
+    expect(view.getByLabelText('频率 (Hz)')).toHaveValue(220);
+    expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.8);
+
+    fireEvent.change(input, {
+      target: {
+        files: [new File([
+          'Tone:Amplitude="0.4" Frequency="23000" Interpolation="Linear" Waveform="Triangle"',
+        ], 'too-high.txt')],
+      },
+    });
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('奈奎斯特'));
+    expect(view.getByLabelText('频率 (Hz)')).toHaveValue(220);
+    expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.8);
   });
 });

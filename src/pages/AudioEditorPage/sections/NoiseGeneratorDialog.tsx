@@ -22,9 +22,13 @@ import { formatTime } from '@/lib/audioUtils';
 import { formatGeneratorDuration } from '@/lib/generatorDuration';
 import {
   deleteGeneratorPreset,
+  downloadGeneratorPreset,
   GENERATOR_PRESET_FACTORY_ID,
+  GENERATOR_PRESET_FILE_MAX_BYTES,
+  GeneratorPresetFileError,
   isValidGeneratorPresetSettings,
   loadGeneratorPresetStore,
+  parseGeneratorPresetFile,
   saveGeneratorPresetStore,
   upsertGeneratorPreset,
   type GeneratorPreset,
@@ -65,6 +69,7 @@ export default function NoiseGeneratorDialog({
   const [amplitude, setAmplitude] = useState(String(initialPreset.settings.amplitude));
   const [duration, setDuration] = useState('30');
   const [presetError, setPresetError] = useState<string | null>(null);
+  const [presetNotice, setPresetNotice] = useState<string | null>(null);
   const { isPreviewing, previewError, startPreview, stopPreview } = useGeneratorPreview();
   const activePreset = presetStore.presets.find((preset) => preset.id === presetStore.activeId)
     ?? presetStore.presets[0];
@@ -105,6 +110,7 @@ export default function NoiseGeneratorDialog({
     stopPreview();
     setType(preset.settings.type);
     setAmplitude(String(preset.settings.amplitude));
+    setPresetNotice(null);
   }
 
   function commitPresetStore(next: GeneratorPresetStore<'noise'>): boolean {
@@ -164,6 +170,41 @@ export default function NoiseGeneratorDialog({
     }
   }
 
+  async function importPreset(file: File) {
+    setPresetNotice(null);
+    if (file.size > GENERATOR_PRESET_FILE_MAX_BYTES) {
+      setPresetError('预设文件过大，未应用。');
+      return;
+    }
+    try {
+      const settings = parseGeneratorPresetFile('noise', await file.text());
+      stopPreview();
+      setType(settings.type);
+      setAmplitude(String(settings.amplitude));
+      setPresetError(null);
+      setPresetNotice(`已从 ${file.name || '预设文件'} 导入参数；时长未改变。`);
+    } catch (error) {
+      setPresetError(error instanceof Error ? error.message : '读取预设文件失败，未应用。');
+    }
+  }
+
+  function exportPreset() {
+    const settings: NoisePresetSettings = { type, amplitude: Number(amplitude) };
+    if (!isValidGeneratorPresetSettings('noise', settings)) {
+      setPresetNotice(null);
+      setPresetError('请先输入有效的噪声类型和振幅，再导出。');
+      return;
+    }
+    try {
+      downloadGeneratorPreset('noise', settings);
+      setPresetError(null);
+      setPresetNotice('已导出当前噪声参数；时长不包含在文件中。');
+    } catch (error) {
+      setPresetNotice(null);
+      setPresetError(error instanceof Error ? error.message : '导出预设失败。');
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent>
@@ -180,10 +221,13 @@ export default function NoiseGeneratorDialog({
             dirty={presetDirty}
             disabled={isGenerating}
             error={presetError}
+            notice={presetNotice}
             onSelect={selectPreset}
             onSave={savePreset}
             onReset={resetPreset}
             onDelete={deleteActivePreset}
+            onImport={importPreset}
+            onExport={exportPreset}
           />
           <div className="space-y-2">
             <Label htmlFor="noise-type">噪声类型</Label>

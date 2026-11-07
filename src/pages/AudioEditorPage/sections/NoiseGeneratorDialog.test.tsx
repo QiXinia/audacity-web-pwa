@@ -14,6 +14,7 @@ afterEach(() => {
   cleanup();
   window.localStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function renderDialog(overrides: Partial<Parameters<typeof NoiseGeneratorDialog>[0]> = {}) {
@@ -28,6 +29,26 @@ function renderDialog(overrides: Partial<Parameters<typeof NoiseGeneratorDialog>
     ...overrides,
   };
   return { ...render(<NoiseGeneratorDialog {...props} />), props };
+}
+
+async function openPresetMenu(view: ReturnType<typeof renderDialog>) {
+  fireEvent.pointerDown(view.getByRole('button', { name: '预设选项' }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse',
+  });
+  await view.findByRole('menu');
+}
+
+function stubObjectUrls() {
+  const createObjectURL = vi.fn((_blob: Blob) => 'blob:noise-preset');
+  const revokeObjectURL = vi.fn();
+  class MockURL extends URL {
+    static createObjectURL = createObjectURL;
+    static revokeObjectURL = revokeObjectURL;
+  }
+  vi.stubGlobal('URL', MockURL);
+  return { createObjectURL, revokeObjectURL };
 }
 
 describe('NoiseGeneratorDialog', () => {
@@ -117,5 +138,60 @@ describe('NoiseGeneratorDialog', () => {
     expect(view.getByLabelText('噪声预设')).toHaveDisplayValue('Audacity 默认');
     expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.8);
     expect(duration).toHaveValue(0.5);
+  });
+
+  it('imports and exports official Noise text through the preset options menu', async () => {
+    const view = renderDialog({ defaultDuration: 0.5, selectionActive: true });
+    const duration = view.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(duration.value).toBe('0.5'));
+    const input = view.getByLabelText('噪声预设文件') as HTMLInputElement;
+    const inputClick = vi.spyOn(input, 'click');
+
+    await openPresetMenu(view);
+    fireEvent.click(view.getByRole('menuitem', { name: '导入预设…' }));
+    expect(inputClick).toHaveBeenCalledOnce();
+    fireEvent.change(input, {
+      target: {
+        files: [new File(['Noise:Type="Brownian" Amplitude="0.15"'], 'official-noise.txt')],
+      },
+    });
+
+    await waitFor(() => expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.15));
+    expect(view.getByLabelText('噪声类型')).toHaveTextContent('布朗噪声 (Brownian)');
+    expect(duration).toHaveValue(0.5);
+    expect(view.getByRole('status')).toHaveTextContent('official-noise.txt');
+    expect((view.getByLabelText('噪声预设') as HTMLSelectElement).options).toHaveLength(1);
+
+    const { createObjectURL } = stubObjectUrls();
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    await openPresetMenu(view);
+    fireEvent.click(view.getByRole('menuitem', { name: '导出预设' }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledOnce());
+    expect(anchorClick).toHaveBeenCalledOnce();
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    await expect(blob.text()).resolves.toBe('Noise:Amplitude="0.15" Type="Brownian"');
+    expect(view.getByRole('status')).toHaveTextContent('时长不包含在文件中');
+  });
+
+  it('rejects cross-effect and malformed files without changing current parameters', async () => {
+    const view = renderDialog();
+    fireEvent.change(view.getByLabelText('振幅 (0–1)'), { target: { value: '0.3' } });
+    const input = view.getByLabelText('噪声预设文件');
+    fireEvent.change(input, {
+      target: {
+        files: [new File([
+          'Tone:Amplitude="0.4" Frequency="440" Interpolation="Linear" Waveform="Sine"',
+        ], 'tone.txt')],
+      },
+    });
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('其他效果'));
+    expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.3);
+
+    fireEvent.change(input, {
+      target: { files: [new File(['Noise:Amplitude="0.8" Type="Blue"'], 'bad-noise.txt')] },
+    });
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('未知噪声类型'));
+    expect(view.getByLabelText('振幅 (0–1)')).toHaveValue(0.3);
+    expect(view.getByLabelText('噪声类型')).toHaveTextContent('白噪声 (White)');
   });
 });
