@@ -100,6 +100,13 @@ import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } fro
 import { generateTone, type ToneWaveform } from '@/lib/toneGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
+import { quantizeSelectionToSamples } from '@/lib/generatorEditing';
+import {
+  loadGeneratorDuration,
+  saveGeneratorDuration,
+  formatGeneratorDuration,
+  type GeneratorKind,
+} from '@/lib/generatorDuration';
 import {
   boundClipStretchDelta,
   clipKeyId,
@@ -191,16 +198,27 @@ export default function AudioEditorPage() {
   const [showMixer, setShowMixer] = useState(initialWorkspace.layout.showMixer);
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
+  const [generatorDurations, setGeneratorDurations] = useState<Record<GeneratorKind, number>>(() => ({
+    tone: loadGeneratorDuration('tone'),
+    noise: loadGeneratorDuration('noise'),
+    silence: loadGeneratorDuration('silence'),
+  }));
   const [toneDialogOpen, setToneDialogOpen] = useState(false);
   const [toneWaveform, setToneWaveform] = useState<ToneWaveform>('sine');
   const [toneFrequency, setToneFrequency] = useState('440');
   const [toneAmplitude, setToneAmplitude] = useState('0.8');
-  const [toneDuration, setToneDuration] = useState('5');
+  const [toneDuration, setToneDuration] = useState(() => formatGeneratorDuration(generatorDurations.tone));
   const [isGeneratingTone, setIsGeneratingTone] = useState(false);
   const [noiseDialogOpen, setNoiseDialogOpen] = useState(false);
   const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
   const [silenceDialogOpen, setSilenceDialogOpen] = useState(false);
   const [isGeneratingSilence, setIsGeneratingSilence] = useState(false);
+  const quantizedGeneratorSelection = project
+    ? quantizeSelectionToSamples(selection, project.sampleRate)
+    : null;
+  const generatorSelectionDuration = quantizedGeneratorSelection
+    ? quantizedGeneratorSelection.end - quantizedGeneratorSelection.start
+    : null;
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -227,6 +245,11 @@ export default function AudioEditorPage() {
       return updated;
     });
   }, [workspaceLayout]);
+
+  useEffect(() => {
+    if (!toneDialogOpen) return;
+    setToneDuration(formatGeneratorDuration(generatorSelectionDuration ?? generatorDurations.tone));
+  }, [toneDialogOpen, generatorSelectionDuration, generatorDurations.tone]);
 
   // Load project
   useEffect(() => {
@@ -806,6 +829,11 @@ export default function AudioEditorPage() {
     toast.info('已删除自定义 Workspace');
   }
 
+  function rememberLastGeneratorDuration(kind: GeneratorKind, duration: number) {
+    setGeneratorDurations((current) => ({ ...current, [kind]: duration }));
+    saveGeneratorDuration(kind, duration);
+  }
+
   async function handleGenerateTone() {
     if (!project) return;
     const trackId = selectedTrackId ?? project.tracks[0]?.id;
@@ -814,12 +842,15 @@ export default function AudioEditorPage() {
       return;
     }
 
+    const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
     const beforeProject = structuredClone(project);
     setIsGeneratingTone(true);
     try {
       const frequency = Number(toneFrequency);
       const amplitude = Number(toneAmplitude);
-      const duration = Number(toneDuration);
+      const duration = activeSelection
+        ? activeSelection.end - activeSelection.start
+        : Number(toneDuration);
       const channels = generateTone({
         waveform: toneWaveform,
         frequency,
@@ -832,8 +863,9 @@ export default function AudioEditorPage() {
         trackId,
         [channels],
         project.sampleRate,
-        cursorPosition,
+        activeSelection?.start ?? cursorPosition,
         `音调 ${frequency} Hz`,
+        activeSelection ?? undefined,
       );
       if (!clip) throw new Error('目标轨道不可用');
 
@@ -848,8 +880,11 @@ export default function AudioEditorPage() {
         execute: () => updated,
         undo: () => beforeProject,
       });
+      if (!activeSelection) rememberLastGeneratorDuration('tone', duration);
       setToneDialogOpen(false);
-      toast.success(`已在 ${formatTime(cursorPosition)} 生成 ${formatTime(duration)} 音调`);
+      toast.success(activeSelection
+        ? `已将 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为音调`
+        : `已在 ${formatTime(cursorPosition)} 生成 ${formatTime(duration)} 音调`);
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成音调失败：${message}`);
@@ -866,14 +901,19 @@ export default function AudioEditorPage() {
       return;
     }
 
+    const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
     const beforeProject = structuredClone(project);
     setIsGeneratingNoise(true);
     try {
+      const duration = activeSelection
+        ? activeSelection.end - activeSelection.start
+        : settings.duration;
       const randomSeed = new Uint32Array(1);
       globalThis.crypto?.getRandomValues(randomSeed);
       const seed = randomSeed[0] || ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0) || 1;
       const channels = generateNoise({
         ...settings,
+        duration,
         sampleRate: project.sampleRate,
         seed,
       });
@@ -882,8 +922,9 @@ export default function AudioEditorPage() {
         trackId,
         [channels],
         project.sampleRate,
-        cursorPosition,
+        activeSelection?.start ?? cursorPosition,
         `噪声 ${settings.type}`,
+        activeSelection ?? undefined,
       );
       if (!clip) throw new Error('目标轨道不可用');
 
@@ -898,8 +939,11 @@ export default function AudioEditorPage() {
         execute: () => updated,
         undo: () => beforeProject,
       });
+      if (!activeSelection) rememberLastGeneratorDuration('noise', duration);
       setNoiseDialogOpen(false);
-      toast.success(`已在 ${formatTime(cursorPosition)} 生成 ${formatTime(settings.duration)} 噪声`);
+      toast.success(activeSelection
+        ? `已将 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为噪声`
+        : `已在 ${formatTime(cursorPosition)} 生成 ${formatTime(duration)} 噪声`);
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成噪声失败：${message}`);
@@ -916,12 +960,7 @@ export default function AudioEditorPage() {
       return;
     }
 
-    const activeSelection = selection
-      && Number.isFinite(selection.start)
-      && Number.isFinite(selection.end)
-      && selection.end > selection.start
-      ? { ...selection }
-      : null;
+    const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
     const beforeProject = structuredClone(project);
     setIsGeneratingSilence(true);
     try {
@@ -972,6 +1011,7 @@ export default function AudioEditorPage() {
         execute: () => updated,
         undo: () => beforeProject,
       });
+      rememberLastGeneratorDuration('silence', requestedDuration);
       setSilenceDialogOpen(false);
       toast.success(`已在 ${formatTime(cursorPosition)} 生成 ${formatTime(requestedDuration)} 静默`);
     } catch (error) {
@@ -2892,15 +2932,18 @@ export default function AudioEditorPage() {
                 <Input
                   id="tone-duration"
                   type="number"
-                  min="0.001"
-                  step="0.001"
+                  min={1 / project.sampleRate}
+                  step="any"
                   value={toneDuration}
+                  readOnly={Boolean(quantizedGeneratorSelection)}
                   onChange={(event) => setToneDuration(event.target.value)}
                   required
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                采样率 {project.sampleRate} Hz · 插入位置 {formatTime(cursorPosition)} · 频率不得超过 {project.sampleRate / 2} Hz
+                {quantizedGeneratorSelection
+                  ? `采样率 ${project.sampleRate} Hz · 替换选区 ${formatTime(quantizedGeneratorSelection.start)}–${formatTime(quantizedGeneratorSelection.end)} · 时长已锁定到音频采样`
+                  : `采样率 ${project.sampleRate} Hz · 插入位置 ${formatTime(cursorPosition)} · 默认 30 秒并记住上次时长 · 频率不得超过 ${project.sampleRate / 2} Hz`}
               </p>
               <DialogFooter>
                 <Button type="button" variant="secondary" onClick={() => setToneDialogOpen(false)}>取消</Button>
@@ -2917,7 +2960,9 @@ export default function AudioEditorPage() {
           onOpenChange={setNoiseDialogOpen}
           sampleRate={project.sampleRate}
           cursorPosition={cursorPosition}
-          defaultDuration={selection ? Math.max(0.001, selection.end - selection.start) : 5}
+          defaultDuration={generatorSelectionDuration ?? generatorDurations.noise}
+          selectionActive={Boolean(quantizedGeneratorSelection)}
+          replacementPosition={quantizedGeneratorSelection?.start}
           isGenerating={isGeneratingNoise}
           onGenerate={handleGenerateNoise}
         />
@@ -2927,8 +2972,8 @@ export default function AudioEditorPage() {
           onOpenChange={setSilenceDialogOpen}
           sampleRate={project.sampleRate}
           cursorPosition={cursorPosition}
-          defaultDuration={selection ? Math.max(0.001, selection.end - selection.start) : 30}
-          selectionActive={Boolean(selection && selection.end > selection.start)}
+          defaultDuration={generatorSelectionDuration ?? generatorDurations.silence}
+          selectionActive={Boolean(quantizedGeneratorSelection)}
           isGenerating={isGeneratingSilence}
           onGenerate={handleGenerateSilence}
         />

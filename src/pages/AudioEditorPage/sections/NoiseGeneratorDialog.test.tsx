@@ -12,7 +12,7 @@ function renderDialog(overrides: Partial<Parameters<typeof NoiseGeneratorDialog>
     onOpenChange: vi.fn(),
     sampleRate: 44100,
     cursorPosition: 1.25,
-    defaultDuration: 5,
+    defaultDuration: 30,
     isGenerating: false,
     onGenerate: vi.fn(),
     ...overrides,
@@ -34,13 +34,28 @@ describe('NoiseGeneratorDialog', () => {
     });
   });
 
-  it('uses the current selection duration whenever the dialog opens', async () => {
-    const view = renderDialog({ defaultDuration: 2.25 });
-    await waitFor(() => expect((view.getByLabelText('时长（秒）') as HTMLInputElement).value).toBe('2.25'));
+  it('locks a sample-quantized selection duration without floating-point noise', async () => {
+    const view = renderDialog({
+      defaultDuration: 0.30000000000000004,
+      selectionActive: true,
+      replacementPosition: 0.1,
+    });
+    const input = view.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe('0.3'));
+    expect(input.readOnly).toBe(true);
+    expect(view.getByText(/时长已锁定到音频采样/)).toBeInTheDocument();
 
     view.rerender(<NoiseGeneratorDialog {...view.props} open={false} defaultDuration={1} />);
     view.rerender(<NoiseGeneratorDialog {...view.props} open defaultDuration={1} />);
     await waitFor(() => expect((view.getByLabelText('时长（秒）') as HTMLInputElement).value).toBe('1'));
+  });
+
+  it('restores a remembered cursor duration independently of selection replacements', async () => {
+    const view = renderDialog({ defaultDuration: 4.75, selectionActive: false });
+    const input = view.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe('4.75'));
+    expect(input.readOnly).toBe(false);
+    expect(view.getByText(/默认 30 秒并记住上次时长/)).toBeInTheDocument();
   });
 
   it('prevents duplicate submissions while the audio clip is being stored', () => {

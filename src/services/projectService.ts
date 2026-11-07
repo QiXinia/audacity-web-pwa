@@ -15,6 +15,7 @@ import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
 import { silenceClipSelection } from '@/lib/silenceGenerator';
+import { replaceTrackSelectionWithClip, type GeneratorSelection } from '@/lib/generatorEditing';
 
 type EffectType = IEffect['type'];
 
@@ -335,6 +336,7 @@ class ProjectService {
     sampleRate: number,
     startTime: number,
     clipName?: string,
+    replaceSelection?: GeneratorSelection,
   ): Promise<IClip | null> {
     const project = this.currentProject?.id === projectId
       ? this.currentProject
@@ -348,20 +350,6 @@ class ProjectService {
     const numChannels = sampleData.length;
     const length = sampleData[0]?.length ?? 0;
     const duration = length / sampleRate;
-
-    await audioDb.audioBuffers.put({
-      id: bufferId,
-      projectId,
-      sampleRate,
-      channels: numChannels,
-      length,
-      duration,
-      channelData: sampleData.map((ch) => ch.buffer as ArrayBuffer),
-      createdAt: Date.now(),
-    });
-
-    audioEngine.cacheBuffer(bufferId, sampleData, sampleRate);
-
     const clip: IClip = {
       id: generateId(),
       audioBufferId: bufferId,
@@ -376,8 +364,27 @@ class ProjectService {
       name: clipName ?? `录音 ${new Date().toLocaleTimeString()}`,
     };
 
-    track.clips.push(clip);
-    track.clips.sort((a, b) => a.startTime - b.startTime);
+    // Validate and calculate the complete track edit before storing any bytes.
+    const nextTrack = replaceSelection
+      ? replaceTrackSelectionWithClip(track, replaceSelection, clip, generateId)
+      : {
+        ...track,
+        clips: [...track.clips, clip].sort((a, b) => a.startTime - b.startTime),
+      };
+
+    await audioDb.audioBuffers.put({
+      id: bufferId,
+      projectId,
+      sampleRate,
+      channels: numChannels,
+      length,
+      duration,
+      channelData: sampleData.map((ch) => ch.buffer as ArrayBuffer),
+      createdAt: Date.now(),
+    });
+
+    audioEngine.cacheBuffer(bufferId, sampleData, sampleRate);
+    project.tracks[project.tracks.indexOf(track)] = nextTrack;
     await this.saveProject(project);
 
     return clip;

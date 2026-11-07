@@ -45,6 +45,13 @@ describe('SilenceGeneratorDialog', () => {
     await waitFor(() => expect((view.getByLabelText('时长（秒）') as HTMLInputElement).value).toBe('1'));
   });
 
+  it('restores the last cursor duration without changing the selection-locked path', async () => {
+    const view = renderDialog({ defaultDuration: 2.375, selectionActive: false });
+    const input = view.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe('2.375'));
+    expect(input.readOnly).toBe(false);
+  });
+
   it('prevents duplicate submissions while audio is being stored', () => {
     const view = renderDialog({ isGenerating: true });
     expect((view.getByRole('button', { name: '正在生成…' }) as HTMLButtonElement).disabled).toBe(true);

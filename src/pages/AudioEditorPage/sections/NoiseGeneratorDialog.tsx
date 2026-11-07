@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/select';
 import { formatTime } from '@/lib/audioUtils';
 import type { NoiseRequest, NoiseType } from '@/lib/noiseGenerator';
+import { formatGeneratorDuration } from '@/lib/generatorDuration';
 
 interface NoiseGeneratorDialogProps {
   open: boolean;
@@ -26,6 +27,8 @@ interface NoiseGeneratorDialogProps {
   sampleRate: number;
   cursorPosition: number;
   defaultDuration: number;
+  selectionActive?: boolean;
+  replacementPosition?: number;
   isGenerating: boolean;
   onGenerate: (settings: NoiseRequest) => void | Promise<void>;
 }
@@ -36,16 +39,18 @@ export default function NoiseGeneratorDialog({
   sampleRate,
   cursorPosition,
   defaultDuration,
+  selectionActive = false,
+  replacementPosition,
   isGenerating,
   onGenerate,
 }: NoiseGeneratorDialogProps) {
   const [type, setType] = useState<NoiseType>('white');
   const [amplitude, setAmplitude] = useState('0.8');
-  const [duration, setDuration] = useState('5');
+  const [duration, setDuration] = useState('30');
 
   useEffect(() => {
     if (open && Number.isFinite(defaultDuration) && defaultDuration > 0) {
-      setDuration(String(defaultDuration));
+      setDuration(formatGeneratorDuration(defaultDuration));
     }
   }, [open, defaultDuration]);
 
@@ -96,16 +101,19 @@ export default function NoiseGeneratorDialog({
               <Input
                 id="noise-duration"
                 type="number"
-                min="0.001"
-                step="0.001"
+                min={1 / sampleRate}
+                step="any"
                 value={duration}
+                readOnly={selectionActive}
                 onChange={(event) => setDuration(event.target.value)}
                 required
               />
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            采样率 {sampleRate} Hz · 插入位置 {formatTime(cursorPosition)} · 有选区时默认使用选区时长
+            {selectionActive
+              ? `采样率 ${sampleRate} Hz · 替换选区起点 ${formatTime(replacementPosition ?? cursorPosition)} · 时长已锁定到音频采样`
+              : `采样率 ${sampleRate} Hz · 插入位置 ${formatTime(cursorPosition)} · 默认 30 秒并记住上次时长`}
           </p>
           <DialogFooter>
             <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>取消</Button>

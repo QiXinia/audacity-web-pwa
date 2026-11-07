@@ -11,6 +11,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { formatTime } from '@/lib/audioUtils';
+import { formatGeneratorDuration } from '@/lib/generatorDuration';
 
 interface SilenceGeneratorDialogProps {
   open: boolean;
@@ -37,7 +38,7 @@ export default function SilenceGeneratorDialog({
 
   useEffect(() => {
     if (open && Number.isFinite(defaultDuration) && defaultDuration > 0) {
-      setDuration(String(defaultDuration));
+      setDuration(formatGeneratorDuration(defaultDuration));
     }
   }, [open, defaultDuration]);
 
@@ -63,8 +64,8 @@ export default function SilenceGeneratorDialog({
             <Input
               id="silence-duration"
               type="number"
-              min="0.001"
-              step="0.001"
+              min={1 / sampleRate}
+              step="any"
               value={duration}
               onChange={(event) => setDuration(event.target.value)}
               readOnly={selectionActive}
@@ -75,7 +76,7 @@ export default function SilenceGeneratorDialog({
           <p className="text-xs text-muted-foreground">
             采样率 {sampleRate} Hz · {selectionActive
               ? '选区时长与 Audacity 一样固定为当前选区长度'
-              : `插入位置 ${formatTime(cursorPosition)} · 默认 30 秒`}
+              : `插入位置 ${formatTime(cursorPosition)} · 默认 30 秒并记住上次时长`}
           </p>
           <DialogFooter>
             <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>取消</Button>
