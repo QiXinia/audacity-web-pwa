@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import NoiseGeneratorDialog from '@/pages/AudioEditorPage/sections/NoiseGeneratorDialog';
+import { GeneratorPreviewPlayer } from '@/lib/generatorPreview';
+import { generateNoise } from '@/lib/noiseGenerator';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function renderDialog(overrides: Partial<Parameters<typeof NoiseGeneratorDialog>[0]> = {}) {
   const props = {
@@ -61,5 +66,26 @@ describe('NoiseGeneratorDialog', () => {
   it('prevents duplicate submissions while the audio clip is being stored', () => {
     const view = renderDialog({ isGenerating: true });
     expect((view.getByRole('button', { name: '正在生成…' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('previews deterministic noise without submitting and stops when cancelled', async () => {
+    const play = vi.spyOn(GeneratorPreviewPlayer.prototype, 'play').mockResolvedValue(undefined);
+    const stop = vi.spyOn(GeneratorPreviewPlayer.prototype, 'stop');
+    const view = renderDialog({ sampleRate: 100 });
+    fireEvent.change(view.getByLabelText('振幅 (0–1)'), { target: { value: '0.25' } });
+    fireEvent.change(view.getByLabelText('时长（秒）'), { target: { value: '0.03' } });
+
+    fireEvent.click(view.getByRole('button', { name: '试听' }));
+    await waitFor(() => expect(play).toHaveBeenCalledOnce());
+    const [samples, sampleRate] = play.mock.calls[0];
+    expect(sampleRate).toBe(100);
+    expect(Array.from(samples)).toEqual(Array.from(generateNoise({
+      type: 'white', amplitude: 0.25, duration: 0.03, sampleRate: 100,
+    })));
+    expect(view.props.onGenerate).not.toHaveBeenCalled();
+
+    fireEvent.click(view.getByRole('button', { name: '取消' }));
+    expect(stop).toHaveBeenCalled();
+    expect(view.props.onOpenChange).toHaveBeenCalledWith(false);
   });
 });

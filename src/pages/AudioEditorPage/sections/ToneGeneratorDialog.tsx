@@ -19,7 +19,8 @@ import {
 } from '@/components/ui/select';
 import { formatTime } from '@/lib/audioUtils';
 import { formatGeneratorDuration } from '@/lib/generatorDuration';
-import type { ToneRequest, ToneWaveform } from '@/lib/toneGenerator';
+import { generateTone, type ToneRequest, type ToneWaveform } from '@/lib/toneGenerator';
+import { useGeneratorPreview } from './useGeneratorPreview';
 
 interface ToneGeneratorDialogProps {
   open: boolean;
@@ -50,6 +51,7 @@ export default function ToneGeneratorDialog({
   const [frequency, setFrequency] = useState('440');
   const [amplitude, setAmplitude] = useState('0.8');
   const [duration, setDuration] = useState('30');
+  const { isPreviewing, previewError, startPreview, stopPreview } = useGeneratorPreview();
 
   useEffect(() => {
     if (open && Number.isFinite(defaultDuration) && defaultDuration > 0) {
@@ -57,8 +59,18 @@ export default function ToneGeneratorDialog({
     }
   }, [open, defaultDuration]);
 
+  useEffect(() => {
+    if (!open) stopPreview();
+  }, [open, stopPreview]);
+
+  function changeOpen(nextOpen: boolean) {
+    if (!nextOpen) stopPreview();
+    onOpenChange(nextOpen);
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault();
+    stopPreview();
     void onGenerate({
       waveform,
       frequency: Number(frequency),
@@ -67,12 +79,22 @@ export default function ToneGeneratorDialog({
     });
   }
 
+  function preview() {
+    void startPreview(() => generateTone({
+      waveform,
+      frequency: Number(frequency),
+      amplitude: Number(amplitude),
+      duration: Number(duration),
+      sampleRate,
+    }), sampleRate);
+  }
+
   const selectionDescription = replacementPosition !== undefined && replacementEnd !== undefined
     ? `替换选区 ${formatTime(replacementPosition)}–${formatTime(replacementEnd)}`
     : `替换选区起点 ${formatTime(replacementPosition ?? cursorPosition)}`;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>生成音调</DialogTitle>
@@ -143,8 +165,18 @@ export default function ToneGeneratorDialog({
               ? `采样率 ${sampleRate} Hz · ${selectionDescription} · 时长已锁定到音频采样`
               : `采样率 ${sampleRate} Hz · 插入位置 ${formatTime(cursorPosition)} · 默认 30 秒并记住上次时长 · 频率不得超过 ${sampleRate / 2} Hz`}
           </p>
+          {previewError && <p role="alert" className="text-xs text-destructive">试听失败：{previewError}</p>}
           <DialogFooter>
-            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button
+              type="button"
+              variant="outline"
+              aria-pressed={isPreviewing}
+              disabled={isGenerating}
+              onClick={isPreviewing ? stopPreview : preview}
+            >
+              {isPreviewing ? '停止试听' : '试听'}
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => changeOpen(false)}>取消</Button>
             <Button type="submit" disabled={isGenerating}>
               {isGenerating ? '正在生成…' : '生成音调'}
             </Button>

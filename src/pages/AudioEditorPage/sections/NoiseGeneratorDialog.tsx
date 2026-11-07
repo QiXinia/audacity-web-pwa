@@ -18,7 +18,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { formatTime } from '@/lib/audioUtils';
-import type { NoiseRequest, NoiseType } from '@/lib/noiseGenerator';
+import { generateNoise, type NoiseRequest, type NoiseType } from '@/lib/noiseGenerator';
+import { useGeneratorPreview } from './useGeneratorPreview';
 import { formatGeneratorDuration } from '@/lib/generatorDuration';
 
 interface NoiseGeneratorDialogProps {
@@ -47,6 +48,7 @@ export default function NoiseGeneratorDialog({
   const [type, setType] = useState<NoiseType>('white');
   const [amplitude, setAmplitude] = useState('0.8');
   const [duration, setDuration] = useState('30');
+  const { isPreviewing, previewError, startPreview, stopPreview } = useGeneratorPreview();
 
   useEffect(() => {
     if (open && Number.isFinite(defaultDuration) && defaultDuration > 0) {
@@ -54,13 +56,32 @@ export default function NoiseGeneratorDialog({
     }
   }, [open, defaultDuration]);
 
+  useEffect(() => {
+    if (!open) stopPreview();
+  }, [open, stopPreview]);
+
+  function changeOpen(nextOpen: boolean) {
+    if (!nextOpen) stopPreview();
+    onOpenChange(nextOpen);
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault();
+    stopPreview();
     void onGenerate({ type, amplitude: Number(amplitude), duration: Number(duration) });
   }
 
+  function preview() {
+    void startPreview(() => generateNoise({
+      type,
+      amplitude: Number(amplitude),
+      duration: Number(duration),
+      sampleRate,
+    }), sampleRate);
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>生成噪声</DialogTitle>
@@ -115,8 +136,18 @@ export default function NoiseGeneratorDialog({
               ? `采样率 ${sampleRate} Hz · 替换选区起点 ${formatTime(replacementPosition ?? cursorPosition)} · 时长已锁定到音频采样`
               : `采样率 ${sampleRate} Hz · 插入位置 ${formatTime(cursorPosition)} · 默认 30 秒并记住上次时长`}
           </p>
+          {previewError && <p role="alert" className="text-xs text-destructive">试听失败：{previewError}</p>}
           <DialogFooter>
-            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button
+              type="button"
+              variant="outline"
+              aria-pressed={isPreviewing}
+              disabled={isGenerating}
+              onClick={isPreviewing ? stopPreview : preview}
+            >
+              {isPreviewing ? '停止试听' : '试听'}
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => changeOpen(false)}>取消</Button>
             <Button type="submit" disabled={isGenerating}>
               {isGenerating ? '正在生成…' : '生成噪声'}
             </Button>

@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import ToneGeneratorDialog from '@/pages/AudioEditorPage/sections/ToneGeneratorDialog';
+import { GeneratorPreviewPlayer } from '@/lib/generatorPreview';
+import { generateTone } from '@/lib/toneGenerator';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function renderDialog(overrides: Partial<Parameters<typeof ToneGeneratorDialog>[0]> = {}) {
   const props = {
@@ -71,5 +76,35 @@ describe('ToneGeneratorDialog', () => {
   it('prevents duplicate submissions while the audio clip is being stored', () => {
     const view = renderDialog({ isGenerating: true });
     expect((view.getByRole('button', { name: '正在生成…' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('previews the exact tone without submitting and cleans up on stop and completion', async () => {
+    let finishPreview!: () => void;
+    const play = vi.spyOn(GeneratorPreviewPlayer.prototype, 'play')
+      .mockImplementation(async (_samples, _sampleRate, onEnded) => { finishPreview = onEnded; });
+    const stop = vi.spyOn(GeneratorPreviewPlayer.prototype, 'stop');
+    const view = renderDialog({ sampleRate: 100 });
+    fireEvent.change(view.getByLabelText('频率 (Hz)'), { target: { value: '10' } });
+    fireEvent.change(view.getByLabelText('振幅 (0–1)'), { target: { value: '0.25' } });
+    fireEvent.change(view.getByLabelText('时长（秒）'), { target: { value: '0.03' } });
+
+    fireEvent.click(view.getByRole('button', { name: '试听' }));
+    await waitFor(() => expect(play).toHaveBeenCalledOnce());
+    const [samples, sampleRate] = play.mock.calls[0];
+    expect(sampleRate).toBe(100);
+    expect(Array.from(samples)).toEqual(Array.from(generateTone({
+      waveform: 'sine', frequency: 10, amplitude: 0.25, duration: 0.03, sampleRate: 100,
+    })));
+    expect(view.props.onGenerate).not.toHaveBeenCalled();
+    expect(view.getByRole('button', { name: '停止试听' })).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(view.getByRole('button', { name: '停止试听' }));
+    expect(stop).toHaveBeenCalled();
+    expect(view.getByRole('button', { name: '试听' })).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(view.getByRole('button', { name: '试听' }));
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
+    act(() => finishPreview());
+    expect(view.getByRole('button', { name: '试听' })).toBeInTheDocument();
   });
 });
