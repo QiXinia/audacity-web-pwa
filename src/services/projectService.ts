@@ -14,6 +14,7 @@ import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect } 
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
+import { silenceClipSelection } from '@/lib/silenceGenerator';
 
 type EffectType = IEffect['type'];
 
@@ -380,6 +381,61 @@ class ProjectService {
     await this.saveProject(project);
 
     return clip;
+  }
+
+  /** Replace selected samples with zeroes without changing any clip boundary. */
+  async silenceSelectionOnTrack(
+    projectId: string,
+    trackId: string,
+    selection: { start: number; end: number },
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('静默选区必须是有限的正时长区间');
+    }
+
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    const track = project.tracks.find((candidate) => candidate.id === trackId);
+    if (!track) throw new Error('目标轨道不可用');
+
+    let changedClips = 0;
+    for (const clip of track.clips) {
+      if (
+        selection.end <= clip.startTime
+        || selection.start >= clip.startTime + clip.duration
+      ) continue;
+
+      const channelData = await this.loadAudioChannels(clip.audioBufferId);
+      if (!channelData) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+      const silenced = silenceClipSelection(channelData, clip, selection, project.sampleRate);
+      if (!silenced) continue;
+
+      const bufferId = generateId();
+      const length = silenced[0]?.length ?? 0;
+      await audioDb.audioBuffers.put({
+        id: bufferId,
+        projectId,
+        sampleRate: project.sampleRate,
+        channels: silenced.length,
+        length,
+        duration: length / project.sampleRate,
+        channelData: silenced.map((channel) => channel.buffer as ArrayBuffer),
+        createdAt: Date.now(),
+      });
+      audioEngine.cacheBuffer(bufferId, silenced, project.sampleRate);
+      // Copy-on-write is essential: split clips may share the original buffer.
+      clip.audioBufferId = bufferId;
+      changedClips += 1;
+    }
+
+    if (changedClips > 0) await this.saveProject(project);
+    return changedClips;
   }
 
   // Audio buffer loading

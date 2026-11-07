@@ -99,6 +99,7 @@ import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
 import { generateTone, type ToneWaveform } from '@/lib/toneGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
+import { generateSilence } from '@/lib/silenceGenerator';
 import {
   boundClipStretchDelta,
   clipKeyId,
@@ -141,6 +142,7 @@ import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType, SnapMode }
 import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
+import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -197,6 +199,8 @@ export default function AudioEditorPage() {
   const [isGeneratingTone, setIsGeneratingTone] = useState(false);
   const [noiseDialogOpen, setNoiseDialogOpen] = useState(false);
   const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
+  const [silenceDialogOpen, setSilenceDialogOpen] = useState(false);
+  const [isGeneratingSilence, setIsGeneratingSilence] = useState(false);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -901,6 +905,80 @@ export default function AudioEditorPage() {
       toast.error(`生成噪声失败：${message}`);
     } finally {
       setIsGeneratingNoise(false);
+    }
+  }
+
+  async function handleGenerateSilence(requestedDuration: number) {
+    if (!project) return;
+    const trackId = selectedTrackId ?? project.tracks[0]?.id;
+    if (!trackId) {
+      toast.warning('请先添加一个音频轨道');
+      return;
+    }
+
+    const activeSelection = selection
+      && Number.isFinite(selection.start)
+      && Number.isFinite(selection.end)
+      && selection.end > selection.start
+      ? { ...selection }
+      : null;
+    const beforeProject = structuredClone(project);
+    setIsGeneratingSilence(true);
+    try {
+      if (activeSelection) {
+        const changedClips = await projectService.silenceSelectionOnTrack(
+          project.id,
+          trackId,
+          activeSelection,
+        );
+        if (changedClips === 0) throw new Error('当前轨道的选区未覆盖任何可用音频');
+
+        const updated = await projectService.getProject(project.id);
+        if (!updated) throw new Error('工程保存后无法重新加载');
+        setProject(updated);
+        pushHistoryCmd({
+          id: generateId(),
+          label: '生成静默',
+          execute: () => updated,
+          undo: () => beforeProject,
+        });
+        setSilenceDialogOpen(false);
+        toast.success(`已将 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为静默`);
+        return;
+      }
+
+      const channels = generateSilence({
+        duration: requestedDuration,
+        sampleRate: project.sampleRate,
+      });
+      const clip = await projectService.addRecordingToTrack(
+        project.id,
+        trackId,
+        [channels],
+        project.sampleRate,
+        cursorPosition,
+        '静默',
+      );
+      if (!clip) throw new Error('目标轨道不可用');
+
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('工程保存后无法重新加载');
+      setProject(updated);
+      setSelectedTrackId(trackId);
+      setSelectedClips([{ trackId, clipId: clip.id }]);
+      pushHistoryCmd({
+        id: generateId(),
+        label: '生成静默',
+        execute: () => updated,
+        undo: () => beforeProject,
+      });
+      setSilenceDialogOpen(false);
+      toast.success(`已在 ${formatTime(cursorPosition)} 生成 ${formatTime(requestedDuration)} 静默`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      toast.error(`生成静默失败：${message}`);
+    } finally {
+      setIsGeneratingSilence(false);
     }
   }
 
@@ -1934,6 +2012,7 @@ export default function AudioEditorPage() {
             <DropdownMenuContent>
               <DropdownMenuItem onClick={() => setToneDialogOpen(true)}>音调…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setNoiseDialogOpen(true)}>噪声…</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSilenceDialogOpen(true)}>静默…</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button
@@ -2841,6 +2920,17 @@ export default function AudioEditorPage() {
           defaultDuration={selection ? Math.max(0.001, selection.end - selection.start) : 5}
           isGenerating={isGeneratingNoise}
           onGenerate={handleGenerateNoise}
+        />
+
+        <SilenceGeneratorDialog
+          open={silenceDialogOpen}
+          onOpenChange={setSilenceDialogOpen}
+          sampleRate={project.sampleRate}
+          cursorPosition={cursorPosition}
+          defaultDuration={selection ? Math.max(0.001, selection.end - selection.start) : 30}
+          selectionActive={Boolean(selection && selection.end > selection.start)}
+          isGenerating={isGeneratingSilence}
+          onGenerate={handleGenerateSilence}
         />
 
         {/* Export Dialog */}
