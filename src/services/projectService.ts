@@ -297,26 +297,6 @@ class ProjectService {
     // Preserve every decoded channel; mono is only a waveform display choice, not a storage step.
     const bufferId = generateId();
     const duration = channelData[0].length / sampleRate;
-
-    await audioDb.audioBuffers.put({
-      id: bufferId,
-      projectId,
-      sampleRate,
-      channels: channelData.length,
-      length: channelData[0].length,
-      duration,
-      channelData: channelData.map((channel) =>
-        channel.buffer.slice(channel.byteOffset, channel.byteOffset + channel.byteLength) as ArrayBuffer,
-      ),
-      createdAt: Date.now(),
-    });
-
-    // Cache all channels for playback and export.
-    audioEngine.cacheBuffer(bufferId, channelData, sampleRate);
-
-    onProgress?.(0.95);
-
-    // Create clip
     const clip: IClip = {
       id: generateId(),
       audioBufferId: bufferId,
@@ -330,10 +310,21 @@ class ProjectService {
       fadeOut: 0,
       name: file.name.replace(/\.[^.]+$/, ''),
     };
+    const nextTrack = {
+      ...track,
+      clips: [...track.clips, clip].sort((a, b) => a.startTime - b.startTime),
+    };
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((candidate) => candidate.id === track.id ? nextTrack : candidate),
+    };
 
-    track.clips.push(clip);
-    track.clips.sort((a, b) => a.startTime - b.startTime);
-    await this.saveProject(project);
+    onProgress?.(0.95);
+
+    // Store and commit the complete edit before exposing imported audio to playback.
+    await this.commitPendingAudioBuffers(projectId, [
+      { id: bufferId, sampleRate, sampleData: channelData },
+    ], updatedProject);
 
     onProgress?.(1);
 
