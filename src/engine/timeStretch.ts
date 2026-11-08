@@ -2,9 +2,9 @@
 // every channel so stereo phase and channel alignment do not drift apart.
 
 function nextPowerOfTwo(value: number): number {
-  let result = 1;
-  while (result < value) result <<= 1;
-  return result;
+  if (value <= 1) return 1;
+  // Avoid 32-bit shifts: large finite inputs otherwise overflow to zero forever.
+  return 2 ** Math.ceil(Math.log2(value));
 }
 
 function linearStretchChannel(input: Float32Array, outputLength: number): Float32Array {
@@ -35,6 +35,7 @@ export function timeStretchChannelsJs(
     throw new Error('Audio channels must have equal lengths');
   }
   if (!Number.isFinite(speed) || speed <= 0) throw new Error('Stretch ratio must be positive');
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) throw new Error('Sample rate must be positive');
   if (inputFrames === 0) return channels.map(() => new Float32Array());
   if (Math.abs(speed - 1) < 0.000001) return channels.map((channel) => channel.slice());
 

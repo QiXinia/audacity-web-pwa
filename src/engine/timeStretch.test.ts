@@ -75,5 +75,19 @@ describe('WSOLA time stretch', () => {
     expect(timeStretchChannelsJs([new Float32Array(32).fill(0.5)], 2, 8000)[0].length).toBe(16);
     expect(() => timeStretchChannelsJs([new Float32Array(2), new Float32Array(3)], 1, 8000)).toThrow();
     expect(() => timeStretchChannelsJs([new Float32Array(2)], 0, 8000)).toThrow();
+    for (const sampleRate of [0, -8000, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => timeStretchChannelsJs([new Float32Array(128)], 2, sampleRate))
+        .toThrow('Sample rate must be positive');
+    }
+  });
+
+  it('terminates with a very large finite sample rate', () => {
+    const output = timeStretchChannelsJs(
+      [new Float32Array(128).fill(0.5)],
+      2,
+      Number.MAX_VALUE,
+    )[0];
+    expect(output.length).toBe(64);
+    expect(Array.from(output).every(Number.isFinite)).toBe(true);
   });
 });
