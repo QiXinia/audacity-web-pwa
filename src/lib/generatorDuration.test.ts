@@ -22,21 +22,23 @@ describe('Audacity generator duration persistence', () => {
     expect(formatGeneratorDuration(Number.NaN)).toBe('');
   });
 
-  it('uses the documented 30-second default independently for all three generators', () => {
+  it('uses the documented 30-second default independently for all four generators', () => {
     const storage = memoryStorage();
-    for (const kind of ['tone', 'noise', 'silence'] as const) {
+    for (const kind of ['tone', 'chirp', 'noise', 'silence'] as const) {
       expect(loadGeneratorDuration(kind, storage)).toBe(GENERATOR_DEFAULT_DURATION);
     }
-    expect(storage.getItem).toHaveBeenCalledTimes(3);
+    expect(storage.getItem).toHaveBeenCalledTimes(4);
   });
 
   it('round-trips fractional durations and keeps generator memories independent', () => {
     const storage = memoryStorage();
     expect(saveGeneratorDuration('tone', 2.375, storage)).toBe(true);
+    expect(saveGeneratorDuration('chirp', 1.75, storage)).toBe(true);
     expect(saveGeneratorDuration('noise', 4.5, storage)).toBe(true);
     expect(saveGeneratorDuration('silence', 0.125, storage)).toBe(true);
 
     expect(loadGeneratorDuration('tone', storage)).toBe(2.375);
+    expect(loadGeneratorDuration('chirp', storage)).toBe(1.75);
     expect(loadGeneratorDuration('noise', storage)).toBe(4.5);
     expect(loadGeneratorDuration('silence', storage)).toBe(0.125);
   });

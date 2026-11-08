@@ -112,6 +112,10 @@ function openToneDialog() {
   return openGeneratorDialog('音调…');
 }
 
+function openChirpDialog() {
+  return openGeneratorDialog('扫频（Chirp）…');
+}
+
 function createTwoTrackProject(selection: IProject['selection'] = null): IProject {
   const project = createProject(selection);
   project.tracks[0].clips = [{
@@ -346,5 +350,84 @@ describe('AudioEditorPage tone command integration', () => {
     expect(document.querySelectorAll('.au-clip')).toHaveLength(2);
     expect(document.querySelectorAll('.au-clip[data-selected="true"]')).toHaveLength(0);
     expect(screen.queryByText('2 个片段')).toBeNull();
+  });
+});
+
+describe('AudioEditorPage Chirp command integration', () => {
+  it('passes logarithmic sweep parameters through the Generate menu to real sample generation', async () => {
+    const project = createProject();
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(project);
+    renderEditor();
+    await openChirpDialog();
+
+    fireEvent.click(screen.getByRole('radio', { name: '对数 (Logarithmic)' }));
+    fireEvent.change(screen.getByLabelText('起始频率 (Hz)'), { target: { value: '100' } });
+    fireEvent.change(screen.getByLabelText('结束频率 (Hz)'), { target: { value: '200' } });
+    fireEvent.change(screen.getByLabelText('起始振幅 (0–1)'), { target: { value: '0.2' } });
+    fireEvent.change(screen.getByLabelText('结束振幅 (0–1)'), { target: { value: '0.4' } });
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成扫频' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [projectId, targets, sampleRate, startTime, clipName, replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(projectId).toBe(project.id);
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1']);
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0);
+    expect(clipName).toBe('扫频 100–200 Hz');
+    expect(replacement).toBeUndefined();
+    expect(targets[0].sampleData[0]).toHaveLength(10);
+
+    const secondFrequency = 10 ** (Math.log10(100) + (Math.log10(200) - Math.log10(100)) / 10);
+    const thirdPhase = (100 + secondFrequency) / 1000;
+    expect(targets[0].sampleData[0][2]).toBeCloseTo(
+      0.24 * Math.sin(2 * Math.PI * thirdPhase),
+      6,
+    );
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('locks Chirp duration to the quantized selection and replaces that exact range', async () => {
+    const project = createProject({ start: 0.1004, end: 0.2996 });
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(project);
+    renderEditor();
+    await openChirpDialog();
+
+    fireEvent.change(screen.getByLabelText('起始频率 (Hz)'), { target: { value: '100' } });
+    fireEvent.change(screen.getByLabelText('结束频率 (Hz)'), { target: { value: '200' } });
+    const duration = screen.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(duration.value).toBe('0.2'));
+    expect(duration.readOnly).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '生成扫频' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets, sampleRate, startTime, , replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0.1);
+    expect(replacement).toEqual({ start: 0.1, end: 0.3 });
+    expect(targets[0].sampleData[0]).toHaveLength(200);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates the same deterministic Chirp into every selected track with one history command', async () => {
+    const project = createTwoTrackProject();
+    renderTwoTrackProject(project);
+    await selectBothClips();
+    await openChirpDialog();
+    fireEvent.change(screen.getByLabelText('起始频率 (Hz)'), { target: { value: '100' } });
+    fireEvent.change(screen.getByLabelText('结束频率 (Hz)'), { target: { value: '200' } });
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成扫频' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets] = vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
+    expect(targets.map(({ sampleData }) => sampleData[0].length)).toEqual([10, 10]);
+    expect(targets[0].sampleData[0]).toEqual(targets[1].sampleData[0]);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
   });
 });

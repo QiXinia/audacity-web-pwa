@@ -103,6 +103,7 @@ import {
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
 import { generateTone, type ToneRequest } from '@/lib/toneGenerator';
+import { generateChirp, type ChirpRequest } from '@/lib/chirpGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
 import { drawWaveform } from '@/lib/waveformDrawing';
@@ -170,6 +171,7 @@ import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType, SnapMode }
 import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
 import ToneGeneratorDialog from './sections/ToneGeneratorDialog';
+import ChirpGeneratorDialog from './sections/ChirpGeneratorDialog';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
@@ -223,11 +225,14 @@ export default function AudioEditorPage() {
   const [workspaceName, setWorkspaceName] = useState('');
   const [generatorDurations, setGeneratorDurations] = useState<Record<GeneratorKind, number>>(() => ({
     tone: loadGeneratorDuration('tone'),
+    chirp: loadGeneratorDuration('chirp'),
     noise: loadGeneratorDuration('noise'),
     silence: loadGeneratorDuration('silence'),
   }));
   const [toneDialogOpen, setToneDialogOpen] = useState(false);
   const [isGeneratingTone, setIsGeneratingTone] = useState(false);
+  const [chirpDialogOpen, setChirpDialogOpen] = useState(false);
+  const [isGeneratingChirp, setIsGeneratingChirp] = useState(false);
   const [noiseDialogOpen, setNoiseDialogOpen] = useState(false);
   const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
   const [silenceDialogOpen, setSilenceDialogOpen] = useState(false);
@@ -933,6 +938,61 @@ export default function AudioEditorPage() {
       toast.error(`生成音调失败：${message}`);
     } finally {
       setIsGeneratingTone(false);
+    }
+  }
+
+  async function handleGenerateChirp(settings: ChirpRequest) {
+    if (!project) return;
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length === 0) {
+      toast.warning('请先添加一个音频轨道');
+      return;
+    }
+
+    const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
+    const beforeProject = structuredClone(project);
+    setIsGeneratingChirp(true);
+    try {
+      const duration = activeSelection
+        ? activeSelection.end - activeSelection.start
+        : settings.duration;
+      const channels = generateChirp({
+        ...settings,
+        duration,
+        sampleRate: project.sampleRate,
+      });
+      const clips = await projectService.addGeneratedAudioToTracks(
+        project.id,
+        trackIds.map((trackId) => ({ trackId, sampleData: [channels] })),
+        project.sampleRate,
+        activeSelection?.start ?? cursorPosition,
+        `扫频 ${settings.startFrequency}–${settings.endFrequency} Hz`,
+        activeSelection ?? undefined,
+      );
+      if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
+
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('工程保存后无法重新加载');
+      setProject(updated);
+      setSelectedTrackId(trackIds[0]!);
+      setSelectedClips(clips.map((clip, index) => ({ trackId: trackIds[index]!, clipId: clip.id })));
+      pushHistoryCmd({
+        id: generateId(),
+        label: '生成扫频',
+        execute: () => updated,
+        undo: () => beforeProject,
+      });
+      if (!activeSelection) rememberLastGeneratorDuration('chirp', duration);
+      setChirpDialogOpen(false);
+      const trackMessage = trackIds.length > 1 ? `到 ${trackIds.length} 条轨道` : '';
+      toast.success(activeSelection
+        ? `已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为扫频`
+        : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(duration)} 扫频`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      toast.error(`生成扫频失败：${message}`);
+    } finally {
+      setIsGeneratingChirp(false);
     }
   }
 
@@ -2233,6 +2293,7 @@ export default function AudioEditorPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuItem onClick={() => setToneDialogOpen(true)}>音调…</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setChirpDialogOpen(true)}>扫频（Chirp）…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setNoiseDialogOpen(true)}>噪声…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setSilenceDialogOpen(true)}>静默…</DropdownMenuItem>
             </DropdownMenuContent>
@@ -3072,6 +3133,19 @@ export default function AudioEditorPage() {
           replacementEnd={quantizedGeneratorSelection?.end}
           isGenerating={isGeneratingTone}
           onGenerate={handleGenerateTone}
+        />
+
+        <ChirpGeneratorDialog
+          open={chirpDialogOpen}
+          onOpenChange={setChirpDialogOpen}
+          sampleRate={project.sampleRate}
+          cursorPosition={cursorPosition}
+          defaultDuration={generatorSelectionDuration ?? generatorDurations.chirp}
+          selectionActive={Boolean(quantizedGeneratorSelection)}
+          replacementPosition={quantizedGeneratorSelection?.start}
+          replacementEnd={quantizedGeneratorSelection?.end}
+          isGenerating={isGeneratingChirp}
+          onGenerate={handleGenerateChirp}
         />
 
         <NoiseGeneratorDialog
