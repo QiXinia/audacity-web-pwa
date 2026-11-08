@@ -295,4 +295,56 @@ describe('AudioEditorPage tone command integration', () => {
     expect(projectService.addGeneratedAudioToTracks).not.toHaveBeenCalled();
     expect(historyManager.push).toHaveBeenCalledTimes(1);
   });
+
+  it('prunes generated clip selections after a multi-track undo', async () => {
+    const project = createTwoTrackProject();
+    const generatedClips = project.tracks.map((track, index) => ({
+      id: `generated-clip-${index}`,
+      audioBufferId: `generated-buffer-${index}`,
+      startTime: 0,
+      offset: 0,
+      duration: 0.01,
+      originalDuration: 0.01,
+      stretchRatio: 1,
+      gain: 0,
+      fadeIn: 0,
+      fadeOut: 0,
+      name: `音调 ${track.id}`,
+    } satisfies IClip));
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track, index) => ({
+        ...track,
+        clips: [...track.clips, generatedClips[index]],
+      })),
+    };
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(updatedProject);
+    vi.mocked(historyManager.canUndo).mockReturnValue(true);
+    vi.mocked(historyManager.undo).mockReturnValue({
+      project,
+      command: {
+        id: 'multi-track-tone',
+        label: '生成音调',
+        execute: () => updatedProject,
+        undo: () => project,
+      },
+    });
+    renderEditor();
+    await selectBothClips();
+    await openToneDialog();
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成音调' }));
+
+    await screen.findByRole('button', { name: /^音调 track-1/ });
+    expect(document.querySelectorAll('.au-clip')).toHaveLength(4);
+    expect(screen.getByText('2 个片段')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }));
+
+    await waitFor(() => expect(projectService.saveProject).toHaveBeenCalledWith(project));
+    expect(document.querySelectorAll('.au-clip')).toHaveLength(2);
+    expect(document.querySelectorAll('.au-clip[data-selected="true"]')).toHaveLength(0);
+    expect(screen.queryByText('2 个片段')).toBeNull();
+  });
 });

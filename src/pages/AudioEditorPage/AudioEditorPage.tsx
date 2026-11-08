@@ -1156,11 +1156,24 @@ export default function AudioEditorPage() {
     setCanRedo(historyManager.canRedo());
   }
 
+  function applyHistoryProject(restoredProject: IProject) {
+    const validTrackIds = new Set(restoredProject.tracks.map((track) => track.id));
+    const validClipKeys = new Set(restoredProject.tracks.flatMap((track) =>
+      track.clips.map((clip) => clipKeyId({ trackId: track.id, clipId: clip.id })),
+    ));
+    setProject(restoredProject);
+    setSelectedClips((current) => current.filter((key) => validClipKeys.has(clipKeyId(key))));
+    setSelectedTrackId((current) => current && validTrackIds.has(current)
+      ? current
+      : restoredProject.tracks[0]?.id ?? null);
+    setEffectsPanelTrackId((current) => current && !validTrackIds.has(current) ? null : current);
+  }
+
   async function handleUndo() {
     if (!project) return;
     const result = historyManager.undo(project);
     if (result) {
-      setProject(result.project);
+      applyHistoryProject(result.project);
       await projectService.saveProject(result.project);
       await historyManager.flush();
       toast.info(`撤销：${result.command.label}`);
@@ -1172,7 +1185,7 @@ export default function AudioEditorPage() {
     if (!project) return;
     const result = historyManager.redo(project);
     if (result) {
-      setProject(result.project);
+      applyHistoryProject(result.project);
       await projectService.saveProject(result.project);
       await historyManager.flush();
       toast.info(`重做：${result.command.label}`);
