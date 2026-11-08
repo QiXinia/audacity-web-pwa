@@ -31,7 +31,7 @@ describe('Workspace persistence', () => {
       setItem: (key: string, value: string) => { values.set(key, value); },
     };
     const custom = createWorkspace(defaultWorkspaceStore(), 'custom-1', 'Podcast', layout);
-    saveWorkspaceStore(custom, storage);
+    expect(saveWorkspaceStore(custom, storage)).toBe(true);
     expect(values.has(WORKSPACE_STORAGE_KEY)).toBe(true);
     const restored = loadWorkspaceStore(storage);
     expect(restored.activeId).toBe('custom-1');
@@ -64,5 +64,13 @@ describe('Workspace persistence', () => {
     const changed = updateWorkspaceLayout(defaultWorkspaceStore(), layout);
     const restored = resetWorkspace(changed, 'classic');
     expect(restored.presets[0].layout).toEqual(defaultWorkspaceStore().presets[0].layout);
+  });
+
+  it('reports browser storage write failures without throwing', () => {
+    const storage = {
+      setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },
+    };
+    expect(() => saveWorkspaceStore(defaultWorkspaceStore(), storage)).not.toThrow();
+    expect(saveWorkspaceStore(defaultWorkspaceStore(), storage)).toBe(false);
   });
 });

@@ -119,9 +119,16 @@ export function loadWorkspaceStore(storage?: Pick<Storage, 'getItem'>): Workspac
 export function saveWorkspaceStore(
   store: WorkspaceStore,
   storage?: Pick<Storage, 'setItem'>,
-): void {
-  const target = storage ?? (typeof window !== 'undefined' ? window.localStorage : undefined);
-  target?.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(store));
+): boolean {
+  try {
+    const target = storage ?? (typeof window !== 'undefined' ? window.localStorage : undefined);
+    if (!target) return false;
+    target.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(store));
+    return true;
+  } catch {
+    // Privacy mode, quota and security failures must not break layout updates.
+    return false;
+  }
 }
 
 export function createWorkspace(

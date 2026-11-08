@@ -143,6 +143,7 @@ import {
   saveWorkspaceStore,
   updateWorkspaceLayout,
   type WorkspaceLayout,
+  type WorkspaceStore,
 } from '@/services/workspaceService';
 import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType, SnapMode } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
@@ -221,6 +222,7 @@ export default function AudioEditorPage() {
   const isPlayingRef = useRef(false);
   const recordingSampleRateRef = useRef(44100);
   const workspaceHydratedRef = useRef(false);
+  const workspaceStorageWarningShownRef = useRef(false);
   const workspaceLayout = useMemo<WorkspaceLayout>(() => ({
     showTrackPanel,
     showMixer,
@@ -237,7 +239,7 @@ export default function AudioEditorPage() {
     }
     setWorkspaceStore((current) => {
       const updated = updateWorkspaceLayout(current, workspaceLayout);
-      saveWorkspaceStore(updated);
+      persistWorkspaceStore(updated);
       return updated;
     });
   }, [workspaceLayout]);
@@ -767,6 +769,19 @@ export default function AudioEditorPage() {
     toast.success('已分割片段');
   }
 
+  function persistWorkspaceStore(store: WorkspaceStore): boolean {
+    const persisted = saveWorkspaceStore(store);
+    if (persisted) {
+      workspaceStorageWarningShownRef.current = false;
+      return true;
+    }
+    if (!workspaceStorageWarningShownRef.current) {
+      workspaceStorageWarningShownRef.current = true;
+      toast.error('浏览器存储不可用，Workspace 更改仅在本次会话保留');
+    }
+    return false;
+  }
+
   function applyWorkspaceLayout(layout: WorkspaceLayout) {
     setShowTrackPanel(layout.showTrackPanel);
     setShowMixer(layout.showMixer);
@@ -780,7 +795,7 @@ export default function AudioEditorPage() {
     if (!preset) return;
     const updated = { ...workspaceStore, activeId: id };
     setWorkspaceStore(updated);
-    saveWorkspaceStore(updated);
+    persistWorkspaceStore(updated);
     applyWorkspaceLayout(preset.layout);
   }
 
@@ -792,8 +807,8 @@ export default function AudioEditorPage() {
         workspaceName,
         workspaceLayout,
       );
+      if (!persistWorkspaceStore(updated)) return;
       setWorkspaceStore(updated);
-      saveWorkspaceStore(updated);
       setWorkspaceDialogOpen(false);
       setWorkspaceName('');
       toast.success('Workspace 已保存到当前浏览器');
@@ -805,7 +820,7 @@ export default function AudioEditorPage() {
   function resetActiveWorkspace() {
     const updated = resetWorkspace(workspaceStore, workspaceStore.activeId);
     setWorkspaceStore(updated);
-    saveWorkspaceStore(updated);
+    persistWorkspaceStore(updated);
     const preset = updated.presets.find((candidate) => candidate.id === updated.activeId);
     if (preset) applyWorkspaceLayout(preset.layout);
     toast.info('已恢复内置 Workspace');
@@ -814,7 +829,7 @@ export default function AudioEditorPage() {
   function deleteActiveWorkspace() {
     const updated = removeWorkspace(workspaceStore, workspaceStore.activeId);
     setWorkspaceStore(updated);
-    saveWorkspaceStore(updated);
+    persistWorkspaceStore(updated);
     const preset = updated.presets.find((candidate) => candidate.id === updated.activeId);
     if (preset) applyWorkspaceLayout(preset.layout);
     toast.info('已删除自定义 Workspace');
