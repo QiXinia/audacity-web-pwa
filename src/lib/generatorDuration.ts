@@ -1,4 +1,4 @@
-export type GeneratorKind = 'tone' | 'chirp' | 'noise' | 'silence';
+export type GeneratorKind = 'tone' | 'chirp' | 'dtmf' | 'noise' | 'silence';
 
 export const GENERATOR_DEFAULT_DURATION = 30;
 

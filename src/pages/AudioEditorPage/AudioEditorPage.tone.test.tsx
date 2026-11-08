@@ -116,6 +116,10 @@ function openChirpDialog() {
   return openGeneratorDialog('扫频（Chirp）…');
 }
 
+function openDtmfDialog() {
+  return openGeneratorDialog('DTMF 音调…');
+}
+
 function createTwoTrackProject(selection: IProject['selection'] = null): IProject {
   const project = createProject(selection);
   project.tracks[0].clips = [{
@@ -350,6 +354,76 @@ describe('AudioEditorPage tone command integration', () => {
     expect(document.querySelectorAll('.au-clip')).toHaveLength(2);
     expect(document.querySelectorAll('.au-clip[data-selected="true"]')).toHaveLength(0);
     expect(screen.queryByText('2 个片段')).toBeNull();
+  });
+});
+
+describe('AudioEditorPage DTMF command integration', () => {
+  it('passes sequence parameters through the Generate menu to real sample generation', async () => {
+    const project = createProject();
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(project);
+    renderEditor();
+    await openDtmfDialog();
+
+    fireEvent.change(screen.getByLabelText('DTMF 序列'), { target: { value: '1A' } });
+    fireEvent.change(screen.getByLabelText('振幅 (0–1)'), { target: { value: '0.5' } });
+    fireEvent.change(screen.getByLabelText('占空比 (%)'), { target: { value: '50' } });
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成 DTMF' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [projectId, targets, sampleRate, startTime, clipName, replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(projectId).toBe(project.id);
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1']);
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0);
+    expect(clipName).toBe('DTMF 1A');
+    expect(replacement).toBeUndefined();
+    const samples = targets[0].sampleData[0];
+    expect(samples).toHaveLength(10);
+    expect(Array.from(samples.slice(4, 7))).toEqual([0, 0, 0]);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('locks DTMF duration to the quantized selection and replaces that exact range', async () => {
+    const project = createProject({ start: 0.1004, end: 0.2996 });
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(project);
+    renderEditor();
+    await openDtmfDialog();
+
+    fireEvent.change(screen.getByLabelText('DTMF 序列'), { target: { value: '12' } });
+    const duration = screen.getByLabelText('时长（秒）') as HTMLInputElement;
+    await waitFor(() => expect(duration.value).toBe('0.2'));
+    expect(duration.readOnly).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '生成 DTMF' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets, sampleRate, startTime, , replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0.1);
+    expect(replacement).toEqual({ start: 0.1, end: 0.3 });
+    expect(targets[0].sampleData[0]).toHaveLength(200);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates identical DTMF channels into every selected track with one history command', async () => {
+    const project = createTwoTrackProject();
+    renderTwoTrackProject(project);
+    await selectBothClips();
+    await openDtmfDialog();
+    fireEvent.change(screen.getByLabelText('DTMF 序列'), { target: { value: '12' } });
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成 DTMF' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets] = vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
+    expect(targets.map(({ sampleData }) => sampleData[0].length)).toEqual([10, 10]);
+    expect(targets[0].sampleData[0]).toEqual(targets[1].sampleData[0]);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
   });
 });
 

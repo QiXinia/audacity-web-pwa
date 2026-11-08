@@ -104,6 +104,7 @@ import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
 import { generateTone, type ToneRequest } from '@/lib/toneGenerator';
 import { generateChirp, type ChirpRequest } from '@/lib/chirpGenerator';
+import { generateDtmf, type DtmfRequest } from '@/lib/dtmfGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
 import { drawWaveform } from '@/lib/waveformDrawing';
@@ -172,6 +173,7 @@ import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
 import ToneGeneratorDialog from './sections/ToneGeneratorDialog';
 import ChirpGeneratorDialog from './sections/ChirpGeneratorDialog';
+import DtmfGeneratorDialog from './sections/DtmfGeneratorDialog';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
@@ -226,6 +228,7 @@ export default function AudioEditorPage() {
   const [generatorDurations, setGeneratorDurations] = useState<Record<GeneratorKind, number>>(() => ({
     tone: loadGeneratorDuration('tone'),
     chirp: loadGeneratorDuration('chirp'),
+    dtmf: loadGeneratorDuration('dtmf'),
     noise: loadGeneratorDuration('noise'),
     silence: loadGeneratorDuration('silence'),
   }));
@@ -233,6 +236,8 @@ export default function AudioEditorPage() {
   const [isGeneratingTone, setIsGeneratingTone] = useState(false);
   const [chirpDialogOpen, setChirpDialogOpen] = useState(false);
   const [isGeneratingChirp, setIsGeneratingChirp] = useState(false);
+  const [dtmfDialogOpen, setDtmfDialogOpen] = useState(false);
+  const [isGeneratingDtmf, setIsGeneratingDtmf] = useState(false);
   const [noiseDialogOpen, setNoiseDialogOpen] = useState(false);
   const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
   const [silenceDialogOpen, setSilenceDialogOpen] = useState(false);
@@ -996,7 +1001,63 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleGenerateDtmf(settings: DtmfRequest) {
+    if (!project) return;
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length === 0) {
+      toast.warning('请先添加一个音频轨道');
+      return;
+    }
+
+    const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
+    const beforeProject = structuredClone(project);
+    setIsGeneratingDtmf(true);
+    try {
+      const duration = activeSelection
+        ? activeSelection.end - activeSelection.start
+        : settings.duration;
+      const channels = generateDtmf({
+        ...settings,
+        duration,
+        sampleRate: project.sampleRate,
+      });
+      const clips = await projectService.addGeneratedAudioToTracks(
+        project.id,
+        trackIds.map((trackId) => ({ trackId, sampleData: [channels] })),
+        project.sampleRate,
+        activeSelection?.start ?? cursorPosition,
+        `DTMF ${settings.sequence}`,
+        activeSelection ?? undefined,
+      );
+      if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
+
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('工程保存后无法重新加载');
+      setProject(updated);
+      setSelectedTrackId(trackIds[0]!);
+      setSelectedClips(clips.map((clip, index) => ({ trackId: trackIds[index]!, clipId: clip.id })));
+      pushHistoryCmd({
+        id: generateId(),
+        label: '生成 DTMF',
+        execute: () => updated,
+        undo: () => beforeProject,
+      });
+      if (!activeSelection) rememberLastGeneratorDuration('dtmf', duration);
+      setDtmfDialogOpen(false);
+      const trackMessage = trackIds.length > 1 ? `到 ${trackIds.length} 条轨道` : '';
+      toast.success(activeSelection
+        ? `已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为 DTMF`
+        : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(duration)} DTMF`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      toast.error(`生成 DTMF 失败：${message}`);
+    } finally {
+      setIsGeneratingDtmf(false);
+    }
+  }
+
   async function handleGenerateNoise(settings: NoiseRequest) {
+
     if (!project) return;
     const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
     if (trackIds.length === 0) {
@@ -2294,6 +2355,7 @@ export default function AudioEditorPage() {
             <DropdownMenuContent>
               <DropdownMenuItem onClick={() => setToneDialogOpen(true)}>音调…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setChirpDialogOpen(true)}>扫频（Chirp）…</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setDtmfDialogOpen(true)}>DTMF 音调…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setNoiseDialogOpen(true)}>噪声…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setSilenceDialogOpen(true)}>静默…</DropdownMenuItem>
             </DropdownMenuContent>
@@ -3146,6 +3208,19 @@ export default function AudioEditorPage() {
           replacementEnd={quantizedGeneratorSelection?.end}
           isGenerating={isGeneratingChirp}
           onGenerate={handleGenerateChirp}
+        />
+
+        <DtmfGeneratorDialog
+          open={dtmfDialogOpen}
+          onOpenChange={setDtmfDialogOpen}
+          sampleRate={project.sampleRate}
+          cursorPosition={cursorPosition}
+          defaultDuration={generatorSelectionDuration ?? generatorDurations.dtmf}
+          selectionActive={Boolean(quantizedGeneratorSelection)}
+          replacementPosition={quantizedGeneratorSelection?.start}
+          replacementEnd={quantizedGeneratorSelection?.end}
+          isGenerating={isGeneratingDtmf}
+          onGenerate={handleGenerateDtmf}
         />
 
         <NoiseGeneratorDialog
