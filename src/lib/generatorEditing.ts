@@ -6,6 +6,27 @@ export interface GeneratorSelection {
   end: number;
 }
 
+/**
+ * Resolve Audacity-style generation targets in project track order.
+ * Clip selections are this editor's multi-track selection surface; without
+ * one, retain the legacy active-track then first-track fallback.
+ */
+export function resolveGeneratorTrackIds(
+  tracks: readonly Pick<ITrack, 'id'>[],
+  selectedTrackId: string | null,
+  selectedClips: readonly { trackId: string }[],
+): string[] {
+  const explicitlySelected = new Set(selectedClips.map(({ trackId }) => trackId));
+  const selected = tracks
+    .filter(({ id }) => explicitlySelected.has(id))
+    .map(({ id }) => id);
+  if (selected.length > 0) return selected;
+  if (selectedTrackId && tracks.some(({ id }) => id === selectedTrackId)) {
+    return [selectedTrackId];
+  }
+  return tracks[0] ? [tracks[0].id] : [];
+}
+
 /** Match Audacity's sample-based selection boundaries and exact Duration display. */
 export function quantizeSelectionToSamples(
   selection: GeneratorSelection | null,

@@ -100,7 +100,7 @@ import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } fro
 import { generateTone, type ToneRequest } from '@/lib/toneGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
-import { quantizeSelectionToSamples } from '@/lib/generatorEditing';
+import { quantizeSelectionToSamples, resolveGeneratorTrackIds } from '@/lib/generatorEditing';
 import {
   loadGeneratorDuration,
   saveGeneratorDuration,
@@ -842,8 +842,8 @@ export default function AudioEditorPage() {
 
   async function handleGenerateTone(settings: ToneRequest) {
     if (!project) return;
-    const trackId = selectedTrackId ?? project.tracks[0]?.id;
-    if (!trackId) {
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length === 0) {
       toast.warning('请先添加一个音频轨道');
       return;
     }
@@ -862,22 +862,21 @@ export default function AudioEditorPage() {
         duration,
         sampleRate: project.sampleRate,
       });
-      const clip = await projectService.addRecordingToTrack(
+      const clips = await projectService.addGeneratedAudioToTracks(
         project.id,
-        trackId,
-        [channels],
+        trackIds.map((trackId) => ({ trackId, sampleData: [channels] })),
         project.sampleRate,
         activeSelection?.start ?? cursorPosition,
         `音调 ${settings.frequency} Hz`,
         activeSelection ?? undefined,
       );
-      if (!clip) throw new Error('目标轨道不可用');
+      if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
-      setSelectedTrackId(trackId);
-      setSelectedClips([{ trackId, clipId: clip.id }]);
+      setSelectedTrackId(trackIds[0]!);
+      setSelectedClips(clips.map((clip, index) => ({ trackId: trackIds[index]!, clipId: clip.id })));
       pushHistoryCmd({
         id: generateId(),
         label: '生成音调',
@@ -886,9 +885,10 @@ export default function AudioEditorPage() {
       });
       if (!activeSelection) rememberLastGeneratorDuration('tone', duration);
       setToneDialogOpen(false);
+      const trackMessage = trackIds.length > 1 ? `到 ${trackIds.length} 条轨道` : '';
       toast.success(activeSelection
-        ? `已将 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为音调`
-        : `已在 ${formatTime(cursorPosition)} 生成 ${formatTime(duration)} 音调`);
+        ? `已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为音调`
+        : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(duration)} 音调`);
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成音调失败：${message}`);
@@ -899,8 +899,8 @@ export default function AudioEditorPage() {
 
   async function handleGenerateNoise(settings: NoiseRequest) {
     if (!project) return;
-    const trackId = selectedTrackId ?? project.tracks[0]?.id;
-    if (!trackId) {
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length === 0) {
       toast.warning('请先添加一个音频轨道');
       return;
     }
@@ -915,28 +915,29 @@ export default function AudioEditorPage() {
       const randomSeed = new Uint32Array(1);
       globalThis.crypto?.getRandomValues(randomSeed);
       const seed = randomSeed[0] || ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0) || 1;
-      const channels = generateNoise({
-        ...settings,
-        duration,
-        sampleRate: project.sampleRate,
-        seed,
-      });
-      const clip = await projectService.addRecordingToTrack(
+      const clips = await projectService.addGeneratedAudioToTracks(
         project.id,
-        trackId,
-        [channels],
+        trackIds.map((trackId, index) => ({
+          trackId,
+          sampleData: [generateNoise({
+            ...settings,
+            duration,
+            sampleRate: project.sampleRate,
+            seed: ((seed + index) >>> 0) || 1,
+          })],
+        })),
         project.sampleRate,
         activeSelection?.start ?? cursorPosition,
         `噪声 ${settings.type}`,
         activeSelection ?? undefined,
       );
-      if (!clip) throw new Error('目标轨道不可用');
+      if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
-      setSelectedTrackId(trackId);
-      setSelectedClips([{ trackId, clipId: clip.id }]);
+      setSelectedTrackId(trackIds[0]!);
+      setSelectedClips(clips.map((clip, index) => ({ trackId: trackIds[index]!, clipId: clip.id })));
       pushHistoryCmd({
         id: generateId(),
         label: '生成噪声',
@@ -945,9 +946,10 @@ export default function AudioEditorPage() {
       });
       if (!activeSelection) rememberLastGeneratorDuration('noise', duration);
       setNoiseDialogOpen(false);
+      const trackMessage = trackIds.length > 1 ? `到 ${trackIds.length} 条轨道` : '';
       toast.success(activeSelection
-        ? `已将 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为噪声`
-        : `已在 ${formatTime(cursorPosition)} 生成 ${formatTime(duration)} 噪声`);
+        ? `已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为噪声`
+        : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(duration)} 噪声`);
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成噪声失败：${message}`);
@@ -958,8 +960,8 @@ export default function AudioEditorPage() {
 
   async function handleGenerateSilence(requestedDuration: number) {
     if (!project) return;
-    const trackId = selectedTrackId ?? project.tracks[0]?.id;
-    if (!trackId) {
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length === 0) {
       toast.warning('请先添加一个音频轨道');
       return;
     }
@@ -969,12 +971,12 @@ export default function AudioEditorPage() {
     setIsGeneratingSilence(true);
     try {
       if (activeSelection) {
-        const changedClips = await projectService.silenceSelectionOnTrack(
+        const changedClips = await projectService.silenceSelectionOnTracks(
           project.id,
-          trackId,
+          trackIds,
           activeSelection,
         );
-        if (changedClips === 0) throw new Error('当前轨道的选区未覆盖任何可用音频');
+        if (changedClips === 0) throw new Error('所选轨道的选区未覆盖任何可用音频');
 
         const updated = await projectService.getProject(project.id);
         if (!updated) throw new Error('工程保存后无法重新加载');
@@ -986,7 +988,7 @@ export default function AudioEditorPage() {
           undo: () => beforeProject,
         });
         setSilenceDialogOpen(false);
-        toast.success(`已将 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为静默`);
+        toast.success(`已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为静默`);
         return;
       }
 
@@ -994,21 +996,20 @@ export default function AudioEditorPage() {
         duration: requestedDuration,
         sampleRate: project.sampleRate,
       });
-      const clip = await projectService.addRecordingToTrack(
+      const clips = await projectService.addGeneratedAudioToTracks(
         project.id,
-        trackId,
-        [channels],
+        trackIds.map((trackId) => ({ trackId, sampleData: [channels] })),
         project.sampleRate,
         cursorPosition,
         '静默',
       );
-      if (!clip) throw new Error('目标轨道不可用');
+      if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
-      setSelectedTrackId(trackId);
-      setSelectedClips([{ trackId, clipId: clip.id }]);
+      setSelectedTrackId(trackIds[0]!);
+      setSelectedClips(clips.map((clip, index) => ({ trackId: trackIds[index]!, clipId: clip.id })));
       pushHistoryCmd({
         id: generateId(),
         label: '生成静默',
@@ -1017,7 +1018,8 @@ export default function AudioEditorPage() {
       });
       rememberLastGeneratorDuration('silence', requestedDuration);
       setSilenceDialogOpen(false);
-      toast.success(`已在 ${formatTime(cursorPosition)} 生成 ${formatTime(requestedDuration)} 静默`);
+      const trackMessage = trackIds.length > 1 ? `到 ${trackIds.length} 条轨道` : '';
+      toast.success(`已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(requestedDuration)} 静默`);
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成静默失败：${message}`);

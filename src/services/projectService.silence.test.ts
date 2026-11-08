@@ -148,3 +148,60 @@ describe('ProjectService silence selection', () => {
     expect(vi.mocked(audioDb.audioBuffers.put)).not.toHaveBeenCalled();
   });
 });
+
+describe('ProjectService multi-track silence selection', () => {
+  function makeTwoTrackProject(): IProject {
+    const project = makeProject();
+    const second = structuredClone(project.tracks[0]);
+    second.id = 'track-2';
+    second.clips = [{ ...makeClip('second', 1, 1), audioBufferId: 'second-source' }];
+    project.tracks.push(second);
+    return project;
+  }
+
+  it('copy-on-writes overlapping clips across tracks and saves once', async () => {
+    const project = makeTwoTrackProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    vi.spyOn(projectService, 'loadAudioChannels').mockImplementation(async () => [
+      Float32Array.from({ length: 40 }, (_, index) => index + 1),
+      Float32Array.from({ length: 40 }, (_, index) => index + 101),
+    ]);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+
+    await expect(projectService.silenceSelectionOnTracks(
+      project.id, ['track', 'track-2'], { start: 1.25, end: 1.75 },
+    )).resolves.toBe(2);
+
+    expect(vi.mocked(audioDb.audioBuffers.put)).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(1);
+    const saved = save.mock.calls[0][0];
+    expect(saved.tracks[0].clips[0].audioBufferId).toBe('shared-source');
+    expect(saved.tracks[0].clips[1].audioBufferId).not.toBe('shared-source');
+    expect(saved.tracks[1].clips[0].audioBufferId).not.toBe('second-source');
+    expect(project.tracks[0].clips[1].audioBufferId).toBe('shared-source');
+    expect(project.tracks[1].clips[0].audioBufferId).toBe('second-source');
+    for (const call of vi.mocked(audioDb.audioBuffers.put).mock.calls) {
+      const record = call[0];
+      expect(Array.from(new Float32Array(record.channelData[0]).slice(12, 18)))
+        .toEqual(new Array(6).fill(0));
+      expect(Array.from(new Float32Array(record.channelData[1]).slice(12, 18)))
+        .toEqual(new Array(6).fill(0));
+    }
+  });
+
+  it('does not commit partial silence when a later track has unavailable audio', async () => {
+    const project = makeTwoTrackProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    vi.spyOn(projectService, 'loadAudioChannels').mockImplementation(async (bufferId) =>
+      bufferId === 'second-source' ? null : [new Float32Array(40)]);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+
+    await expect(projectService.silenceSelectionOnTracks(
+      project.id, ['track', 'track-2'], { start: 1.25, end: 1.75 },
+    )).rejects.toThrow(/音频不可用/);
+
+    expect(vi.mocked(audioDb.audioBuffers.put)).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(project.tracks[0].clips[1].audioBufferId).toBe('shared-source');
+  });
+});

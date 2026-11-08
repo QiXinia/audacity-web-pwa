@@ -13,6 +13,9 @@ vi.mock('@/services/projectService', () => ({
     openProject: vi.fn(),
     getProject: vi.fn(),
     addRecordingToTrack: vi.fn(),
+    addGeneratedAudioToTracks: vi.fn(),
+    silenceSelectionOnTracks: vi.fn(),
+    loadAudioBuffer: vi.fn(),
     saveProject: vi.fn(),
   },
 }));
@@ -97,12 +100,47 @@ function renderEditor() {
   );
 }
 
-async function openToneDialog() {
+async function openGeneratorDialog(itemName: string) {
   await screen.findByText('Tone command integration');
   const trigger = screen.getByRole('button', { name: '生成' });
   fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
-  fireEvent.click(await screen.findByText('音调…'));
+  fireEvent.click(await screen.findByText(itemName));
   return screen.findByRole('dialog');
+}
+
+function openToneDialog() {
+  return openGeneratorDialog('音调…');
+}
+
+function createTwoTrackProject(selection: IProject['selection'] = null): IProject {
+  const project = createProject(selection);
+  project.tracks[0].clips = [{
+    id: 'clip-a', audioBufferId: 'buffer-a', startTime: 0, offset: 0,
+    duration: 0.01, originalDuration: 0.01, stretchRatio: 1, gain: 0,
+    fadeIn: 0, fadeOut: 0, name: 'Clip A',
+  }];
+  project.tracks.push({
+    ...project.tracks[0],
+    id: 'track-2',
+    name: 'Track 2',
+    clips: [{
+      id: 'clip-b', audioBufferId: 'buffer-b', startTime: 0, offset: 0,
+      duration: 0.01, originalDuration: 0.01, stretchRatio: 1, gain: 0,
+      fadeIn: 0, fadeOut: 0, name: 'Clip B',
+    }],
+  });
+  return project;
+}
+
+function renderTwoTrackProject(project: IProject) {
+  vi.mocked(projectService.openProject).mockResolvedValue(project);
+  vi.mocked(projectService.getProject).mockResolvedValue(project);
+  renderEditor();
+}
+
+async function selectBothClips() {
+  fireEvent.click(await screen.findByRole('button', { name: /^Clip A/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Clip B/ }), { shiftKey: true });
 }
 
 beforeEach(() => {
@@ -113,19 +151,22 @@ beforeEach(() => {
   vi.mocked(historyManager.getRedoLabel).mockReturnValue(null);
   vi.mocked(historyManager.flush).mockResolvedValue(undefined);
   vi.mocked(projectService.saveProject).mockResolvedValue(undefined);
-  vi.mocked(projectService.addRecordingToTrack).mockResolvedValue({
-    id: 'generated-clip',
-    audioBufferId: 'generated-buffer',
-    startTime: 0,
-    offset: 0,
-    duration: 0.01,
-    originalDuration: 0.01,
-    stretchRatio: 1,
-    gain: 0,
-    fadeIn: 0,
-    fadeOut: 0,
-    name: '音调',
-  } satisfies IClip);
+  vi.mocked(projectService.addGeneratedAudioToTracks).mockImplementation(async (_projectId, targets) =>
+    targets.map(({ trackId }, index) => ({
+      id: `generated-clip-${index}`,
+      audioBufferId: `generated-buffer-${index}`,
+      startTime: 0,
+      offset: 0,
+      duration: 0.01,
+      originalDuration: 0.01,
+      stretchRatio: 1,
+      gain: 0,
+      fadeIn: 0,
+      fadeOut: 0,
+      name: `音调 ${trackId}`,
+    } satisfies IClip)));
+  vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(null);
+  vi.mocked(projectService.silenceSelectionOnTracks).mockResolvedValue(2);
 });
 
 afterEach(() => {
@@ -146,15 +187,17 @@ describe('AudioEditorPage tone command integration', () => {
     fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
     fireEvent.click(screen.getByRole('button', { name: '生成音调' }));
 
-    await waitFor(() => expect(projectService.addRecordingToTrack).toHaveBeenCalledTimes(1));
-    const [projectId, trackId, channels, sampleRate, startTime, clipName, replacement] =
-      vi.mocked(projectService.addRecordingToTrack).mock.calls[0];
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [projectId, targets, sampleRate, startTime, clipName, replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
     expect(projectId).toBe(project.id);
-    expect(trackId).toBe('track-1');
+    expect(targets).toHaveLength(1);
+    expect(targets[0].trackId).toBe('track-1');
     expect(sampleRate).toBe(1000);
     expect(startTime).toBe(0);
     expect(clipName).toBe('音调 220 Hz');
     expect(replacement).toBeUndefined();
+    const channels = targets[0].sampleData;
     expect(channels).toHaveLength(1);
     expect(channels[0]).toHaveLength(10);
     expect(Math.max(...channels[0])).toBeLessThanOrEqual(0.25);
@@ -174,13 +217,82 @@ describe('AudioEditorPage tone command integration', () => {
     expect(duration.readOnly).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: '生成音调' }));
 
-    await waitFor(() => expect(projectService.addRecordingToTrack).toHaveBeenCalledTimes(1));
-    const [, , channels, sampleRate, startTime, , replacement] =
-      vi.mocked(projectService.addRecordingToTrack).mock.calls[0];
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets, sampleRate, startTime, , replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
     expect(sampleRate).toBe(1000);
     expect(startTime).toBe(0.1);
     expect(replacement).toEqual({ start: 0.1, end: 0.3 });
-    expect(channels[0]).toHaveLength(200);
+    expect(targets[0].sampleData[0]).toHaveLength(200);
     await waitFor(() => expect(projectService.getProject).toHaveBeenCalledWith(project.id));
+  });
+
+  it('generates into every Shift-selected clip track with one history command', async () => {
+    const project = createTwoTrackProject();
+    renderTwoTrackProject(project);
+    await selectBothClips();
+    await openToneDialog();
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成音调' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets, sampleRate, startTime, , replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
+    expect(targets.map(({ sampleData }) => sampleData[0].length)).toEqual([10, 10]);
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0);
+    expect(replacement).toBeUndefined();
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates distinct noise samples on every selected track', async () => {
+    const project = createTwoTrackProject();
+    renderTwoTrackProject(project);
+    await selectBothClips();
+    await openGeneratorDialog('噪声…');
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成噪声' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets] = vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
+    expect(targets[0].sampleData[0]).toHaveLength(10);
+    expect(targets[0].sampleData[0]).not.toEqual(targets[1].sampleData[0]);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('inserts silence into every selected track with one history command', async () => {
+    const project = createTwoTrackProject();
+    renderTwoTrackProject(project);
+    await selectBothClips();
+    await openGeneratorDialog('静默…');
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成静默' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets] = vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
+    expect(targets[0].sampleData[0]).toHaveLength(10);
+    expect(Array.from(targets[0].sampleData[0])).toEqual(new Array(10).fill(0));
+    expect(projectService.silenceSelectionOnTracks).not.toHaveBeenCalled();
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('silences the same quantized selection on every selected track', async () => {
+    const project = createTwoTrackProject({ start: 0.002, end: 0.008 });
+    renderTwoTrackProject(project);
+    await selectBothClips();
+    await openGeneratorDialog('静默…');
+    fireEvent.click(screen.getByRole('button', { name: '生成静默' }));
+
+    await waitFor(() => expect(projectService.silenceSelectionOnTracks).toHaveBeenCalledTimes(1));
+    expect(projectService.silenceSelectionOnTracks).toHaveBeenCalledWith(
+      project.id,
+      ['track-1', 'track-2'],
+      { start: 0.002, end: 0.008 },
+    );
+    expect(projectService.addGeneratedAudioToTracks).not.toHaveBeenCalled();
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
   });
 });

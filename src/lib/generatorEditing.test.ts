@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { quantizeSelectionToSamples, replaceTrackSelectionWithClip } from '@/lib/generatorEditing';
+import {
+  quantizeSelectionToSamples,
+  replaceTrackSelectionWithClip,
+  resolveGeneratorTrackIds,
+} from '@/lib/generatorEditing';
 import type { IClip, ITrack } from '@/types/project';
 
 function clip(id: string, startTime: number, duration: number, offset = 0): IClip {
@@ -27,6 +31,25 @@ function track(clips: IClip[]): ITrack {
 function generated(startTime: number, duration: number): IClip {
   return { ...clip('generated', startTime, duration), fadeIn: 0, fadeOut: 0 };
 }
+
+describe('generator track targeting', () => {
+  const tracks = [{ id: 'track-a' }, { id: 'track-b' }, { id: 'track-c' }];
+
+  it('uses every selected clip track once and preserves project track order', () => {
+    expect(resolveGeneratorTrackIds(tracks, 'track-a', [
+      { trackId: 'track-c' },
+      { trackId: 'track-b' },
+      { trackId: 'track-c' },
+    ])).toEqual(['track-b', 'track-c']);
+  });
+
+  it('ignores stale selections and retains active-track and first-track fallbacks', () => {
+    expect(resolveGeneratorTrackIds(tracks, 'track-b', [{ trackId: 'missing' }]))
+      .toEqual(['track-b']);
+    expect(resolveGeneratorTrackIds(tracks, null, [])).toEqual(['track-a']);
+    expect(resolveGeneratorTrackIds([], null, [])).toEqual([]);
+  });
+});
 
 describe('generator selection replacement', () => {
   it('quantizes both selection edges to project samples and rejects sub-sample ranges', () => {

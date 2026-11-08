@@ -97,3 +97,60 @@ describe('ProjectService generated selection replacement', () => {
     expect(save).not.toHaveBeenCalled();
   });
 });
+
+describe('ProjectService multi-track generation', () => {
+  function makeTwoTrackProject(): IProject {
+    const project = makeProject();
+    const second = structuredClone(project.tracks[0]);
+    second.id = 'track-2';
+    second.clips[0].id = 'source-2';
+    project.tracks.push(second);
+    return project;
+  }
+
+  it('stores independent audio per track and commits the project once', async () => {
+    const project = makeTwoTrackProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const samples = Float32Array.from({ length: 10 }, (_, index) => index / 10);
+
+    const clips = await projectService.addGeneratedAudioToTracks(project.id, [
+      { trackId: 'track', sampleData: [samples] },
+      { trackId: 'track-2', sampleData: [samples] },
+    ], 10, 1, 'Tone', { start: 1, end: 2 });
+
+    expect(clips).toHaveLength(2);
+    expect(new Set(clips.map((clip) => clip.id)).size).toBe(2);
+    expect(new Set(clips.map((clip) => clip.audioBufferId)).size).toBe(2);
+    expect(vi.mocked(audioDb.audioBuffers.put)).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(1);
+    const saved = save.mock.calls[0][0];
+    expect(saved).not.toBe(project);
+    expect(saved.tracks.map((track) => track.clips.length)).toEqual([3, 3]);
+    expect(project.tracks.map((track) => track.clips.length)).toEqual([1, 1]);
+
+    const cacheCalls = vi.mocked(audioEngine.cacheBuffer).mock.calls;
+    const first = cacheCalls[0][1][0];
+    const second = cacheCalls[1][1][0];
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(samples);
+    first[0] = 99;
+    expect(second[0]).toBe(0);
+    expect(samples[0]).toBe(0);
+  });
+
+  it('validates every target before storing bytes or changing the project', async () => {
+    const project = makeTwoTrackProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+
+    await expect(projectService.addGeneratedAudioToTracks(project.id, [
+      { trackId: 'track', sampleData: [new Float32Array(10)] },
+      { trackId: 'track-2', sampleData: [new Float32Array(5)] },
+    ], 10, 1, 'Bad tone', { start: 1, end: 2 })).rejects.toThrow(/exactly cover/);
+
+    expect(vi.mocked(audioDb.audioBuffers.put)).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(project.tracks.map((track) => track.clips.length)).toEqual([1, 1]);
+  });
+});

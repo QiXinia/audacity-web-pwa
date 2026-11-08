@@ -19,6 +19,17 @@ import { replaceTrackSelectionWithClip, type GeneratorSelection } from '@/lib/ge
 
 type EffectType = IEffect['type'];
 
+export interface GeneratedTrackAudio {
+  trackId: string;
+  sampleData: Float32Array[];
+}
+
+interface PendingAudioBuffer {
+  id: string;
+  sampleRate: number;
+  sampleData: Float32Array[];
+}
+
 const PREFS_KEY = '__audacity_web_prefs';
 
 const DEFAULT_PREFS: IPreferences = {
@@ -388,6 +399,167 @@ class ProjectService {
     await this.saveProject(project);
 
     return clip;
+  }
+
+  private async storePendingAudioBuffers(
+    projectId: string,
+    buffers: readonly PendingAudioBuffer[],
+  ): Promise<void> {
+    for (const buffer of buffers) {
+      const length = buffer.sampleData[0]?.length ?? 0;
+      await audioDb.audioBuffers.put({
+        id: buffer.id,
+        projectId,
+        sampleRate: buffer.sampleRate,
+        channels: buffer.sampleData.length,
+        length,
+        duration: length / buffer.sampleRate,
+        channelData: buffer.sampleData.map((channel) => channel.buffer as ArrayBuffer),
+        createdAt: Date.now(),
+      });
+    }
+    for (const buffer of buffers) {
+      audioEngine.cacheBuffer(buffer.id, buffer.sampleData, buffer.sampleRate);
+    }
+  }
+
+  /**
+   * Generate into every selected track with one project commit. All target
+   * edits are validated before bytes are stored, so an invalid track cannot
+   * leave a partially edited project behind.
+   */
+  async addGeneratedAudioToTracks(
+    projectId: string,
+    targets: readonly GeneratedTrackAudio[],
+    sampleRate: number,
+    startTime: number,
+    clipName: string,
+    replaceSelection?: GeneratorSelection,
+  ): Promise<IClip[]> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) return [];
+    if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+      throw new RangeError('采样率必须大于零');
+    }
+    if (!Number.isFinite(startTime) || startTime < 0) {
+      throw new RangeError('生成位置必须是非负有限时间');
+    }
+
+    const seen = new Set<string>();
+    const nextTracks = new Map<string, ITrack>();
+    const clips: IClip[] = [];
+    const pendingBuffers: PendingAudioBuffer[] = [];
+
+    for (const target of targets) {
+      if (seen.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seen.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+
+      const sampleData = target.sampleData.map((channel) => new Float32Array(channel));
+      const length = sampleData[0]?.length ?? 0;
+      if (
+        sampleData.length === 0
+        || length < 1
+        || sampleData.some((channel) => channel.length !== length)
+      ) {
+        throw new RangeError('生成音频必须包含等长的非空声道');
+      }
+      const duration = length / sampleRate;
+      const bufferId = generateId();
+      const clip: IClip = {
+        id: generateId(),
+        audioBufferId: bufferId,
+        startTime,
+        offset: 0,
+        duration,
+        originalDuration: duration,
+        stretchRatio: 1,
+        gain: 0,
+        fadeIn: 0,
+        fadeOut: 0,
+        name: clipName,
+      };
+      const nextTrack = replaceSelection
+        ? replaceTrackSelectionWithClip(track, replaceSelection, clip, generateId)
+        : {
+          ...track,
+          clips: [...track.clips, clip].sort((a, b) => a.startTime - b.startTime),
+        };
+      nextTracks.set(track.id, nextTrack);
+      clips.push(clip);
+      pendingBuffers.push({ id: bufferId, sampleRate, sampleData });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.storePendingAudioBuffers(projectId, pendingBuffers);
+    await this.saveProject(updatedProject);
+    return clips;
+  }
+
+  /** Silence matching samples on every selected track with one project commit. */
+  async silenceSelectionOnTracks(
+    projectId: string,
+    trackIds: readonly string[],
+    selection: GeneratorSelection,
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('静默选区必须是有限的正时长区间');
+    }
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    let changedClips = 0;
+
+    for (const trackId of new Set(trackIds)) {
+      const track = project.tracks.find((candidate) => candidate.id === trackId);
+      if (!track) throw new Error(`目标轨道不可用：${trackId}`);
+      const clips: IClip[] = [];
+      for (const clip of track.clips) {
+        if (
+          selection.end <= clip.startTime
+          || selection.start >= clip.startTime + clip.duration
+        ) {
+          clips.push(clip);
+          continue;
+        }
+        const channelData = await this.loadAudioChannels(clip.audioBufferId);
+        if (!channelData) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+        const silenced = silenceClipSelection(channelData, clip, selection, project.sampleRate);
+        if (!silenced) {
+          clips.push(clip);
+          continue;
+        }
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData: silenced });
+        clips.push({ ...clip, audioBufferId: bufferId });
+        changedClips += 1;
+      }
+      nextTracks.set(trackId, { ...track, clips });
+    }
+
+    if (changedClips === 0) return 0;
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.storePendingAudioBuffers(projectId, pendingBuffers);
+    await this.saveProject(updatedProject);
+    return changedClips;
   }
 
   /** Replace selected samples with zeroes without changing any clip boundary. */
