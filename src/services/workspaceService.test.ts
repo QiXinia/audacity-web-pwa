@@ -88,6 +88,16 @@ describe('Workspace persistence', () => {
       .toBe(1);
   });
 
+  it('normalizes invalid legacy horizontal zoom without changing the active preset fallback', () => {
+    const values = new Map<string, string>();
+    values.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
+      activeId: 'classic',
+      presets: [{ id: 'classic', name: 'Classic', layout: { horizontalZoom: -20 } }],
+    }));
+    const restored = loadWorkspaceStore({ getItem: (key: string) => values.get(key) ?? null });
+    expect(restored.presets.find((preset) => preset.id === 'classic')?.layout.horizontalZoom).toBe(100);
+  });
+
   it('reports browser storage write failures without throwing', () => {
     const storage = {
       setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },

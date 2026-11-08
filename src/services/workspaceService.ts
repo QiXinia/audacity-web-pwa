@@ -1,4 +1,5 @@
 import type { ViewMode } from '@/types/project';
+import { normalizeHorizontalZoom } from '@/lib/horizontalZoom';
 import { normalizeVerticalZoom } from '@/lib/verticalZoom';
 
 export interface WorkspaceLayout {
@@ -79,7 +80,7 @@ function normalizeLayout(value: Partial<WorkspaceLayout> | undefined, fallback: 
     showMixer: typeof value?.showMixer === 'boolean' ? value.showMixer : fallback.showMixer,
     viewMode: modes.includes(value?.viewMode as ViewMode) ? value!.viewMode as ViewMode : fallback.viewMode,
     horizontalZoom: Number.isFinite(value?.horizontalZoom)
-      ? Math.max(10, Math.min(500, Number(value!.horizontalZoom)))
+      ? normalizeHorizontalZoom(Number(value!.horizontalZoom), fallback.horizontalZoom)
       : fallback.horizontalZoom,
     verticalZoom: Number.isFinite(value?.verticalZoom)
       ? normalizeVerticalZoom(Number(value!.verticalZoom))

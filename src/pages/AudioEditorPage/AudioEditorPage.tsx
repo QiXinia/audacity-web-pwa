@@ -113,6 +113,14 @@ import {
   normalizeVerticalZoom,
   stepVerticalZoom,
 } from '@/lib/verticalZoom';
+import {
+  DEFAULT_HORIZONTAL_ZOOM,
+  MAX_HORIZONTAL_ZOOM,
+  MIN_HORIZONTAL_ZOOM,
+  horizontalZoomForDuration,
+  normalizeHorizontalZoom,
+  stepHorizontalZoom,
+} from '@/lib/horizontalZoom';
 import { quantizeSelectionToSamples, resolveGeneratorTrackIds } from '@/lib/generatorEditing';
 import {
   loadGeneratorDuration,
@@ -320,6 +328,21 @@ export default function AudioEditorPage() {
       } else if (modified && key === 'y') {
         event.preventDefault();
         void handleRedo();
+      } else if (modified && key === '1') {
+        event.preventDefault();
+        changeHorizontalZoom('in');
+      } else if (modified && key === '2') {
+        event.preventDefault();
+        resetHorizontalZoom();
+      } else if (modified && key === '3') {
+        event.preventDefault();
+        changeHorizontalZoom('out');
+      } else if (modified && key === 'e' && selection) {
+        event.preventDefault();
+        zoomToSelection();
+      } else if (modified && key === 'f') {
+        event.preventDefault();
+        fitProjectToWidth();
       } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedClips.length > 0) {
         event.preventDefault();
         void handleDeleteSelectedClips();
@@ -366,7 +389,7 @@ export default function AudioEditorPage() {
         const workspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
           ?? workspaceStore.presets[0];
         setViewMode(workspace.layout.viewMode);
-        setHorizontalZoom(workspace.layout.horizontalZoom);
+        setHorizontalZoom(normalizeHorizontalZoom(workspace.layout.horizontalZoom));
         setVerticalZoom(normalizeVerticalZoom(workspace.layout.verticalZoom));
         setSnapEnabled(proj.viewState.snapEnabled ?? false);
         setSnapMode(proj.viewState.snapMode ?? 'clips');
@@ -799,7 +822,7 @@ export default function AudioEditorPage() {
     setShowTrackPanel(layout.showTrackPanel);
     setShowMixer(layout.showMixer);
     setViewMode(layout.viewMode);
-    setHorizontalZoom(layout.horizontalZoom);
+    setHorizontalZoom(normalizeHorizontalZoom(layout.horizontalZoom));
     setVerticalZoom(normalizeVerticalZoom(layout.verticalZoom));
   }
 
@@ -1960,6 +1983,44 @@ export default function AudioEditorPage() {
     toast.success('已反转选区');
   }
 
+  function scrollTimelineTo(time: number, zoom: number) {
+    window.requestAnimationFrame(() => {
+      const container = timelineRef.current;
+      if (!container) return;
+      container.scrollLeft = Math.max(0, time * zoom);
+      setScrollX(container.scrollLeft);
+    });
+  }
+
+  function changeHorizontalZoom(direction: 'in' | 'out') {
+    setHorizontalZoom((current) => stepHorizontalZoom(current, direction));
+  }
+
+  function resetHorizontalZoom() {
+    setHorizontalZoom(DEFAULT_HORIZONTAL_ZOOM);
+  }
+
+  function zoomToSelection() {
+    if (!selection || selection.end <= selection.start) return;
+    const nextZoom = horizontalZoomForDuration(
+      selection.end - selection.start,
+      timelineRef.current?.clientWidth ?? 0,
+    );
+    if (nextZoom === null) return;
+    setHorizontalZoom(nextZoom);
+    scrollTimelineTo(selection.start, nextZoom);
+  }
+
+  function fitProjectToWidth() {
+    const nextZoom = horizontalZoomForDuration(
+      projectDuration,
+      timelineRef.current?.clientWidth ?? 0,
+    );
+    if (nextZoom === null) return;
+    setHorizontalZoom(nextZoom);
+    scrollTimelineTo(0, nextZoom);
+  }
+
   const projectDuration = getProjectDuration();
   const canSplitAtCursor = project?.tracks.some((track) => track.clips.some((clip) => {
     const inSelection = selectedClips.length === 0
@@ -2058,6 +2119,32 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setViewMode('waveform')}>波形</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('spectrum')}>频谱</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('both')}>波形与频谱</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>水平缩放 {Math.round(horizontalZoom)}%</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => changeHorizontalZoom('in')}
+                disabled={horizontalZoom >= MAX_HORIZONTAL_ZOOM}
+              >
+                水平放大 (Ctrl+1)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={resetHorizontalZoom}>
+                正常大小 (Ctrl+2)
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => changeHorizontalZoom('out')}
+                disabled={horizontalZoom <= MIN_HORIZONTAL_ZOOM}
+              >
+                水平缩小 (Ctrl+3)
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={zoomToSelection}
+                disabled={!selection || selection.end <= selection.start}
+              >
+                缩放至选区 (Ctrl+E)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={fitProjectToWidth} disabled={projectDuration <= 0}>
+                适应宽度 (Ctrl+F)
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>纵向缩放 {Math.round(verticalZoom * 100)}%</DropdownMenuLabel>
               <DropdownMenuItem
@@ -2482,7 +2569,8 @@ export default function AudioEditorPage() {
                   variant="ghost"
                   size="icon"
                   className="size-7"
-                  onClick={() => setHorizontalZoom((z) => Math.max(10, z - 20))}
+                  onClick={() => changeHorizontalZoom('out')}
+                  disabled={horizontalZoom <= MIN_HORIZONTAL_ZOOM}
                   aria-label="水平缩小"
                   title="水平缩小"
                 >
@@ -2500,7 +2588,8 @@ export default function AudioEditorPage() {
                   variant="ghost"
                   size="icon"
                   className="size-7"
-                  onClick={() => setHorizontalZoom((z) => Math.min(500, z + 20))}
+                  onClick={() => changeHorizontalZoom('in')}
+                  disabled={horizontalZoom >= MAX_HORIZONTAL_ZOOM}
                   aria-label="水平放大"
                   title="水平放大"
                 >
@@ -2559,6 +2648,7 @@ export default function AudioEditorPage() {
           {/* Timeline Area (Center) */}
           <div
             ref={timelineRef}
+            data-testid="timeline-viewport"
             className="relative flex-1 overflow-auto bg-[#252b31]"
             onScroll={(e) => setScrollX((e.target as HTMLDivElement).scrollLeft)}
           >

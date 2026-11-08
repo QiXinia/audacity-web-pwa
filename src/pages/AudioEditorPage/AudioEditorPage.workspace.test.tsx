@@ -8,6 +8,7 @@ import AudioEditorPage from '@/pages/AudioEditorPage/AudioEditorPage';
 import { projectService } from '@/services/projectService';
 import { historyManager } from '@/services/historyService';
 import { WORKSPACE_STORAGE_KEY } from '@/services/workspaceService';
+import { DEFAULT_HORIZONTAL_ZOOM } from '@/lib/horizontalZoom';
 import type { IProject } from '@/types/project';
 
 vi.mock('sonner', () => ({
@@ -98,6 +99,26 @@ const project: IProject = {
   selection: null,
   loopRegion: null,
   loopEnabled: false,
+};
+
+const audioProject: IProject = {
+  ...project,
+  tracks: [{
+    ...project.tracks[0],
+    clips: [{
+      id: 'clip-1',
+      audioBufferId: 'buffer-1',
+      startTime: 2,
+      offset: 0,
+      duration: 8,
+      originalDuration: 8,
+      gain: 1,
+      fadeIn: 0,
+      fadeOut: 0,
+      name: 'Eight seconds',
+    }],
+  }],
+  selection: { start: 3, end: 7 },
 };
 
 function renderEditor() {
@@ -214,5 +235,56 @@ describe('AudioEditorPage vertical zoom controls', () => {
     await clickViewItem('重置纵向缩放');
     await openViewMenu();
     expect(screen.getByText('纵向缩放 100%')).toBeTruthy();
+  });
+});
+
+describe('AudioEditorPage horizontal zoom controls', () => {
+  it('uses Audacity 2x steps, normal zoom and keyboard shortcuts', async () => {
+    window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+    renderEditor();
+    await screen.findByText(project.name);
+
+    await clickViewItem('水平放大 (Ctrl+1)');
+    await openViewMenu();
+    expect(screen.getByText('水平缩放 200%')).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: '正常大小 (Ctrl+2)' }));
+
+    await openViewMenu();
+    expect(screen.getByText(`水平缩放 ${Math.round(DEFAULT_HORIZONTAL_ZOOM)}%`)).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: '正常大小 (Ctrl+2)' }));
+    fireEvent.keyDown(document.body, { key: '1', ctrlKey: true });
+    await openViewMenu();
+    expect(screen.getByText(`水平缩放 ${Math.round(DEFAULT_HORIZONTAL_ZOOM * 2)}%`)).toBeTruthy();
+  });
+
+  it('zooms to the selection, scrolls to its start, fits the project and persists both scales', async () => {
+    window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+    vi.mocked(projectService.openProject).mockResolvedValue(audioProject);
+    vi.mocked(projectService.getProject).mockResolvedValue(audioProject);
+    renderEditor();
+    await screen.findByText(audioProject.name);
+    const viewport = await screen.findByTestId('timeline-viewport');
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 800 });
+
+    await clickViewItem('缩放至选区 (Ctrl+E)');
+    await waitFor(() => expect(viewport.scrollLeft).toBeCloseTo(3 * 199.75));
+    await openViewMenu();
+    expect(screen.getByText('水平缩放 200%')).toBeTruthy();
+    await waitFor(() => {
+      const persisted = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+      const active = persisted.presets?.find((preset: { id: string }) => preset.id === persisted.activeId);
+      expect(active?.layout.horizontalZoom).toBeCloseTo(199.75);
+    });
+
+    fireEvent.click(screen.getByRole('menuitem', { name: '适应宽度 (Ctrl+F)' }));
+    await waitFor(() => expect(viewport.scrollLeft).toBe(0));
+    await openViewMenu();
+    expect(screen.getByText('水平缩放 80%')).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    fireEvent.click(await screen.findByRole('button', { name: '保存' }));
+    await waitFor(() => expect(projectService.saveProject).toHaveBeenCalled());
+    const saved = vi.mocked(projectService.saveProject).mock.calls.at(-1)?.[0];
+    expect(saved?.viewState.horizontalZoom).toBeCloseTo(79.9);
+    expect(saved?.selection).toEqual({ start: 3, end: 7 });
   });
 });
