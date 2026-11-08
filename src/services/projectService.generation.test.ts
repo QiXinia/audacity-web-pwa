@@ -57,32 +57,37 @@ describe('ProjectService generated selection replacement', () => {
     );
 
     expect(generated).toMatchObject({ startTime: 1, duration: 1, offset: 0 });
-    expect(project.tracks[0].clips.map((clip) => ({
+    expect(save).toHaveBeenCalledTimes(1);
+    const savedProject = save.mock.calls[0][0];
+    expect(savedProject).not.toBe(project);
+    expect(savedProject.tracks[0].clips.map((clip) => ({
       startTime: clip.startTime, duration: clip.duration, offset: clip.offset,
     }))).toEqual([
       { startTime: 0, duration: 1, offset: 0 },
       { startTime: 1, duration: 1, offset: 0 },
       { startTime: 2, duration: 2, offset: 2 },
     ]);
+    expect(project.tracks[0].clips).toHaveLength(1);
     expect(vi.mocked(audioDb.audioBuffers.put)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(audioEngine.cacheBuffer)).toHaveBeenCalledWith(
       generated!.audioBufferId, [samples], 10,
     );
-    expect(save).toHaveBeenCalledWith(project);
   });
 
   it('keeps legacy cursor insertion unchanged when no replacement is requested', async () => {
     const project = makeProject();
     (projectService as unknown as { currentProject: IProject }).currentProject = project;
-    vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
 
     await projectService.addRecordingToTrack(
       project.id, 'track', [new Float32Array(10)], 10, 3, 'Cursor tone',
     );
 
-    expect(project.tracks[0].clips.map((clip) => clip.id)).toHaveLength(2);
-    expect(project.tracks[0].clips[0]).toMatchObject({ id: 'source', duration: 4 });
-    expect(project.tracks[0].clips[1]).toMatchObject({ startTime: 3, duration: 1 });
+    const savedProject = save.mock.calls[0][0];
+    expect(savedProject.tracks[0].clips.map((clip) => clip.id)).toHaveLength(2);
+    expect(savedProject.tracks[0].clips[0]).toMatchObject({ id: 'source', duration: 4 });
+    expect(savedProject.tracks[0].clips[1]).toMatchObject({ startTime: 3, duration: 1 });
+    expect(project.tracks[0].clips).toHaveLength(1);
   });
 
   it('rejects a mismatched replacement before writing a buffer or project', async () => {
@@ -213,5 +218,30 @@ describe('ProjectService multi-track generation', () => {
     expect(vi.mocked(audioDb.audioBuffers.delete)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(audioEngine.evictBuffer)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProjectService recording transaction', () => {
+  it('discards staged recording and preserves the undo snapshot when the project commit fails', async () => {
+    const project = makeProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const originalClips = project.tracks[0].clips;
+    const save = vi.spyOn(projectService, 'saveProject').mockRejectedValue(new Error('recording commit failed'));
+
+    await expect(projectService.addRecordingToTrack(
+      project.id, 'track', [new Float32Array(10)], 10, 3, 'Recording',
+    )).rejects.toThrow('recording commit failed');
+
+    const pendingIds = vi.mocked(audioDb.audioBuffers.put).mock.calls.map(([record]) => record.id);
+    expect(pendingIds).toHaveLength(1);
+    expect(vi.mocked(audioDb.audioBuffers.delete).mock.calls.map(([id]) => id)).toEqual(pendingIds);
+    expect(vi.mocked(audioEngine.evictBuffer).mock.calls.map(([id]) => id)).toEqual(pendingIds);
+    expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
+    expect(project.tracks[0].clips).toBe(originalClips);
+    expect(project.tracks[0].clips).toHaveLength(1);
+
+    const attemptedProject = save.mock.calls[0][0];
+    expect(attemptedProject).not.toBe(project);
+    expect(attemptedProject.tracks[0].clips).toHaveLength(2);
   });
 });

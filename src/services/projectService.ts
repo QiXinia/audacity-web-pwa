@@ -358,7 +358,6 @@ class ProjectService {
     if (!track) return null;
 
     const bufferId = generateId();
-    const numChannels = sampleData.length;
     const length = sampleData[0]?.length ?? 0;
     const duration = length / sampleRate;
     const clip: IClip = {
@@ -383,20 +382,13 @@ class ProjectService {
         clips: [...track.clips, clip].sort((a, b) => a.startTime - b.startTime),
       };
 
-    await audioDb.audioBuffers.put({
-      id: bufferId,
-      projectId,
-      sampleRate,
-      channels: numChannels,
-      length,
-      duration,
-      channelData: sampleData.map((ch) => ch.buffer as ArrayBuffer),
-      createdAt: Date.now(),
-    });
-
-    audioEngine.cacheBuffer(bufferId, sampleData, sampleRate);
-    project.tracks[project.tracks.indexOf(track)] = nextTrack;
-    await this.saveProject(project);
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((candidate) => candidate.id === track.id ? nextTrack : candidate),
+    };
+    await this.commitPendingAudioBuffers(projectId, [
+      { id: bufferId, sampleRate, sampleData },
+    ], updatedProject);
 
     return clip;
   }
