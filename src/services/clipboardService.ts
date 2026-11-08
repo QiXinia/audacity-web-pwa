@@ -10,6 +10,28 @@ export interface AudioClipboardData {
   duration: number;
 }
 
+/**
+ * Audacity pastes a multi-track clipboard into the selected track and its
+ * following tracks. Return an existing destination index for each source
+ * track, or -1 when the destination project needs a new track.
+ */
+export function planClipboardPasteTrackIndices(
+  trackIds: readonly string[],
+  selectedTrackId: string | null,
+  clipboardTrackCount: number,
+): number[] {
+  if (!Number.isInteger(clipboardTrackCount) || clipboardTrackCount < 0) {
+    throw new Error('Clipboard track count must be a non-negative integer');
+  }
+
+  const selectedIndex = selectedTrackId === null ? -1 : trackIds.indexOf(selectedTrackId);
+  return Array.from({ length: clipboardTrackCount }, (_, sourceIndex) => {
+    if (selectedIndex < 0) return -1;
+    const destinationIndex = selectedIndex + sourceIndex;
+    return destinationIndex < trackIds.length ? destinationIndex : -1;
+  });
+}
+
 export function serializeAudioClipboard(data: AudioClipboardData): string {
   return JSON.stringify({
     sampleRate: data.sampleRate,

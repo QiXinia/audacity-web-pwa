@@ -94,7 +94,12 @@ import { audioDb } from '@/db/audioDb';
 import { getMp3SampleRate } from '@/engine/mp3Encoder';
 import { projectService } from '@/services/projectService';
 import { historyManager } from '@/services/historyService';
-import { parseAudioClipboard, serializeAudioClipboard, type AudioClipboardData } from '@/services/clipboardService';
+import {
+  parseAudioClipboard,
+  planClipboardPasteTrackIndices,
+  serializeAudioClipboard,
+  type AudioClipboardData,
+} from '@/services/clipboardService';
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
 import { generateTone, type ToneRequest } from '@/lib/toneGenerator';
@@ -1539,17 +1544,20 @@ export default function AudioEditorPage() {
     if (clipboardData.tracks.length === 0) return null;
 
     const updated = JSON.parse(JSON.stringify(proj)) as IProject;
+    const destinationIndices = planClipboardPasteTrackIndices(
+      updated.tracks.map((track) => track.id),
+      selectedTrackId,
+      clipboardData.tracks.length,
+    );
 
-    // Paste each track's data as a new clip
+    // Paste into the selected track and following tracks, creating only the
+    // additional tracks needed to preserve every clipboard source track.
     for (let i = 0; i < clipboardData.tracks.length; i++) {
       const trackClip = clipboardData.tracks[i];
-      let targetTrack: ITrack | undefined;
+      const destinationIndex = destinationIndices[i]!;
+      let targetTrack = destinationIndex >= 0 ? updated.tracks[destinationIndex] : undefined;
 
-      // Match by original track id if possible, else use first track / create new
-      if (i === 0) {
-        targetTrack = updated.tracks.find((t) => t.id === selectedTrackId) ?? updated.tracks[0];
-      } else {
-        // For multi-track paste, create new tracks
+      if (!targetTrack) {
         const newTrack = {
           id: generateId(),
           name: `音轨 ${updated.tracks.length + 1}`,
@@ -1566,8 +1574,6 @@ export default function AudioEditorPage() {
         updated.tracks.push(newTrack);
         targetTrack = newTrack;
       }
-
-      if (!targetTrack) continue;
 
       // Store every channel without downmixing.
       const bufferId = await storeProjectBuffer(proj.id, trackClip.channels, clipboardData.sampleRate);

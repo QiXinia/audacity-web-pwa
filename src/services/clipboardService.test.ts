@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseAudioClipboard, serializeAudioClipboard, type AudioClipboardData } from './clipboardService';
+import {
+  parseAudioClipboard,
+  planClipboardPasteTrackIndices,
+  serializeAudioClipboard,
+  type AudioClipboardData,
+} from './clipboardService';
 
 describe('audio clipboard serialization', () => {
   it('round-trips independent stereo channels', () => {
@@ -48,5 +53,28 @@ describe('audio clipboard serialization', () => {
   it('rejects malformed or empty clipboard records', () => {
     expect(() => parseAudioClipboard('{')).toThrow();
     expect(() => parseAudioClipboard(JSON.stringify({ sampleRate: 44100, duration: 1, tracks: [{}] }))).toThrow('Invalid clipboard track');
+  });
+});
+
+describe('multi-track clipboard destination planning', () => {
+  it('pastes into the selected track and following tracks like Audacity', () => {
+    expect(planClipboardPasteTrackIndices(['track-a', 'track-b', 'track-c'], 'track-b', 2))
+      .toEqual([1, 2]);
+  });
+
+  it('creates tracks only after the selected destination runs out', () => {
+    expect(planClipboardPasteTrackIndices(['track-a', 'track-b'], 'track-b', 3))
+      .toEqual([1, -1, -1]);
+  });
+
+  it('creates a destination for every source track when nothing is selected', () => {
+    expect(planClipboardPasteTrackIndices(['track-a'], null, 2)).toEqual([-1, -1]);
+    expect(planClipboardPasteTrackIndices([], null, 2)).toEqual([-1, -1]);
+  });
+
+  it('handles an empty clipboard and rejects invalid source counts', () => {
+    expect(planClipboardPasteTrackIndices(['track-a'], 'track-a', 0)).toEqual([]);
+    expect(() => planClipboardPasteTrackIndices(['track-a'], 'track-a', -1)).toThrow('non-negative integer');
+    expect(() => planClipboardPasteTrackIndices(['track-a'], 'track-a', 1.5)).toThrow('non-negative integer');
   });
 });
