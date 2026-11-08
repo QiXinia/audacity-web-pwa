@@ -66,6 +66,28 @@ describe('Workspace persistence', () => {
     expect(restored.presets[0].layout).toEqual(defaultWorkspaceStore().presets[0].layout);
   });
 
+  it('round-trips the full vertical zoom range and normalizes invalid legacy values', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const custom = createWorkspace(defaultWorkspaceStore(), 'zoomed', 'Zoomed', {
+      ...layout,
+      verticalZoom: 512,
+    });
+    expect(saveWorkspaceStore(custom, storage)).toBe(true);
+    expect(loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'zoomed')?.layout.verticalZoom)
+      .toBe(512);
+
+    values.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
+      activeId: 'classic',
+      presets: [{ id: 'classic', name: 'Classic', layout: { verticalZoom: -2 } }],
+    }));
+    expect(loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'classic')?.layout.verticalZoom)
+      .toBe(1);
+  });
+
   it('reports browser storage write failures without throwing', () => {
     const storage = {
       setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },

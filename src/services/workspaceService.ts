@@ -1,4 +1,5 @@
 import type { ViewMode } from '@/types/project';
+import { normalizeVerticalZoom } from '@/lib/verticalZoom';
 
 export interface WorkspaceLayout {
   showTrackPanel: boolean;
@@ -81,7 +82,7 @@ function normalizeLayout(value: Partial<WorkspaceLayout> | undefined, fallback: 
       ? Math.max(10, Math.min(500, Number(value!.horizontalZoom)))
       : fallback.horizontalZoom,
     verticalZoom: Number.isFinite(value?.verticalZoom)
-      ? Math.max(0.5, Math.min(5, Number(value!.verticalZoom)))
+      ? normalizeVerticalZoom(Number(value!.verticalZoom))
       : fallback.verticalZoom,
   };
 }

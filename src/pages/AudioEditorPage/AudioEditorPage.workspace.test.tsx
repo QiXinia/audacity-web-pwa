@@ -116,6 +116,17 @@ async function openWorkspaceMenu() {
   return screen.findByText('将当前布局另存为…');
 }
 
+async function openViewMenu() {
+  const trigger = await screen.findByRole('button', { name: '视图' });
+  fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
+  return screen.findByRole('menuitem', { name: '纵向放大' });
+}
+
+async function clickViewItem(name: string) {
+  await openViewMenu();
+  fireEvent.click(screen.getByRole('menuitem', { name }));
+}
+
 beforeEach(() => {
   vi.mocked(projectService.openProject).mockResolvedValue(project);
   vi.mocked(projectService.getProject).mockResolvedValue(project);
@@ -174,5 +185,34 @@ describe('AudioEditorPage Workspace storage integration', () => {
 
     await openWorkspaceMenu();
     expect(await screen.findAllByText('Storage failure recovery')).not.toHaveLength(0);
+  });
+});
+
+describe('AudioEditorPage vertical zoom controls', () => {
+  it('zooms in and out in Audacity steps, persists the state, and resets to 100%', async () => {
+    window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+    renderEditor();
+    await screen.findByText(project.name);
+
+    await clickViewItem('纵向放大');
+    await openViewMenu();
+    expect(screen.getByText('纵向缩放 200%')).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: '纵向缩小' }));
+
+    await clickViewItem('纵向放大');
+    await waitFor(() => {
+      const persisted = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+      const active = persisted.presets?.find((preset: { id: string }) => preset.id === persisted.activeId);
+      expect(active?.layout.verticalZoom).toBe(2);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(projectService.saveProject).toHaveBeenCalled());
+    const saved = vi.mocked(projectService.saveProject).mock.calls.at(-1)?.[0];
+    expect(saved?.viewState.verticalZoom).toBe(2);
+
+    await clickViewItem('重置纵向缩放');
+    await openViewMenu();
+    expect(screen.getByText('纵向缩放 100%')).toBeTruthy();
   });
 });

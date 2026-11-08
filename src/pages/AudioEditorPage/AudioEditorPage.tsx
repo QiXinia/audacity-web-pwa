@@ -106,6 +106,13 @@ import { generateTone, type ToneRequest } from '@/lib/toneGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
 import { drawWaveform } from '@/lib/waveformDrawing';
+import {
+  DEFAULT_VERTICAL_ZOOM,
+  MAX_VERTICAL_ZOOM,
+  MIN_VERTICAL_ZOOM,
+  normalizeVerticalZoom,
+  stepVerticalZoom,
+} from '@/lib/verticalZoom';
 import { quantizeSelectionToSamples, resolveGeneratorTrackIds } from '@/lib/generatorEditing';
 import {
   loadGeneratorDuration,
@@ -360,7 +367,7 @@ export default function AudioEditorPage() {
           ?? workspaceStore.presets[0];
         setViewMode(workspace.layout.viewMode);
         setHorizontalZoom(workspace.layout.horizontalZoom);
-        setVerticalZoom(workspace.layout.verticalZoom);
+        setVerticalZoom(normalizeVerticalZoom(workspace.layout.verticalZoom));
         setSnapEnabled(proj.viewState.snapEnabled ?? false);
         setSnapMode(proj.viewState.snapMode ?? 'clips');
         setShowTrackPanel(workspace.layout.showTrackPanel);
@@ -793,7 +800,7 @@ export default function AudioEditorPage() {
     setShowMixer(layout.showMixer);
     setViewMode(layout.viewMode);
     setHorizontalZoom(layout.horizontalZoom);
-    setVerticalZoom(layout.verticalZoom);
+    setVerticalZoom(normalizeVerticalZoom(layout.verticalZoom));
   }
 
   function applyWorkspace(id: string) {
@@ -2051,6 +2058,23 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setViewMode('waveform')}>波形</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('spectrum')}>频谱</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('both')}>波形与频谱</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>纵向缩放 {Math.round(verticalZoom * 100)}%</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => setVerticalZoom((current) => stepVerticalZoom(current, 'in'))}
+                disabled={verticalZoom >= MAX_VERTICAL_ZOOM}
+              >
+                纵向放大
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setVerticalZoom((current) => stepVerticalZoom(current, 'out'))}
+                disabled={verticalZoom <= MIN_VERTICAL_ZOOM}
+              >
+                纵向缩小
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setVerticalZoom(DEFAULT_VERTICAL_ZOOM)}>
+                重置纵向缩放
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setShowTrackPanel((visible) => !visible)}>
                 {showTrackPanel ? '隐藏' : '显示'}轨道面板
