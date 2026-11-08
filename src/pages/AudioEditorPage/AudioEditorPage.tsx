@@ -172,6 +172,7 @@ import PlaybackTimingControls from './sections/PlaybackTimingControls';
 import ToneGeneratorDialog from './sections/ToneGeneratorDialog';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
+import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -231,6 +232,8 @@ export default function AudioEditorPage() {
   const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
   const [silenceDialogOpen, setSilenceDialogOpen] = useState(false);
   const [isGeneratingSilence, setIsGeneratingSilence] = useState(false);
+  const [repeatDialogOpen, setRepeatDialogOpen] = useState(false);
+  const [isRepeating, setIsRepeating] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -1327,6 +1330,48 @@ export default function AudioEditorPage() {
       });
       updateHistoryState();
       toast.success('已裁剪');
+    }
+  }
+
+  // Effect operations
+  async function handleRepeatSelection(repeatCount: number) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsRepeating(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const copied = await copySelection(project, activeSelection.start, activeSelection.end);
+      if (!copied || copied.tracks.length === 0) {
+        toast.info('选区内没有可重复的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const inserted = await projectService.repeatSelectionOnTracks(
+        project.id,
+        activeSelection,
+        repeatCount,
+        copied.tracks.map((track) => ({ trackId: track.trackId, sampleData: track.channels })),
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('重复后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection ?? {
+        start: activeSelection.start,
+        end: activeSelection.end + (activeSelection.end - activeSelection.start) * repeatCount,
+      });
+      pushHistoryCmd({
+        id: generateId(),
+        label: `重复选区 ×${repeatCount}`,
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setRepeatDialogOpen(false);
+      toast.success(`已插入 ${inserted.length} 个重复片段`);
+    } catch (error) {
+      logger.error('重复选区失败:', String(error));
+      toast.error(error instanceof Error ? `重复选区失败：${error.message}` : '重复选区失败');
+    } finally {
+      setIsRepeating(false);
     }
   }
 
@@ -2479,6 +2524,13 @@ export default function AudioEditorPage() {
                 淡出
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => setRepeatDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                重复…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuLabel>处理</DropdownMenuLabel>
               <DropdownMenuItem onClick={applyNormalize} disabled={!selection}>
                 标准化到 -1dB
@@ -3043,6 +3095,15 @@ export default function AudioEditorPage() {
           selectionActive={Boolean(quantizedGeneratorSelection)}
           isGenerating={isGeneratingSilence}
           onGenerate={handleGenerateSilence}
+        />
+
+        <RepeatSelectionDialog
+          open={repeatDialogOpen}
+          onOpenChange={setRepeatDialogOpen}
+          selectionDuration={generatorSelectionDuration ?? 0}
+          sampleRate={project.sampleRate}
+          isRepeating={isRepeating}
+          onRepeat={handleRepeatSelection}
         />
 
         {/* Export Dialog */}

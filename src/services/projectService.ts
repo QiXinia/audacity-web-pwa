@@ -16,6 +16,7 @@ import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
 import { silenceClipSelection } from '@/lib/silenceGenerator';
 import { replaceTrackSelectionWithClip, type GeneratorSelection } from '@/lib/generatorEditing';
+import { insertRepeatedSelectionClips, validateRepeatCount } from '@/lib/repeatEditing';
 
 type EffectType = IEffect['type'];
 
@@ -523,6 +524,85 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return clips;
+  }
+
+  /** Repeat each selected track with one atomic project commit. */
+  async repeatSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    repeatCount: number,
+    targets: readonly GeneratedTrackAudio[],
+  ): Promise<IClip[]> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    validateRepeatCount(repeatCount, project.sampleRate);
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) throw new RangeError('重复选区必须是有限的正时长区间');
+    if (targets.length === 0) throw new Error('选区内没有可重复的音频');
+
+    const duration = selection.end - selection.start;
+    const expectedLength = Math.round(duration * project.sampleRate);
+    const seen = new Set<string>();
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const insertedClips: IClip[] = [];
+
+    for (const target of targets) {
+      if (seen.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seen.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+
+      const sampleData = target.sampleData.map((channel) => new Float32Array(channel));
+      if (
+        sampleData.length === 0
+        || expectedLength < 1
+        || sampleData.some((channel) => channel.length !== expectedLength)
+      ) throw new RangeError('每条轨道的重复音频必须包含与选区等长的非空声道');
+
+      const bufferId = generateId();
+      const template: IClip = {
+        id: generateId(),
+        audioBufferId: bufferId,
+        startTime: selection.end,
+        offset: 0,
+        duration,
+        originalDuration: duration,
+        stretchRatio: 1,
+        gain: 0,
+        fadeIn: 0,
+        fadeOut: 0,
+        name: '重复选区',
+      };
+      const result = insertRepeatedSelectionClips(
+        track,
+        selection,
+        repeatCount,
+        template,
+        generateId,
+      );
+      nextTracks.set(track.id, result.track);
+      insertedClips.push(...result.insertedClips);
+      pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      // Audacity selects the original selection plus every newly inserted copy.
+      selection: {
+        start: selection.start,
+        end: selection.end + duration * repeatCount,
+      },
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return insertedClips;
   }
 
   /** Silence matching samples on every selected track with one project commit. */

@@ -28,6 +28,7 @@
 | 非破坏性时间拉伸 | ✅ | 片段级 WSOLA 拉伸，0.25×–4×，保持音高并贯穿播放、分割、编辑与导出 |
 | Shift 片段多选 | ✅ | 跨轨不连续选择，支持成组移动、修剪、拉伸、删除与速度复位 |
 | 基础效果 | ✅ | 增益、淡入、淡出、标准化、反转、静音、移除直流 |
+| 重复选区 | ✅ | 效果菜单“重复…”支持多轨选区复制、次数与时长预览、原子提交和单次撤销；副本共享暂存 PCM，后续音频右移以避免覆盖 |
 | 音调 / 噪声 / 静默生成 | ✅ | 光标生成默认 30 秒并分别记住上次时长；Tone/Noise 支持独立用户预设（选择、保存、同名覆盖确认、重置、删除及刷新恢复），预设不覆盖选区锁定时长；支持不写入工程的试听、手动停止与关闭清理，按采样量化并真实替换当前轨道选区，保留选区外片段与拉伸源窗口；Silence Audio 清零选区且保持片段边界；Tone 使用独立对话框并有父页面命令链集成回归 |
 | 撤销 / 重做 | ✅ | 命令历史栈 + IndexedDB 持久化，刷新可恢复 |
 | 实时播放 | ✅ | Web Audio API 驱动，带播放头与游标 |
@@ -195,33 +196,43 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/musicalTiming.test.ts` | BPM／拍号校验、四分音符与小节时长、不可变更新 | 4 |
 | `src/lib/loopPlayback.test.ts` | 循环区编辑、跨周期播放头、片段循环渲染与淡入淡出 | 14 |
 | `src/lib/clipEditing.test.ts` | 跨轨多选、成组编辑、速度复位起点保持、非破坏性分割与删除边界 | 15 |
+| `src/lib/repeatEditing.test.ts` | 重复片段生成、后续片段平移、跨点拆分、拉伸源窗口与非法输入 | 5 |
 | `src/lib/levelMeter.test.ts` | 峰值读取、dBFS 换算、表头位置与即时上升／衰减 | 11 |
 | `src/lib/toneGenerator.test.ts` | Audacity 兼容波形、抗混叠方波与参数边界 | 4 |
 | `src/lib/noiseGenerator.test.ts` | 白／粉红／布朗噪声确定性、独立参考序列、采样率缩放与参数边界 | 5 |
 | `src/lib/silenceGenerator.test.ts` | 零振幅采样、选区写时复制、修剪偏移、拉伸映射与无效输入 | 5 |
-| `src/lib/generatorDuration.test.ts` | 三种生成器独立 30 秒默认、上次时长持久化、损坏存储与精确显示 | 10 |
-| `src/lib/generatorPreview.test.ts` | 单声道 PCM 复制、自然结束、手动停止、AudioContext 恢复期间取消与资源清理 | 3 |
-| `src/lib/generatorEditing.test.ts` | 选区采样量化、完全／部分重叠替换、拉伸源窗口与写前拒绝 | 5 |
-| `src/wasm/processor.test.ts` | WAV 编解码、DSP 函数（normalize/reverse/gain/fade/phase/peak/rms）、缓冲区工具 | 24 |
+| `src/lib/generatorDuration.test.ts` | 三种生成器独立默认时长、上次时长持久化、损坏存储与精确显示 | 10 |
+| `src/lib/generatorPreview.test.ts` | 单声道 PCM 复制、自然结束、手动停止、恢复期间取消与资源清理 | 3 |
+| `src/lib/generatorEditing.test.ts` | 选区采样量化、完全／部分重叠替换、拉伸源窗口与写前拒绝 | 7 |
+| `src/lib/generatorPresets.test.ts` | Tone／Noise 独立预设、同名覆盖、删除与刷新恢复 | 10 |
+| `src/lib/horizontalZoom.test.ts` | 水平缩放步进、选区与工程适配、范围边界 | 3 |
+| `src/lib/verticalZoom.test.ts` | 纵向缩放步进与范围边界 | 2 |
+| `src/lib/appBase.test.ts` | Pages 子路径规范化 | 2 |
+| `src/lib/waveformDrawing.test.ts` | 波形采样绘制与边界 | 2 |
+| `src/wasm/processor.test.ts` | WAV 编解码、DSP 函数与缓冲区工具 | 24 |
 | `src/wasm/selection-ops.test.ts` | 选区截取、删除、插入、替换操作 | 18 |
 | `src/services/historyService.test.ts` | 撤销/重做命令栈、push/undo/redo/clear | 9 |
-| `src/services/clipboardService.test.ts` | 多声道剪贴板序列化、旧格式恢复、异常输入 | 4 |
-| `src/services/workspaceService.test.ts` | 内置工作区、自定义布局、自动更新与旧数据迁移 | 6 |
+| `src/services/clipboardService.test.ts` | 多声道剪贴板序列化、旧格式恢复、异常输入 | 8 |
+| `src/services/workspaceService.test.ts` | 内置工作区、自定义布局、自动更新与旧数据迁移 | 9 |
 | `src/services/projectService.test.ts` | 循环启用状态、独立循环区、BPM／拍号及旧工程持久化 | 4 |
-| `src/services/projectService.silence.test.ts` | 选区清零、共享源写时复制、多声道与片段边界保持 | 3 |
-| `src/services/projectService.generation.test.ts` | 生成片段原子替换、旧光标插入兼容、非法选区写前拒绝 | 3 |
+| `src/services/projectService.silence.test.ts` | 选区清零、共享源写时复制、多声道与片段边界保持 | 6 |
+| `src/services/projectService.generation.test.ts` | 生成片段原子替换、Repeat 多轨共享缓冲、失败清理与非法输入 | 12 |
+| `src/services/projectService.import.test.ts` | 导入提交、失败回滚与孤儿缓冲清理 | 2 |
 | `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴 | 12 |
-| `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 7 |
+| `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 9 |
 | `src/engine/recordingWorklet.test.ts` | 真实 Worklet 任意尾块 flush、停止确认与去重 | 2 |
-| `src/engine/timeStretch.test.ts` | WSOLA 时长、音高、立体声对齐与归一化幅度 | 6 |
+| `src/engine/timeStretch.test.ts` | WSOLA 时长、音高、立体声对齐与归一化幅度 | 7 |
 | `src/engine/mp3Encoder.test.ts` | 真实 MPEG 输出、采样率选择、空输入边界 | 3 |
 | `src/pages/AudioEditorPage/sections/PlaybackTimingControls.test.tsx` | BPM 小数草稿与连续步进、边界禁用、拍号编辑与非法输入恢复 | 6 |
-| `src/pages/AudioEditorPage/sections/NoiseGeneratorDialog.test.tsx` | 噪声参数、独立记忆、选区只读、确定性试听不提交与取消清理 | 5 |
-| `src/pages/AudioEditorPage/sections/SilenceGeneratorDialog.test.tsx` | 30 秒默认值、独立记忆、选区时长锁定与防重复提交 | 4 |
-| `src/pages/AudioEditorPage/sections/ToneGeneratorDialog.test.tsx` | 波形／频率／振幅、独立时长记忆、精确试听 PCM、手动停止与自然结束 | 6 |
-| `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实「生成」菜单、参数传递、工程写入／历史与选区量化替换 | 2 |
+| `src/pages/AudioEditorPage/sections/NoiseGeneratorDialog.test.tsx` | 噪声参数、独立记忆、选区只读、确定性试听不提交与取消清理 | 8 |
+| `src/pages/AudioEditorPage/sections/SilenceGeneratorDialog.test.tsx` | 默认时长、独立记忆、选区时长锁定与防重复提交 | 4 |
+| `src/pages/AudioEditorPage/sections/ToneGeneratorDialog.test.tsx` | 波形／频率／振幅、独立时长记忆、精确试听 PCM、手动停止与自然结束 | 10 |
+| `src/pages/AudioEditorPage/sections/RepeatSelectionDialog.test.tsx` | 次数校验、当前／新选区时长、错误与 busy 状态 | 8 |
+| `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、参数传递、多轨历史与选区量化替换 | 7 |
+| `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
+| `src/pages/AudioEditorPage/AudioEditorPage.repeat.test.tsx` | 效果菜单、双轨 Repeat、单次历史命令与撤销 | 1 |
 
-当前完整前端回归共 **30 个测试文件、244 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本机无 `cargo`，本轮未执行）。
+当前完整前端回归共 **40 个测试文件、319 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
 
 运行测试：
 
