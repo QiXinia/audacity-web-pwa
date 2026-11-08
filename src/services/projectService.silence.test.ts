@@ -7,7 +7,7 @@ import type { IClip, IProject } from '@/types/project';
 vi.mock('@/db/audioDb', () => ({
   audioDb: {
     projects: {},
-    audioBuffers: { put: vi.fn() },
+    audioBuffers: { put: vi.fn(), delete: vi.fn() },
     clipboard: {},
     historySnapshots: {},
   },
@@ -18,7 +18,7 @@ vi.mock('@/db/audioDb', () => ({
 }));
 
 vi.mock('@/engine/audioEngine', () => ({
-  audioEngine: { cacheBuffer: vi.fn() },
+  audioEngine: { cacheBuffer: vi.fn(), evictBuffer: vi.fn() },
 }));
 
 function makeClip(id: string, startTime: number, offset: number): IClip {
@@ -203,5 +203,24 @@ describe('ProjectService multi-track silence selection', () => {
     expect(vi.mocked(audioDb.audioBuffers.put)).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
     expect(project.tracks[0].clips[1].audioBufferId).toBe('shared-source');
+  });
+
+  it('cleans staged silence buffers when the shared project commit fails', async () => {
+    const project = makeTwoTrackProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    vi.spyOn(projectService, 'loadAudioChannels').mockResolvedValue([new Float32Array(40)]);
+    vi.spyOn(projectService, 'saveProject').mockRejectedValue(new Error('save failed'));
+
+    await expect(projectService.silenceSelectionOnTracks(
+      project.id, ['track', 'track-2'], { start: 1.25, end: 1.75 },
+    )).rejects.toThrow('save failed');
+
+    const pendingIds = vi.mocked(audioDb.audioBuffers.put).mock.calls.map(([record]) => record.id);
+    expect(pendingIds).toHaveLength(2);
+    expect(vi.mocked(audioDb.audioBuffers.delete).mock.calls.map(([id]) => id)).toEqual(pendingIds);
+    expect(vi.mocked(audioEngine.evictBuffer).mock.calls.map(([id]) => id)).toEqual(pendingIds);
+    expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
+    expect(project.tracks[0].clips[1].audioBufferId).toBe('shared-source');
+    expect(project.tracks[1].clips[0].audioBufferId).toBe('second-source');
   });
 });

@@ -7,7 +7,7 @@ import type { IProject } from '@/types/project';
 vi.mock('@/db/audioDb', () => ({
   audioDb: {
     projects: {},
-    audioBuffers: { put: vi.fn() },
+    audioBuffers: { put: vi.fn(), delete: vi.fn() },
     clipboard: {},
     historySnapshots: {},
   },
@@ -18,7 +18,7 @@ vi.mock('@/db/audioDb', () => ({
 }));
 
 vi.mock('@/engine/audioEngine', () => ({
-  audioEngine: { cacheBuffer: vi.fn() },
+  audioEngine: { cacheBuffer: vi.fn(), evictBuffer: vi.fn() },
 }));
 
 function makeProject(): IProject {
@@ -152,5 +152,66 @@ describe('ProjectService multi-track generation', () => {
     expect(vi.mocked(audioDb.audioBuffers.put)).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
     expect(project.tracks.map((track) => track.clips.length)).toEqual([1, 1]);
+  });
+
+  it('removes every staged buffer when a later track write fails', async () => {
+    const project = makeTwoTrackProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    vi.mocked(audioDb.audioBuffers.put)
+      .mockResolvedValueOnce('first-buffer')
+      .mockRejectedValueOnce(new Error('quota exceeded'));
+
+    await expect(projectService.addGeneratedAudioToTracks(project.id, [
+      { trackId: 'track', sampleData: [new Float32Array(10)] },
+      { trackId: 'track-2', sampleData: [new Float32Array(10)] },
+    ], 10, 1, 'Tone', { start: 1, end: 2 })).rejects.toThrow('quota exceeded');
+
+    const pendingIds = vi.mocked(audioDb.audioBuffers.put).mock.calls.map(([record]) => record.id);
+    expect(vi.mocked(audioDb.audioBuffers.delete).mock.calls.map(([id]) => id)).toEqual(pendingIds);
+    expect(vi.mocked(audioEngine.evictBuffer).mock.calls.map(([id]) => id)).toEqual(pendingIds);
+    expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(project.tracks.map((track) => track.clips.length)).toEqual([1, 1]);
+  });
+
+  it('removes staged buffers and avoids caching when the project commit fails', async () => {
+    const project = makeTwoTrackProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockRejectedValue(new Error('save failed'));
+
+    await expect(projectService.addGeneratedAudioToTracks(project.id, [
+      { trackId: 'track', sampleData: [new Float32Array(10)] },
+      { trackId: 'track-2', sampleData: [new Float32Array(10)] },
+    ], 10, 1, 'Tone', { start: 1, end: 2 })).rejects.toThrow('save failed');
+
+    const pendingIds = vi.mocked(audioDb.audioBuffers.put).mock.calls.map(([record]) => record.id);
+    expect(vi.mocked(audioDb.audioBuffers.delete).mock.calls.map(([id]) => id)).toEqual(pendingIds);
+    expect(vi.mocked(audioEngine.evictBuffer).mock.calls.map(([id]) => id)).toEqual(pendingIds);
+    expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(project.tracks.map((track) => track.clips.length)).toEqual([1, 1]);
+  });
+
+  it('continues cleanup and reports cleanup failures without hiding the commit error', async () => {
+    const project = makeTwoTrackProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    vi.spyOn(projectService, 'saveProject').mockRejectedValue(new Error('save failed'));
+    vi.mocked(audioDb.audioBuffers.delete)
+      .mockRejectedValueOnce(new Error('delete failed'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(projectService.addGeneratedAudioToTracks(project.id, [
+      { trackId: 'track', sampleData: [new Float32Array(10)] },
+      { trackId: 'track-2', sampleData: [new Float32Array(10)] },
+    ], 10, 1, 'Tone', { start: 1, end: 2 })).rejects.toMatchObject({
+      name: 'AggregateError',
+      message: expect.stringMatching(/清理失败/),
+      errors: [expect.objectContaining({ message: 'save failed' }), expect.objectContaining({ message: 'delete failed' })],
+    });
+
+    expect(vi.mocked(audioDb.audioBuffers.delete)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(audioEngine.evictBuffer)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
   });
 });

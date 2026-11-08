@@ -418,6 +418,46 @@ class ProjectService {
         createdAt: Date.now(),
       });
     }
+  }
+
+  /**
+   * Commit generated audio like Audacity's temporary output tracks: expose the
+   * project only after every byte is stored, or discard every staged buffer.
+   */
+  private async commitPendingAudioBuffers(
+    projectId: string,
+    buffers: readonly PendingAudioBuffer[],
+    updatedProject: IProject,
+  ): Promise<void> {
+    try {
+      await this.storePendingAudioBuffers(projectId, buffers);
+      await this.saveProject(updatedProject);
+    } catch (error) {
+      const cleanupErrors: unknown[] = [];
+      for (const buffer of buffers) {
+        try {
+          // Delete every pending id: a failed put may have reached storage
+          // before reporting an uncertain outcome.
+          await audioDb.audioBuffers.delete(buffer.id);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+        try {
+          audioEngine.evictBuffer(buffer.id);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          `音频提交失败，且 ${cleanupErrors.length} 项临时缓冲清理失败`,
+        );
+      }
+      throw error;
+    }
+
+    // A failed project commit must not leave playable orphan buffers behind.
     for (const buffer of buffers) {
       audioEngine.cacheBuffer(buffer.id, buffer.sampleData, buffer.sampleRate);
     }
@@ -498,8 +538,7 @@ class ProjectService {
       ...project,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
-    await this.storePendingAudioBuffers(projectId, pendingBuffers);
-    await this.saveProject(updatedProject);
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return clips;
   }
 
@@ -557,8 +596,7 @@ class ProjectService {
       ...project,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
-    await this.storePendingAudioBuffers(projectId, pendingBuffers);
-    await this.saveProject(updatedProject);
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return changedClips;
   }
 
