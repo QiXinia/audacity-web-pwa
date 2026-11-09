@@ -126,13 +126,18 @@ import {
   normalizeHorizontalZoom,
   stepHorizontalZoom,
 } from '@/lib/horizontalZoom';
-import { quantizeSelectionToSamples, resolveGeneratorTrackIds } from '@/lib/generatorEditing';
+import {
+  getClipSampleRange,
+  quantizeSelectionToSamples,
+  resolveGeneratorTrackIds,
+} from '@/lib/generatorEditing';
 import {
   createEchoState,
   getEchoClipSampleRange,
   getEchoPlan,
   processEchoSelection,
 } from '@/lib/echoEffect';
+import { processWahWahChannels, type WahWahSettings } from '@/lib/wahWahEffect';
 import {
   loadGeneratorDuration,
   saveGeneratorDuration,
@@ -190,6 +195,7 @@ import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import EchoEffectDialog from './sections/EchoEffectDialog';
+import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -266,6 +272,8 @@ export default function AudioEditorPage() {
   const [isRepeating, setIsRepeating] = useState(false);
   const [echoDialogOpen, setEchoDialogOpen] = useState(false);
   const [isApplyingEcho, setIsApplyingEcho] = useState(false);
+  const [wahWahDialogOpen, setWahWahDialogOpen] = useState(false);
+  const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -1676,7 +1684,7 @@ export default function AudioEditorPage() {
     }
   }
 
-  async function collectEchoTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
+  async function collectEffectTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
     if (!project) return [];
     const targets: EchoTrackAudio[] = [];
     for (const track of project.tracks) {
@@ -1703,7 +1711,7 @@ export default function AudioEditorPage() {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
     const plan = getEchoPlan(delaySeconds, decay, project.sampleRate);
-    const targets = await collectEchoTargets(activeSelection);
+    const targets = await collectEffectTargets(activeSelection);
     const target = targets[0];
     if (!target) throw new Error('选区内没有可试听的音频');
     const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
@@ -1755,7 +1763,7 @@ export default function AudioEditorPage() {
     setIsApplyingEcho(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
-      const targets = await collectEchoTargets(activeSelection);
+      const targets = await collectEffectTargets(activeSelection);
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -1785,6 +1793,86 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用回声失败：${error.message}` : '应用回声失败');
     } finally {
       setIsApplyingEcho(false);
+    }
+  }
+
+  async function handleWahWahPreview(settings: WahWahSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const segments: Float32Array[][] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selectedChannels = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      segments.push(processWahWahChannels(selectedChannels, settings, project.sampleRate));
+    }
+
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyWahWah(settings: WahWahSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingWahWah(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.wahWahSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Wah Wah 后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Wah Wah',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setWahWahDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Wah Wah`);
+    } catch (error) {
+      logger.error('应用 Wah Wah 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Wah Wah 失败：${error.message}` : '应用 Wah Wah 失败');
+    } finally {
+      setIsApplyingWahWah(false);
     }
   }
 
@@ -2942,6 +3030,14 @@ export default function AudioEditorPage() {
                 淡出
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuLabel>滤波 / 音色</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => setWahWahDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Wah Wah…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuLabel>延迟 / 混响</DropdownMenuLabel>
               <DropdownMenuItem
                 onClick={() => setEchoDialogOpen(true)}
@@ -3604,6 +3700,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingEcho}
           onPreview={handleEchoPreview}
           onApply={handleApplyEcho}
+        />
+
+        <WahWahEffectDialog
+          open={wahWahDialogOpen}
+          onOpenChange={setWahWahDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingWahWah}
+          onPreview={handleWahWahPreview}
+          onApply={handleApplyWahWah}
         />
 
         {/* Export Dialog */}

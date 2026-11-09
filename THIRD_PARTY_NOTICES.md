@@ -52,6 +52,17 @@ The implementation uses the official 10/16/22/23 harmonic table at 0.1 times the
 
 The implementation follows the upstream defaults of 1 second delay and 0.5 decay, integer `sampleRate * delay` history length, independent per-channel history, and the recurrence `output = input + history[position] * decay` with the output written back to the same history position. It preserves the manual contract that Echo does not extend audio beyond the selection and renders time-stretched clips before applying the effect. Browser rendering uses bounded history allocations of 5,000,000 samples per track and 10,000,000 samples across a multi-track operation instead of the upstream floating-point maximum delay. Automated tests use independently calculated recurrences and boundary cases; no Audacity executable or upstream golden audio is bundled, and no claim of runtime golden-file equivalence is made.
 
+## Audacity Wah Wah algorithm
+
+- Upstream release: https://github.com/audacity/audacity/releases/tag/Audacity-4.0.2
+- Parameter source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-builtin-effects/WahWahBase.h
+- DSP source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-builtin-effects/WahWahBase.cpp
+- Manual: https://manual.audacityteam.org/man/wahwah.html
+- Purpose: GPL-licensed six-parameter LFO band-pass reference for `src/lib/wahWahEffect.ts` and its editor integration
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows the Audacity 4.0.2 release algorithm: default controls of 1.5 Hz, 0 degrees, 70% depth, 2.5 resonance, 30% frequency offset and -6 dB output gain; coefficient recomputation every 30 samples with the upstream initial `skipcount` increment order; recursive history stored before output gain; and Float32 output storage. Each channel is initialized and processed independently, without claiming the unverified stereo phase behaviour of another upstream revision. Tests compare selected samples with an independently calculated numerical baseline and cover coefficient boundaries, invalid inputs, silence, empty inputs and unequal channel lengths. The current `master` formula was not used as the baseline, and no Audacity executable or upstream golden audio is bundled.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

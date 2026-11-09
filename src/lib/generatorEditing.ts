@@ -29,6 +29,28 @@ export function resolveGeneratorTrackIds(
   return tracks[0] ? [tracks[0].id] : [];
 }
 
+export function getClipSampleRange(
+  clip: Pick<IClip, 'startTime' | 'duration'>,
+  selection: GeneratorSelection,
+  sourceOffset: number,
+  sampleRate: number,
+  channelLength: number,
+): { startSample: number; endSample: number } | null {
+  if (!Number.isFinite(sourceOffset) || sourceOffset < 0) {
+    throw new RangeError('片段源偏移必须是非负有限时间');
+  }
+  const overlapStart = Math.max(clip.startTime, selection.start);
+  const overlapEnd = Math.min(clip.startTime + clip.duration, selection.end);
+  if (overlapEnd <= overlapStart) return null;
+  const offsetInClip = overlapStart - clip.startTime + sourceOffset;
+  const startSample = Math.max(0, Math.floor(offsetInClip * sampleRate));
+  const endSample = Math.min(
+    channelLength,
+    Math.floor((offsetInClip + overlapEnd - overlapStart) * sampleRate),
+  );
+  return endSample > startSample ? { startSample, endSample } : null;
+}
+
 /** Match Audacity's sample-based selection boundaries and exact Duration display. */
 export function quantizeSelectionToSamples(
   selection: GeneratorSelection | null,

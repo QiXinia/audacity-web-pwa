@@ -1,3 +1,4 @@
+import { getClipSampleRange } from '@/lib/generatorEditing';
 import type { IClip } from '@/types/project';
 
 export const ECHO_DEFAULT_DELAY_SECONDS = 1;
@@ -114,17 +115,5 @@ export function getEchoClipSampleRange(
   sampleRate: number,
   channelLength: number,
 ): { startSample: number; endSample: number } | null {
-  if (!Number.isFinite(sourceOffset) || sourceOffset < 0) {
-    throw new RangeError('片段源偏移必须是非负有限时间');
-  }
-  const overlapStart = Math.max(clip.startTime, selection.start);
-  const overlapEnd = Math.min(clip.startTime + clip.duration, selection.end);
-  if (overlapEnd <= overlapStart) return null;
-  const offsetInClip = overlapStart - clip.startTime + sourceOffset;
-  const startSample = Math.max(0, Math.floor(offsetInClip * sampleRate));
-  const endSample = Math.min(
-    channelLength,
-    Math.floor((offsetInClip + overlapEnd - overlapStart) * sampleRate),
-  );
-  return endSample > startSample ? { startSample, endSample } : null;
+  return getClipSampleRange(clip, selection, sourceOffset, sampleRate, channelLength);
 }

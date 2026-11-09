@@ -36,6 +36,7 @@
 | Rhythm Track 节奏音轨 | ✅ | 对照当前官方 `rhythmtrack.ny` 实现 30–300 BPM、1–20 拍、Swing、bars／duration 双模式、起始静音、8 种节拍音色及强弱拍 MIDI；完整小节向上取整、最多两小节试听（不含 offset）、多轨单次历史与可变长选区替换；Nyquist 滤波／混响为浏览器端结构化移植，未宣称逐样本 golden 一致 |
 | Risset Drum 鼓声生成 | ✅ | 对照当前官方 `rissetdrum.ny` 提供六个中文参数控件，实现非谐波音、中心频率调制噪声、双段打击包络、峰值归一化与确定性试听；支持多轨共享样本、原子提交、单次撤销及可变长选区替换；百分比按界面语义换算，Nyquist 振荡器／滤波器／噪声源为结构化移植，不宣称逐样本一致 |
 | Echo 回声效果 | ✅ | 对照官方 `EchoBase` 每声道独立递归历史实现延迟与衰减，默认 1 秒／0.5；提供中文双参数对话框、真实选区异步立体声试听、多轨原子提交、单次撤销、跨片段历史与拉伸片段渲染；不延长选区外音频，并设置浏览器内存保护上限 |
+| Wah Wah 效果 | ✅ | 对照 Audacity 4.0.2 正式版 `WahWahBase` 实现六参数 LFO 带通递归；每 30 采样更新系数，递归历史保存未加输出增益的值，声道独立处理；支持中文对话框、真实选区试听、多轨原子提交、单次撤销、选区外 PCM 与拉伸元数据保持 |
 | 撤销 / 重做 | ✅ | 命令历史栈 + IndexedDB 持久化，刷新可恢复 |
 | 实时播放 | ✅ | Web Audio API 驱动，带播放头与游标 |
 | 窄屏与触屏编辑 | ✅ | 工具栏横向滚动；片段移动、修剪与拉伸使用 Pointer Capture 且禁用手势抢占 |
@@ -211,6 +212,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/rhythmTrackGenerator.test.ts` | 官方节拍调度、Swing、完整小节取整、offset、8 种音色、确定性噪声、强弱拍增益及非法输入 | 45 |
 | `src/lib/rissetDrumGenerator.test.ts` | 官方控件、双段包络、独立谐波参考、调制噪声、峰值归一化、随机种子及参数边界 | 29 |
 | `src/lib/echoEffect.test.ts` | 官方递归参考、独立声道历史、跨片段状态、选区映射、拉伸源范围、非法参数及 Float32 有限性 | 14 |
+| `src/lib/wahWahEffect.test.ts` | Audacity 4.0.2 独立数值基线、30 采样系数更新、增益顺序、声道独立性、非法输入及 Float32 边界 | 24 |
 | `src/lib/noiseGenerator.test.ts` | 白／粉红／布朗噪声确定性、独立参考序列、采样率缩放与参数边界 | 5 |
 | `src/lib/silenceGenerator.test.ts` | 零振幅采样、选区写时复制、修剪偏移、拉伸映射与无效输入 | 5 |
 | `src/lib/generatorDuration.test.ts` | 六种生成器独立默认时长、上次时长持久化、损坏存储与精确显示 | 12 |
@@ -231,6 +233,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/services/projectService.generation.test.ts` | 严格及可变长生成替换、Repeat 多轨共享缓冲、失败清理与非法输入 | 13 |
 | `src/services/projectService.import.test.ts` | 导入提交、失败回滚与孤儿缓冲清理 | 2 |
 | `src/services/projectService.echo.test.ts` | Echo 双轨原子提交、精确 PCM、跨片段历史、拉伸元数据与失败清理 | 6 |
+| `src/services/projectService.wahWah.test.ts` | Wah Wah 双轨选区映射、源偏移、边界与拉伸元数据保持、单次提交及失败回滚 | 5 |
 | `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴 | 12 |
 | `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 9 |
 | `src/engine/recordingWorklet.test.ts` | 真实 Worklet 任意尾块 flush、停止确认与去重 | 2 |
@@ -246,12 +249,14 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/sections/RhythmTrackDialog.test.tsx` | Rhythm 官方控件、duration 模式、试听不含 offset、选区提示及非法输入 | 8 |
 | `src/pages/AudioEditorPage/sections/RissetDrumDialog.test.tsx` | Risset 六控件、试听不提交、零振幅、选区提示及非法输入 | 7 |
 | `src/pages/AudioEditorPage/sections/EchoEffectDialog.test.tsx` | Echo 默认控件、参数提交、真实父级 PCM 试听、非法输入、内存保护、busy 与关闭清理 | 8 |
+| `src/pages/AudioEditorPage/sections/WahWahEffectDialog.test.tsx` | Wah Wah 六参数默认值、完整提交、真实父级 PCM 试听、范围校验、busy 与关闭清理 | 6 |
 | `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史与选区量化 | 23 |
 | `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
 | `src/pages/AudioEditorPage/AudioEditorPage.repeat.test.tsx` | 效果菜单、双轨 Repeat、单次历史命令与撤销 | 1 |
 | `src/pages/AudioEditorPage/AudioEditorPage.echo.test.tsx` | Echo 菜单、双声道精确试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
+| `src/pages/AudioEditorPage/AudioEditorPage.wahWah.test.tsx` | Wah Wah 菜单、双声道真实试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
 
-当前完整前端回归共 **53 个测试文件、513 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
+当前完整前端回归共 **57 个测试文件、551 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
 
 运行测试：
 
