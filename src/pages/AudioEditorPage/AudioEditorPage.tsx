@@ -139,6 +139,11 @@ import {
 } from '@/lib/echoEffect';
 import { processWahWahChannels, type WahWahSettings } from '@/lib/wahWahEffect';
 import {
+  createBassTrebleState,
+  processBassTrebleChannels,
+  type BassTrebleSettings,
+} from '@/lib/bassTrebleEffect';
+import {
   loadGeneratorDuration,
   saveGeneratorDuration,
   type GeneratorKind,
@@ -195,6 +200,7 @@ import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import EchoEffectDialog from './sections/EchoEffectDialog';
+import BassTrebleDialog from './sections/BassTrebleDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -274,6 +280,8 @@ export default function AudioEditorPage() {
   const [isApplyingEcho, setIsApplyingEcho] = useState(false);
   const [wahWahDialogOpen, setWahWahDialogOpen] = useState(false);
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
+  const [bassTrebleDialogOpen, setBassTrebleDialogOpen] = useState(false);
+  const [isApplyingBassTreble, setIsApplyingBassTreble] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -1876,6 +1884,94 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleBassTreblePreview(settings: BassTrebleSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const states = target.clips[0]?.sampleData.map(() => (
+      createBassTrebleState(settings, project.sampleRate)
+    )) ?? [];
+    const segments: Float32Array[][] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selectedChannels = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      segments.push(processBassTrebleChannels(
+        selectedChannels,
+        settings,
+        project.sampleRate,
+        states,
+      ));
+    }
+
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyBassTreble(settings: BassTrebleSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingBassTreble(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.bassTrebleSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用低音和高音后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: '低音和高音',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setBassTrebleDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用低音和高音`);
+    } catch (error) {
+      logger.error('应用低音和高音失败:', String(error));
+      toast.error(error instanceof Error ? `应用低音和高音失败：${error.message}` : '应用低音和高音失败');
+    } finally {
+      setIsApplyingBassTreble(false);
+    }
+  }
+
   // Effect operations
   async function addEffect(trackId: string, type: EffectType) {
     if (!project) return;
@@ -3032,6 +3128,12 @@ export default function AudioEditorPage() {
               <DropdownMenuSeparator />
               <DropdownMenuLabel>滤波 / 音色</DropdownMenuLabel>
               <DropdownMenuItem
+                onClick={() => setBassTrebleDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                低音和高音…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setWahWahDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
               >
@@ -3700,6 +3802,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingEcho}
           onPreview={handleEchoPreview}
           onApply={handleApplyEcho}
+        />
+
+        <BassTrebleDialog
+          open={bassTrebleDialogOpen}
+          onOpenChange={setBassTrebleDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingBassTreble}
+          onPreview={handleBassTreblePreview}
+          onApply={handleApplyBassTreble}
         />
 
         <WahWahEffectDialog

@@ -63,6 +63,17 @@ The implementation follows the upstream defaults of 1 second delay and 0.5 decay
 
 The implementation follows the Audacity 4.0.2 release algorithm: default controls of 1.5 Hz, 0 degrees, 70% depth, 2.5 resonance, 30% frequency offset and -6 dB output gain; coefficient recomputation every 30 samples with the upstream initial `skipcount` increment order; recursive history stored before output gain; and Float32 output storage. Each channel is initialized and processed independently, without claiming the unverified stereo phase behaviour of another upstream revision. Tests compare selected samples with an independently calculated numerical baseline and cover coefficient boundaries, invalid inputs, silence, empty inputs and unequal channel lengths. The current `master` formula was not used as the baseline, and no Audacity executable or upstream golden audio is bundled.
 
+## Audacity Bass and Treble algorithm
+
+- Upstream release: https://github.com/audacity/audacity/releases/tag/Audacity-4.0.2
+- Parameter source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-builtin-effects/BassTrebleBase.h
+- DSP source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-builtin-effects/BassTrebleBase.cpp
+- Dialog and linked-volume source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/src/effects/BassTreble.cpp
+- Purpose: GPL-licensed two-stage shelving-IIR, parameter, and linked-volume reference for `src/lib/bassTrebleEffect.ts` and its editor integration
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows the Audacity 4.0.2 release algorithm: a 250 Hz low shelf followed by a 4 kHz high shelf, both using slope 0.4; bass, treble and output gain controls from -30 to 30 dB with zero defaults; final output gain after the filters; and linked-volume compensation using half the change for boosts and one quarter for cuts, clamped to the output-gain range. Each channel owns independent recursive history that can continue across selected clips. Tests compare selected samples with an independently calculated numerical baseline, verify segmented-versus-contiguous processing and cover channel isolation, invalid inputs, silence, gain-only processing and Float32 output storage. No Audacity executable or upstream golden audio is bundled, and no claim of equivalence with other upstream revisions is made.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.
