@@ -21,6 +21,16 @@ The upstream license text is preserved in [`licenses/lamejs-LGPL-3.0.txt`](licen
 
 No Audacity or Nyquist executable, plug-in binary, or upstream golden audio file is bundled. The automated tests include independently calculated Python reference values for the official uint32 random-number overflow, float32 delay-line storage, pointer wrapping, fade, and peak-normalization behavior. The source-version claim is limited to Audacity 3.7.3 DSP plus the current plug-in contract; it is not a claim of byte-for-byte equivalence with every Nyquist version embedded in Audacity master.
 
+## Audacity / Nyquist Rhythm Track algorithm
+
+- Upstream: https://github.com/audacity/audacity
+- Plug-in and control source: https://github.com/audacity/audacity/blob/master/share/nyquist-plug-ins/rhythmtrack.ny
+- Manual: https://manual.audacityteam.org/man/rhythm_track.html
+- Purpose: GPL-licensed timing, parameter, oscillator, filter, envelope, and click-synthesis reference for `src/lib/rhythmTrackGenerator.ts`
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows the current plug-in's tempo, beats-per-bar, alternate-beat Swing, bars-or-duration scheduling, start offset, eight beat sounds, and 0.75/0.5 strong/weak gain contract. Its current-source defaults are MIDI 84 for strong beats and MIDI 80 for weak beats. Nyquist low-pass/high-pass filters, exponential envelopes, and `jcrev` are browser-side structural adaptations; no Audacity executable or upstream golden audio was used, and the tests do not claim bit-exact waveform equivalence. Browser rendering rejects allocations above 50,000,000 samples rather than risking an out-of-memory failure.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

@@ -33,6 +33,7 @@
 | 扫频（Chirp）生成 | ✅ | 按官方 ToneGenBase 公式实现 Sine／Square／Sawtooth／Square no alias／Triangle，支持线性／对数扫频、独立起止频率与振幅、试听、选区替换、多轨单次历史及独立时长记忆；频率限制为当前工程奈奎斯特值，未混入尚未完整支持的 Chirp 预设格式 |
 | DTMF 音调生成 | ✅ | 默认 1 秒并独立记忆上次时长，支持序列、振幅、占空比、试听、多轨单次历史与采样量化选区等长替换 |
 | Pluck 拨弦生成 | ✅ | 移植 Audacity 3.7.3 官方 `pluck.c` 延迟线算法，支持 MIDI 1–120、Abrupt／Gradual、默认 1 秒、最长 60 秒、试听及非零峰值 0.8 归一化；选区按指定时长替换并平移后续片段，严格保留跨选区右片段的源 offset 与拉伸语义 |
+| Rhythm Track 节奏音轨 | ✅ | 对照当前官方 `rhythmtrack.ny` 实现 30–300 BPM、1–20 拍、Swing、bars／duration 双模式、起始静音、8 种节拍音色及强弱拍 MIDI；完整小节向上取整、最多两小节试听（不含 offset）、多轨单次历史与可变长选区替换；Nyquist 滤波／混响为浏览器端结构化移植，未宣称逐样本 golden 一致 |
 | 撤销 / 重做 | ✅ | 命令历史栈 + IndexedDB 持久化，刷新可恢复 |
 | 实时播放 | ✅ | Web Audio API 驱动，带播放头与游标 |
 | 窄屏与触屏编辑 | ✅ | 工具栏横向滚动；片段移动、修剪与拉伸使用 Pointer Capture 且禁用手势抢占 |
@@ -205,6 +206,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/chirpGenerator.test.ts` | 独立线性／对数扫频公式、五种波形与 Tone 等价、N 采样插值、零振幅与参数边界 | 10 |
 | `src/lib/dtmfGenerator.test.ts` | 官方符号表、独立频率对、4 ms 淡化、样本分配与非法输入 | 12 |
 | `src/lib/pluckGenerator.test.ts` | 独立 Python 数值参考、长时延分支、零峰值、归一化、随机种子及参数边界 | 17 |
+| `src/lib/rhythmTrackGenerator.test.ts` | 官方节拍调度、Swing、完整小节取整、offset、8 种音色、确定性噪声、强弱拍增益及非法输入 | 45 |
 | `src/lib/noiseGenerator.test.ts` | 白／粉红／布朗噪声确定性、独立参考序列、采样率缩放与参数边界 | 5 |
 | `src/lib/silenceGenerator.test.ts` | 零振幅采样、选区写时复制、修剪偏移、拉伸映射与无效输入 | 5 |
 | `src/lib/generatorDuration.test.ts` | 六种生成器独立默认时长、上次时长持久化、损坏存储与精确显示 | 12 |
@@ -236,11 +238,12 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/sections/RepeatSelectionDialog.test.tsx` | 次数校验、当前／新选区时长、错误与 busy 状态 | 8 |
 | `src/pages/AudioEditorPage/sections/DtmfGeneratorDialog.test.tsx` | DTMF 官方默认值、完整参数提交、非法序列与选区时长锁定 | 7 |
 | `src/pages/AudioEditorPage/sections/PluckGeneratorDialog.test.tsx` | Pluck 官方默认值、选区时长可编辑、试听、提交及非法输入 | 6 |
-| `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck 可变长替换、多轨历史与选区量化 | 17 |
+| `src/pages/AudioEditorPage/sections/RhythmTrackDialog.test.tsx` | Rhythm 官方控件、duration 模式、试听不含 offset、选区提示及非法输入 | 8 |
+| `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm 可变长替换、多轨历史与选区量化 | 20 |
 | `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
 | `src/pages/AudioEditorPage/AudioEditorPage.repeat.test.tsx` | 效果菜单、双轨 Repeat、单次历史命令与撤销 | 1 |
 
-当前完整前端回归共 **45 个测试文件、386 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
+当前完整前端回归共 **47 个测试文件、442 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
 
 运行测试：
 

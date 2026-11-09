@@ -124,6 +124,10 @@ function openPluckDialog() {
   return openGeneratorDialog('Pluck 拨弦…');
 }
 
+function openRhythmDialog() {
+  return openGeneratorDialog('Rhythm Track 节奏音轨…');
+}
+
 function createTwoTrackProject(selection: IProject['selection'] = null): IProject {
   const project = createProject(selection);
   project.tracks[0].clips = [{
@@ -506,6 +510,77 @@ describe('AudioEditorPage Pluck command integration', () => {
     const [, targets] = vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
     expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
     expect(targets.map(({ sampleData }) => sampleData[0].length)).toEqual([10, 10]);
+    expect(targets[0].sampleData[0]).toEqual(targets[1].sampleData[0]);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AudioEditorPage Rhythm Track command integration', () => {
+  it('opens with official defaults and generates real samples through the Generate menu', async () => {
+    const project = createProject();
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(project);
+    renderEditor();
+    await openRhythmDialog();
+
+    expect(screen.getByLabelText('速度（BPM）')).toHaveValue(120);
+    expect(screen.getByLabelText('强拍 MIDI')).toHaveValue(84);
+    fireEvent.change(screen.getByLabelText('速度（BPM）'), { target: { value: '60' } });
+    fireEvent.change(screen.getByLabelText('每小节拍数'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('小节数'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('节拍声音'), { target: { value: 'pingShort' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成 Rhythm Track' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [projectId, targets, sampleRate, startTime, clipName, replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(projectId).toBe(project.id);
+    expect(targets[0].sampleData[0]).toHaveLength(2000);
+    expect(targets[0].sampleData[0].some((sample) => sample !== 0)).toBe(true);
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0);
+    expect(clipName).toBe('Rhythm 60 BPM');
+    expect(replacement).toBeUndefined();
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses duration mode and offset for variable-length selection replacement', async () => {
+    const project = createProject({ start: 0.1004, end: 0.2996 });
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(project);
+    renderEditor();
+    await openRhythmDialog();
+
+    fireEvent.change(screen.getByLabelText('小节数'), { target: { value: '0' } });
+    fireEvent.change(screen.getByLabelText('节奏音轨时长（秒）'), { target: { value: '0.6' } });
+    fireEvent.change(screen.getByLabelText('起始时间偏移（秒）'), { target: { value: '0.1' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成 Rhythm Track' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets, sampleRate, startTime, , replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0.1);
+    expect(replacement).toEqual({ start: 0.1, end: 0.3, allowDurationChange: true });
+    expect(targets[0].sampleData[0]).toHaveLength(2100);
+    expect(Array.from(targets[0].sampleData[0].slice(0, 100)).every((sample) => sample === 0)).toBe(true);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates identical Rhythm channels into every selected track with one history command', async () => {
+    const project = createTwoTrackProject();
+    renderTwoTrackProject(project);
+    await selectBothClips();
+    await openRhythmDialog();
+    fireEvent.change(screen.getByLabelText('速度（BPM）'), { target: { value: '300' } });
+    fireEvent.change(screen.getByLabelText('每小节拍数'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('小节数'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成 Rhythm Track' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets] = vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
+    expect(targets.map(({ sampleData }) => sampleData[0].length)).toEqual([200, 200]);
     expect(targets[0].sampleData[0]).toEqual(targets[1].sampleData[0]);
     expect(historyManager.push).toHaveBeenCalledTimes(1);
   });
