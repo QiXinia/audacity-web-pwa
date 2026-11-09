@@ -107,6 +107,7 @@ import { generateChirp, type ChirpRequest } from '@/lib/chirpGenerator';
 import { generateDtmf, type DtmfRequest } from '@/lib/dtmfGenerator';
 import { generatePluck, type PluckRequest } from '@/lib/pluckGenerator';
 import { generateRhythmTrack, type RhythmTrackRequest } from '@/lib/rhythmTrackGenerator';
+import { generateRissetDrum, type RissetDrumRequest } from '@/lib/rissetDrumGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
 import { drawWaveform } from '@/lib/waveformDrawing';
@@ -178,6 +179,7 @@ import ChirpGeneratorDialog from './sections/ChirpGeneratorDialog';
 import DtmfGeneratorDialog from './sections/DtmfGeneratorDialog';
 import PluckGeneratorDialog from './sections/PluckGeneratorDialog';
 import RhythmTrackDialog from './sections/RhythmTrackDialog';
+import RissetDrumDialog from './sections/RissetDrumDialog';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
@@ -247,6 +249,8 @@ export default function AudioEditorPage() {
   const [isGeneratingPluck, setIsGeneratingPluck] = useState(false);
   const [rhythmDialogOpen, setRhythmDialogOpen] = useState(false);
   const [isGeneratingRhythm, setIsGeneratingRhythm] = useState(false);
+  const [rissetDialogOpen, setRissetDialogOpen] = useState(false);
+  const [isGeneratingRisset, setIsGeneratingRisset] = useState(false);
   const [noiseDialogOpen, setNoiseDialogOpen] = useState(false);
   const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
   const [silenceDialogOpen, setSilenceDialogOpen] = useState(false);
@@ -1167,6 +1171,59 @@ export default function AudioEditorPage() {
       toast.error(`生成 Rhythm Track 失败：${message}`);
     } finally {
       setIsGeneratingRhythm(false);
+    }
+  }
+
+  async function handleGenerateRisset(settings: RissetDrumRequest) {
+    if (!project) return;
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length === 0) {
+      toast.warning('请先添加一个音频轨道');
+      return;
+    }
+
+    const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
+    const replacementSelection = activeSelection
+      ? { ...activeSelection, allowDurationChange: true }
+      : undefined;
+    const beforeProject = structuredClone(project);
+    setIsGeneratingRisset(true);
+    try {
+      const randomSeed = new Uint32Array(1);
+      globalThis.crypto?.getRandomValues(randomSeed);
+      const seed = randomSeed[0] || ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0) || 1;
+      const result = generateRissetDrum({ ...settings, sampleRate: project.sampleRate, seed });
+      const clips = await projectService.addGeneratedAudioToTracks(
+        project.id,
+        trackIds.map((trackId) => ({ trackId, sampleData: [result.samples] })),
+        project.sampleRate,
+        activeSelection?.start ?? cursorPosition,
+        `Risset Drum ${settings.frequency} Hz`,
+        replacementSelection,
+      );
+      if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
+
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('工程保存后无法重新加载');
+      setProject(updated);
+      setSelectedTrackId(trackIds[0]!);
+      setSelectedClips(clips.map((clip, index) => ({ trackId: trackIds[index]!, clipId: clip.id })));
+      pushHistoryCmd({
+        id: generateId(),
+        label: '生成 Risset Drum',
+        execute: () => updated,
+        undo: () => beforeProject,
+      });
+      setRissetDialogOpen(false);
+      const trackMessage = trackIds.length > 1 ? `到 ${trackIds.length} 条轨道` : '';
+      toast.success(activeSelection
+        ? `已将 ${trackIds.length} 条轨道的选区替换为 ${formatTime(result.duration)} Risset Drum，后续片段已平移`
+        : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(result.duration)} Risset Drum`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      toast.error(`生成 Risset Drum 失败：${message}`);
+    } finally {
+      setIsGeneratingRisset(false);
     }
   }
 
@@ -2472,6 +2529,7 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setDtmfDialogOpen(true)}>DTMF 音调…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setPluckDialogOpen(true)}>Pluck 拨弦…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setRhythmDialogOpen(true)}>Rhythm Track 节奏音轨…</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setRissetDialogOpen(true)}>Risset Drum…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setNoiseDialogOpen(true)}>噪声…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setSilenceDialogOpen(true)}>静默…</DropdownMenuItem>
             </DropdownMenuContent>
@@ -3362,6 +3420,18 @@ export default function AudioEditorPage() {
           replacementEnd={quantizedGeneratorSelection?.end}
           isGenerating={isGeneratingRhythm}
           onGenerate={handleGenerateRhythm}
+        />
+
+        <RissetDrumDialog
+          open={rissetDialogOpen}
+          onOpenChange={setRissetDialogOpen}
+          sampleRate={project.sampleRate}
+          cursorPosition={cursorPosition}
+          selectionActive={Boolean(quantizedGeneratorSelection)}
+          replacementPosition={quantizedGeneratorSelection?.start}
+          replacementEnd={quantizedGeneratorSelection?.end}
+          isGenerating={isGeneratingRisset}
+          onGenerate={handleGenerateRisset}
         />
 
         <NoiseGeneratorDialog

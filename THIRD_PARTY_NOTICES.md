@@ -31,6 +31,16 @@ No Audacity or Nyquist executable, plug-in binary, or upstream golden audio file
 
 The implementation follows the current plug-in's tempo, beats-per-bar, alternate-beat Swing, bars-or-duration scheduling, start offset, eight beat sounds, and 0.75/0.5 strong/weak gain contract. Its current-source defaults are MIDI 84 for strong beats and MIDI 80 for weak beats. Nyquist low-pass/high-pass filters, exponential envelopes, and `jcrev` are browser-side structural adaptations; no Audacity executable or upstream golden audio was used, and the tests do not claim bit-exact waveform equivalence. Browser rendering rejects allocations above 50,000,000 samples rather than risking an out-of-memory failure.
 
+## Audacity / Nyquist Risset Drum algorithm
+
+- Upstream: https://github.com/audacity/audacity
+- Plug-in and control source: https://github.com/audacity/audacity/blob/master/share/nyquist-plug-ins/rissetdrum.ny
+- Manual: https://manual.audacityteam.org/man/risset_drum.html
+- Purpose: GPL-licensed control, harmonic-oscillator, noise-modulation, percussion-envelope, and normalization reference for `src/lib/rissetDrumGenerator.ts`
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation uses the official 10/16/22/23 harmonic table at 0.1 times the selected frequency, centre-frequency modulation of filtered white noise, half-duration and full-duration percussion envelopes, and final peak normalization. The percentage control is converted from 0–100 to a 0–1 mix according to the visible control contract rather than reproducing the upstream text's direct `1-NOISE` expression literally. The wavetable oscillator, white-noise generator and `lowpass6` primitive are structural browser-side adaptations; no Audacity executable or upstream golden audio was used, and the tests do not claim bit-exact waveform equivalence. Browser rendering rejects allocations above 50,000,000 samples.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

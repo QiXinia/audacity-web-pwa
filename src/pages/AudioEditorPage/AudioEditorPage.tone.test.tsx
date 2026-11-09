@@ -128,6 +128,10 @@ function openRhythmDialog() {
   return openGeneratorDialog('Rhythm Track 节奏音轨…');
 }
 
+function openRissetDialog() {
+  return openGeneratorDialog('Risset Drum…');
+}
+
 function createTwoTrackProject(selection: IProject['selection'] = null): IProject {
   const project = createProject(selection);
   project.tracks[0].clips = [{
@@ -581,6 +585,71 @@ describe('AudioEditorPage Rhythm Track command integration', () => {
     const [, targets] = vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
     expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
     expect(targets.map(({ sampleData }) => sampleData[0].length)).toEqual([200, 200]);
+    expect(targets[0].sampleData[0]).toEqual(targets[1].sampleData[0]);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AudioEditorPage Risset Drum command integration', () => {
+  it('opens with official defaults and generates real samples through the Generate menu', async () => {
+    const project = createProject();
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(project);
+    renderEditor();
+    await openRissetDialog();
+
+    expect(screen.getByLabelText('主频率（Hz）')).toHaveValue(100);
+    expect(screen.getByLabelText('噪声混合比例（%）')).toHaveValue(25);
+    fireEvent.change(screen.getByLabelText('衰减时长（秒）'), { target: { value: '0.1' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成 Risset Drum' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [projectId, targets, sampleRate, startTime, clipName, replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(projectId).toBe(project.id);
+    expect(targets[0].sampleData[0]).toHaveLength(100);
+    expect(targets[0].sampleData[0].some((sample) => sample !== 0)).toBe(true);
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0);
+    expect(clipName).toBe('Risset Drum 100 Hz');
+    expect(replacement).toBeUndefined();
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses editable decay for variable-length selection replacement', async () => {
+    const project = createProject({ start: 0.1004, end: 0.2996 });
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(project);
+    renderEditor();
+    await openRissetDialog();
+
+    const decay = screen.getByLabelText('衰减时长（秒）') as HTMLInputElement;
+    expect(decay.readOnly).toBe(false);
+    fireEvent.change(decay, { target: { value: '0.6' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成 Risset Drum' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets, sampleRate, startTime, , replacement] =
+      vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(sampleRate).toBe(1000);
+    expect(startTime).toBe(0.1);
+    expect(replacement).toEqual({ start: 0.1, end: 0.3, allowDurationChange: true });
+    expect(targets[0].sampleData[0]).toHaveLength(600);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates identical Risset channels into every selected track with one history command', async () => {
+    const project = createTwoTrackProject();
+    renderTwoTrackProject(project);
+    await selectBothClips();
+    await openRissetDialog();
+    fireEvent.change(screen.getByLabelText('衰减时长（秒）'), { target: { value: '0.1' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成 Risset Drum' }));
+
+    await waitFor(() => expect(projectService.addGeneratedAudioToTracks).toHaveBeenCalledTimes(1));
+    const [, targets] = vi.mocked(projectService.addGeneratedAudioToTracks).mock.calls[0];
+    expect(targets.map(({ trackId }) => trackId)).toEqual(['track-1', 'track-2']);
+    expect(targets.map(({ sampleData }) => sampleData[0].length)).toEqual([100, 100]);
     expect(targets[0].sampleData[0]).toEqual(targets[1].sampleData[0]);
     expect(historyManager.push).toHaveBeenCalledTimes(1);
   });
