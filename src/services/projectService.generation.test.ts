@@ -74,6 +74,34 @@ describe('ProjectService generated selection replacement', () => {
     );
   });
 
+  it('commits a longer Nyquist replacement and shifts the following source audio', async () => {
+    const project = makeProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+
+    const generated = await projectService.addRecordingToTrack(
+      project.id,
+      'track',
+      [new Float32Array(20)],
+      10,
+      1,
+      'Pluck',
+      { start: 1, end: 2, allowDurationChange: true },
+    );
+
+    expect(generated).toMatchObject({ startTime: 1, duration: 2 });
+    expect(save).toHaveBeenCalledTimes(1);
+    const savedProject = save.mock.calls[0][0];
+    expect(savedProject.tracks[0].clips.map((clip) => ({
+      startTime: clip.startTime, duration: clip.duration, offset: clip.offset,
+    }))).toEqual([
+      { startTime: 0, duration: 1, offset: 0 },
+      { startTime: 1, duration: 2, offset: 0 },
+      { startTime: 3, duration: 2, offset: 2 },
+    ]);
+    expect(project.tracks[0].clips).toHaveLength(1);
+  });
+
   it('keeps legacy cursor insertion unchanged when no replacement is requested', async () => {
     const project = makeProject();
     (projectService as unknown as { currentProject: IProject }).currentProject = project;

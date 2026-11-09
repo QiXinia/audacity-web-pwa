@@ -105,6 +105,7 @@ import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } fro
 import { generateTone, type ToneRequest } from '@/lib/toneGenerator';
 import { generateChirp, type ChirpRequest } from '@/lib/chirpGenerator';
 import { generateDtmf, type DtmfRequest } from '@/lib/dtmfGenerator';
+import { generatePluck, type PluckRequest } from '@/lib/pluckGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
 import { drawWaveform } from '@/lib/waveformDrawing';
@@ -174,6 +175,7 @@ import PlaybackTimingControls from './sections/PlaybackTimingControls';
 import ToneGeneratorDialog from './sections/ToneGeneratorDialog';
 import ChirpGeneratorDialog from './sections/ChirpGeneratorDialog';
 import DtmfGeneratorDialog from './sections/DtmfGeneratorDialog';
+import PluckGeneratorDialog from './sections/PluckGeneratorDialog';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
@@ -231,6 +233,7 @@ export default function AudioEditorPage() {
     dtmf: loadGeneratorDuration('dtmf'),
     noise: loadGeneratorDuration('noise'),
     silence: loadGeneratorDuration('silence'),
+    pluck: loadGeneratorDuration('pluck'),
   }));
   const [toneDialogOpen, setToneDialogOpen] = useState(false);
   const [isGeneratingTone, setIsGeneratingTone] = useState(false);
@@ -238,6 +241,8 @@ export default function AudioEditorPage() {
   const [isGeneratingChirp, setIsGeneratingChirp] = useState(false);
   const [dtmfDialogOpen, setDtmfDialogOpen] = useState(false);
   const [isGeneratingDtmf, setIsGeneratingDtmf] = useState(false);
+  const [pluckDialogOpen, setPluckDialogOpen] = useState(false);
+  const [isGeneratingPluck, setIsGeneratingPluck] = useState(false);
   const [noiseDialogOpen, setNoiseDialogOpen] = useState(false);
   const [isGeneratingNoise, setIsGeneratingNoise] = useState(false);
   const [silenceDialogOpen, setSilenceDialogOpen] = useState(false);
@@ -1053,6 +1058,57 @@ export default function AudioEditorPage() {
       toast.error(`生成 DTMF 失败：${message}`);
     } finally {
       setIsGeneratingDtmf(false);
+    }
+  }
+
+  async function handleGeneratePluck(settings: PluckRequest) {
+    if (!project) return;
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length === 0) {
+      toast.warning('请先添加一个音频轨道');
+      return;
+    }
+
+    const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
+    const replacementSelection = activeSelection
+      ? { ...activeSelection, allowDurationChange: true }
+      : undefined;
+    const beforeProject = structuredClone(project);
+    setIsGeneratingPluck(true);
+    try {
+      const channels = generatePluck({ ...settings, sampleRate: project.sampleRate });
+      const clips = await projectService.addGeneratedAudioToTracks(
+        project.id,
+        trackIds.map((trackId) => ({ trackId, sampleData: [channels] })),
+        project.sampleRate,
+        activeSelection?.start ?? cursorPosition,
+        `Pluck MIDI ${settings.midi}`,
+        replacementSelection,
+      );
+      if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
+
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('工程保存后无法重新加载');
+      setProject(updated);
+      setSelectedTrackId(trackIds[0]!);
+      setSelectedClips(clips.map((clip, index) => ({ trackId: trackIds[index]!, clipId: clip.id })));
+      pushHistoryCmd({
+        id: generateId(),
+        label: '生成 Pluck',
+        execute: () => updated,
+        undo: () => beforeProject,
+      });
+      rememberLastGeneratorDuration('pluck', settings.duration);
+      setPluckDialogOpen(false);
+      const trackMessage = trackIds.length > 1 ? `到 ${trackIds.length} 条轨道` : '';
+      toast.success(activeSelection
+        ? `已将 ${trackIds.length} 条轨道的选区替换为 ${formatTime(settings.duration)} Pluck，后续片段已平移`
+        : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(settings.duration)} Pluck`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      toast.error(`生成 Pluck 失败：${message}`);
+    } finally {
+      setIsGeneratingPluck(false);
     }
   }
 
@@ -2356,6 +2412,7 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setToneDialogOpen(true)}>音调…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setChirpDialogOpen(true)}>扫频（Chirp）…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setDtmfDialogOpen(true)}>DTMF 音调…</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setPluckDialogOpen(true)}>Pluck 拨弦…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setNoiseDialogOpen(true)}>噪声…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setSilenceDialogOpen(true)}>静默…</DropdownMenuItem>
             </DropdownMenuContent>
@@ -3221,6 +3278,19 @@ export default function AudioEditorPage() {
           replacementEnd={quantizedGeneratorSelection?.end}
           isGenerating={isGeneratingDtmf}
           onGenerate={handleGenerateDtmf}
+        />
+
+        <PluckGeneratorDialog
+          open={pluckDialogOpen}
+          onOpenChange={setPluckDialogOpen}
+          sampleRate={project.sampleRate}
+          cursorPosition={cursorPosition}
+          defaultDuration={generatorDurations.pluck}
+          selectionActive={Boolean(quantizedGeneratorSelection)}
+          replacementPosition={quantizedGeneratorSelection?.start}
+          replacementEnd={quantizedGeneratorSelection?.end}
+          isGenerating={isGeneratingPluck}
+          onGenerate={handleGeneratePluck}
         />
 
         <NoiseGeneratorDialog

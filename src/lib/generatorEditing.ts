@@ -4,6 +4,8 @@ import type { IClip, ITrack } from '@/types/project';
 export interface GeneratorSelection {
   start: number;
   end: number;
+  /** Nyquist generators may replace a selection with their chosen duration. */
+  allowDurationChange?: boolean;
 }
 
 /**
@@ -62,14 +64,28 @@ export function replaceTrackSelectionWithClip(
     || selection.start < 0
     || selection.end <= selection.start
   ) throw new RangeError('Generator replacement requires a positive selection');
+  if (!Number.isFinite(generatedClip.duration) || generatedClip.duration <= 0) {
+    throw new RangeError('Generated clip must have a positive finite duration');
+  }
+  if (Math.abs(generatedClip.startTime - selection.start) > 1e-9) {
+    throw new RangeError('Generated clip must start at the selection');
+  }
   if (
-    Math.abs(generatedClip.startTime - selection.start) > 1e-9
-    || Math.abs(generatedClip.duration - (selection.end - selection.start)) > 1e-9
+    !selection.allowDurationChange
+    && Math.abs(generatedClip.duration - (selection.end - selection.start)) > 1e-9
   ) throw new RangeError('Generated clip must exactly cover the selection');
 
+  const timelineDelta = selection.allowDurationChange
+    ? generatedClip.duration - (selection.end - selection.start)
+    : 0;
   const clips = track.clips.flatMap((clip): IClip[] => {
     const clipEnd = clip.startTime + clip.duration;
-    if (clipEnd <= selection.start || clip.startTime >= selection.end) return [clip];
+    if (clipEnd <= selection.start) return [clip];
+    if (clip.startTime >= selection.end) {
+      return timelineDelta === 0
+        ? [clip]
+        : [{ ...clip, startTime: clip.startTime + timelineDelta }];
+    }
 
     const ratio = getClipStretchRatio(clip);
     const leftDuration = Math.max(0, Math.min(clipEnd, selection.start) - clip.startTime);
@@ -88,7 +104,7 @@ export function replaceTrackSelectionWithClip(
       result.push({
         ...clip,
         id: leftDuration > 0 ? createId() : clip.id,
-        startTime: rightStart,
+        startTime: rightStart + timelineDelta,
         offset: clip.offset + (rightStart - clip.startTime) * ratio,
         duration: rightDuration,
         fadeIn: 0,

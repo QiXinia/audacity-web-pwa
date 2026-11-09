@@ -101,8 +101,46 @@ describe('generator selection replacement', () => {
   it('rejects a generated clip that does not exactly cover the quantized selection', () => {
     const source = track([clip('source', 0, 4)]);
     expect(() => replaceTrackSelectionWithClip(
-      source, { start: 1, end: 2 }, generated(0, 1), () => 'unused',
+      source, { start: 1, end: 2 }, generated(1, 0.5), () => 'unused',
     )).toThrow(/exactly cover/);
     expect(source.clips[0].duration).toBe(4);
+  });
+
+  it('extends a Nyquist replacement and shifts every following clip without changing source offsets', () => {
+    const original = { ...clip('source', 0, 4, 1), stretchRatio: 2 };
+    const distant = clip('distant', 5, 1);
+    const result = replaceTrackSelectionWithClip(
+      track([original, distant]),
+      { start: 1, end: 2, allowDurationChange: true },
+      generated(1, 2),
+      () => 'right',
+    );
+
+    expect(result.clips.map(({ id, startTime, duration, offset }) => ({
+      id, startTime, duration, offset,
+    }))).toEqual([
+      { id: 'source', startTime: 0, duration: 1, offset: 1 },
+      { id: 'generated', startTime: 1, duration: 2, offset: 0 },
+      { id: 'right', startTime: 3, duration: 2, offset: 5 },
+      { id: 'distant', startTime: 6, duration: 1, offset: 0 },
+    ]);
+  });
+
+  it('shortens a Nyquist replacement and closes the timeline gap', () => {
+    const result = replaceTrackSelectionWithClip(
+      track([clip('source', 0, 4), clip('distant', 5, 1)]),
+      { start: 1, end: 2, allowDurationChange: true },
+      generated(1, 0.5),
+      () => 'right',
+    );
+
+    expect(result.clips.map(({ id, startTime, duration, offset }) => ({
+      id, startTime, duration, offset,
+    }))).toEqual([
+      { id: 'source', startTime: 0, duration: 1, offset: 0 },
+      { id: 'generated', startTime: 1, duration: 0.5, offset: 0 },
+      { id: 'right', startTime: 1.5, duration: 2, offset: 2 },
+      { id: 'distant', startTime: 4.5, duration: 1, offset: 0 },
+    ]);
   });
 });

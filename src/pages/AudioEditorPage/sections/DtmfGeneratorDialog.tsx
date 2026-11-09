@@ -209,7 +209,7 @@ export default function DtmfGeneratorDialog({
           <p className="text-xs text-muted-foreground">
             {selectionActive
               ? `采样率 ${sampleRate} Hz · ${selectionDescription} · 时长已锁定到音频采样`
-              : `采样率 ${sampleRate} Hz · 插入位置 ${formatTime(cursorPosition)} · 默认 30 秒并记住上次时长 · 每个音调带 4 ms 淡入淡出`}
+              : `采样率 ${sampleRate} Hz · 插入位置 ${formatTime(cursorPosition)} · 默认 1 秒并记住上次时长 · 每个音调带 4 ms 淡入淡出`}
           </p>
           {previewError && <p role="alert" className="text-xs text-destructive">试听失败：{previewError}</p>}
           <DialogFooter>

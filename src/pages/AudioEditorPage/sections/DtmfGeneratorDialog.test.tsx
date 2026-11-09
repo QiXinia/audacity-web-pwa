@@ -14,7 +14,7 @@ function renderDialog(overrides: Partial<Parameters<typeof DtmfGeneratorDialog>[
       onOpenChange={vi.fn()}
       sampleRate={1000}
       cursorPosition={0}
-      defaultDuration={30}
+      defaultDuration={1}
       isGenerating={false}
       onGenerate={onGenerate}
       {...overrides}
@@ -29,7 +29,8 @@ describe('DtmfGeneratorDialog', () => {
     expect((screen.getByLabelText('DTMF 序列') as HTMLInputElement).value).toBe('audacity');
     expect((screen.getByLabelText('振幅 (0–1)') as HTMLInputElement).value).toBe('0.8');
     expect((screen.getByLabelText('占空比 (%)') as HTMLInputElement).value).toBe('55');
-    expect((screen.getByLabelText('时长（秒）') as HTMLInputElement).value).toBe('30');
+    expect((screen.getByLabelText('时长（秒）') as HTMLInputElement).value).toBe('1');
+    expect(screen.getByText(/默认 1 秒并记住上次时长/)).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('DTMF 序列'), { target: { value: '12' } });
     fireEvent.change(screen.getByLabelText('占空比 (%)'), { target: { value: '50' } });
