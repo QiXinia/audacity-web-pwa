@@ -46,6 +46,26 @@ describe('GeneratorPreviewPlayer', () => {
     expect(context.close).toHaveBeenCalledOnce();
   });
 
+  it('plays stereo channels without downmixing the real selection', async () => {
+    const { context, source } = makeContext();
+    const left = new Float32Array(3);
+    const right = new Float32Array(3);
+    context.createBuffer = vi.fn((_channels: number, _length: number, _sampleRate: number) => ({
+      getChannelData: (index: number) => index === 0 ? left : right,
+    })) as unknown as AudioContext['createBuffer'];
+    const player = new GeneratorPreviewPlayer(() => context);
+
+    await player.playChannels([
+      Float32Array.from([0.1, 0.2, 0.3]),
+      Float32Array.from([-0.1, -0.2, -0.3]),
+    ], 44100, vi.fn());
+
+    expect(context.createBuffer).toHaveBeenCalledWith(2, 3, 44100);
+    expect(Array.from(left)).toEqual([0.1, 0.2, 0.3].map(Math.fround));
+    expect(Array.from(right)).toEqual([-0.1, -0.2, -0.3].map(Math.fround));
+    expect(source.start).toHaveBeenCalledOnce();
+  });
+
   it('stops and disconnects an active preview without firing a stale completion', async () => {
     const { context, source } = makeContext();
     const player = new GeneratorPreviewPlayer(() => context);

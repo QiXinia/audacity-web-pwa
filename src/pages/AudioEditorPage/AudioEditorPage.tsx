@@ -92,7 +92,7 @@ import {
 import { audioEngine, type PlaybackState, type RecordingState } from '@/engine/audioEngine';
 import { audioDb } from '@/db/audioDb';
 import { getMp3SampleRate } from '@/engine/mp3Encoder';
-import { projectService } from '@/services/projectService';
+import { projectService, type EchoTrackAudio } from '@/services/projectService';
 import { historyManager } from '@/services/historyService';
 import {
   parseAudioClipboard,
@@ -127,6 +127,12 @@ import {
   stepHorizontalZoom,
 } from '@/lib/horizontalZoom';
 import { quantizeSelectionToSamples, resolveGeneratorTrackIds } from '@/lib/generatorEditing';
+import {
+  createEchoState,
+  getEchoClipSampleRange,
+  getEchoPlan,
+  processEchoSelection,
+} from '@/lib/echoEffect';
 import {
   loadGeneratorDuration,
   saveGeneratorDuration,
@@ -183,6 +189,7 @@ import RissetDrumDialog from './sections/RissetDrumDialog';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
+import EchoEffectDialog from './sections/EchoEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -257,6 +264,8 @@ export default function AudioEditorPage() {
   const [isGeneratingSilence, setIsGeneratingSilence] = useState(false);
   const [repeatDialogOpen, setRepeatDialogOpen] = useState(false);
   const [isRepeating, setIsRepeating] = useState(false);
+  const [echoDialogOpen, setEchoDialogOpen] = useState(false);
+  const [isApplyingEcho, setIsApplyingEcho] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -1667,6 +1676,118 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function collectEchoTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
+    if (!project) return [];
+    const targets: EchoTrackAudio[] = [];
+    for (const track of project.tracks) {
+      const clips: EchoTrackAudio['clips'] = [];
+      for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+        if (
+          activeSelection.end <= clip.startTime
+          || activeSelection.start >= clip.startTime + clip.duration
+        ) continue;
+        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+        if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+        clips.push({
+          clipId: clip.id,
+          sampleData: effective.channels,
+          sourceOffset: effective.sourceOffset,
+        });
+      }
+      if (clips.length > 0) targets.push({ trackId: track.id, clips });
+    }
+    return targets;
+  }
+
+  async function handleEchoPreview(delaySeconds: number, decay: number): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const plan = getEchoPlan(delaySeconds, decay, project.sampleRate);
+    const targets = await collectEchoTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const state = createEchoState(plan);
+    const segments: { channels: Float32Array[]; start: number; end: number }[] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getEchoClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const processed = processEchoSelection(
+        input.sampleData,
+        range.startSample,
+        range.endSample,
+        state,
+      );
+      segments.push({
+        channels: processed.map((channel) => channel.slice(range.startSample, range.endSample)),
+        start: range.startSample,
+        end: range.endSample,
+      });
+    }
+    const totalLength = segments.reduce((total, segment) => total + segment.end - segment.start, 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.channels.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment.end - segment.start;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment.channels[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyEcho(delaySeconds: number, decay: number) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingEcho(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEchoTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.echoSelectionOnTracks(
+        project.id,
+        activeSelection,
+        delaySeconds,
+        decay,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用回声后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Echo 回声',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setEchoDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用回声`);
+    } catch (error) {
+      logger.error('应用回声失败:', String(error));
+      toast.error(error instanceof Error ? `应用回声失败：${error.message}` : '应用回声失败');
+    } finally {
+      setIsApplyingEcho(false);
+    }
+  }
+
   // Effect operations
   async function addEffect(trackId: string, type: EffectType) {
     if (!project) return;
@@ -2821,6 +2942,14 @@ export default function AudioEditorPage() {
                 淡出
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuLabel>延迟 / 混响</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => setEchoDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Echo 回声…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => setRepeatDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
@@ -3464,6 +3593,17 @@ export default function AudioEditorPage() {
           sampleRate={project.sampleRate}
           isRepeating={isRepeating}
           onRepeat={handleRepeatSelection}
+        />
+
+        <EchoEffectDialog
+          open={echoDialogOpen}
+          onOpenChange={setEchoDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingEcho}
+          onPreview={handleEchoPreview}
+          onApply={handleApplyEcho}
         />
 
         {/* Export Dialog */}

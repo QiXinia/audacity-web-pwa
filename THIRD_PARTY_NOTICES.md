@@ -41,6 +41,17 @@ The implementation follows the current plug-in's tempo, beats-per-bar, alternate
 
 The implementation uses the official 10/16/22/23 harmonic table at 0.1 times the selected frequency, centre-frequency modulation of filtered white noise, half-duration and full-duration percussion envelopes, and final peak normalization. The percentage control is converted from 0–100 to a 0–1 mix according to the visible control contract rather than reproducing the upstream text's direct `1-NOISE` expression literally. The wavetable oscillator, white-noise generator and `lowpass6` primitive are structural browser-side adaptations; no Audacity executable or upstream golden audio was used, and the tests do not claim bit-exact waveform equivalence. Browser rendering rejects allocations above 50,000,000 samples.
 
+## Audacity Echo algorithm
+
+- Upstream: https://github.com/audacity/audacity
+- Effect and control source: https://github.com/audacity/audacity/blob/master/au3/src/effects/Echo.cpp
+- DSP source: https://github.com/audacity/audacity/blob/master/au3/libraries/au3-builtin-effects/EchoBase.cpp
+- Manual: https://manual.audacityteam.org/man/echo.html
+- Purpose: GPL-licensed parameter and per-channel recursive delay-line reference for `src/lib/echoEffect.ts` and its editor integration
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows the upstream defaults of 1 second delay and 0.5 decay, integer `sampleRate * delay` history length, independent per-channel history, and the recurrence `output = input + history[position] * decay` with the output written back to the same history position. It preserves the manual contract that Echo does not extend audio beyond the selection and renders time-stretched clips before applying the effect. Browser rendering uses bounded history allocations of 5,000,000 samples per track and 10,000,000 samples across a multi-track operation instead of the upstream floating-point maximum delay. Automated tests use independently calculated recurrences and boundary cases; no Audacity executable or upstream golden audio is bundled, and no claim of runtime golden-file equivalence is made.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

@@ -17,12 +17,30 @@ import { wasmProcessor } from '@/wasm/processor';
 import { silenceClipSelection } from '@/lib/silenceGenerator';
 import { replaceTrackSelectionWithClip, type GeneratorSelection } from '@/lib/generatorEditing';
 import { insertRepeatedSelectionClips, validateRepeatCount } from '@/lib/repeatEditing';
+import {
+  createEchoState,
+  getEchoClipSampleRange,
+  getEchoPlan,
+  MAX_ECHO_TOTAL_HISTORY_SAMPLES,
+  processEchoSelection,
+} from '@/lib/echoEffect';
 
 type EffectType = IEffect['type'];
 
 export interface GeneratedTrackAudio {
   trackId: string;
   sampleData: Float32Array[];
+}
+
+export interface EchoClipAudio {
+  clipId: string;
+  sampleData: Float32Array[];
+  sourceOffset: number;
+}
+
+export interface EchoTrackAudio {
+  trackId: string;
+  clips: EchoClipAudio[];
 }
 
 interface PendingAudioBuffer {
@@ -603,6 +621,103 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return insertedClips;
+  }
+
+  /** Apply Audacity Echo to every supplied track with one atomic project commit. */
+  async echoSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    delaySeconds: number,
+    decay: number,
+    targets: readonly EchoTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('回声选区必须是有限的正时长区间');
+    }
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('选区内没有可处理的音频');
+    const plan = getEchoPlan(delaySeconds, decay, project.sampleRate);
+    const totalHistorySamples = targets.reduce((total, target) => {
+      const channels = target.clips.reduce((maximum, clip) => Math.max(maximum, clip.sampleData.length), 0);
+      return total + channels * plan.delaySamples;
+    }, 0);
+    if (totalHistorySamples > MAX_ECHO_TOTAL_HISTORY_SAMPLES) {
+      throw new RangeError('多轨回声历史超过浏览器总内存上限，请缩短延迟或减少轨道');
+    }
+
+    const seenTracks = new Set<string>();
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    let changedClips = 0;
+
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (ordered.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+
+      const state = createEchoState(plan);
+      const replacements = new Map<string, IClip>();
+      for (const { input, clip } of ordered) {
+        const channelLength = input.sampleData[0]?.length ?? 0;
+        const range = getEchoClipSampleRange(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!range) throw new Error(`片段“${clip.name ?? clip.id}”不在回声选区内`);
+        const processed = processEchoSelection(
+          input.sampleData,
+          range.startSample,
+          range.endSample,
+          state,
+        );
+        const bufferId = generateId();
+        pendingBuffers.push({
+          id: bufferId,
+          sampleRate: project.sampleRate,
+          sampleData: processed,
+        });
+        replacements.set(clip.id, {
+          ...clip,
+          audioBufferId: bufferId,
+          offset: input.sourceOffset,
+          originalDuration: processed[0].length / project.sampleRate,
+          stretchRatio: 1,
+        });
+        changedClips += 1;
+      }
+      nextTracks.set(track.id, {
+        ...track,
+        clips: track.clips.map((clip) => replacements.get(clip.id) ?? clip),
+      });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
   }
 
   /** Silence matching samples on every selected track with one project commit. */

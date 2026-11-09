@@ -1,4 +1,5 @@
 export type AudioContextFactory = () => AudioContext;
+export type PreviewChannels = Float32Array | readonly Float32Array[];
 
 function createBrowserAudioContext(): AudioContext {
   const Context = window.AudioContext
@@ -12,7 +13,7 @@ function closeContext(context: AudioContext): void {
 }
 
 /**
- * Owns the complete lifetime of one mono generator preview. Starting another
+ * Owns the complete lifetime of one mono or stereo preview. Starting another
  * preview or closing the dialog always tears down the previous audio graph.
  */
 export class GeneratorPreviewPlayer {
@@ -22,11 +23,22 @@ export class GeneratorPreviewPlayer {
   constructor(private readonly contextFactory: AudioContextFactory = createBrowserAudioContext) {}
 
   async play(samples: Float32Array, sampleRate: number, onEnded: () => void): Promise<void> {
+    return this.playChannels([samples], sampleRate, onEnded);
+  }
+
+  async playChannels(channels: readonly Float32Array[], sampleRate: number, onEnded: () => void): Promise<void> {
     this.stop();
     if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
       throw new RangeError('试听采样率必须大于零');
     }
-    if (samples.length === 0) throw new RangeError('没有可试听的音频采样');
+    const length = channels[0]?.length ?? 0;
+    if (
+      channels.length === 0
+      || length === 0
+      || channels.some((channel) => channel.length !== length)
+    ) {
+      throw new RangeError('试听音频必须包含等长的非空声道');
+    }
 
     const context = this.contextFactory();
     this.context = context;
@@ -39,8 +51,8 @@ export class GeneratorPreviewPlayer {
         return;
       }
 
-      const buffer = context.createBuffer(1, samples.length, sampleRate);
-      buffer.getChannelData(0).set(samples);
+      const buffer = context.createBuffer(channels.length, length, sampleRate);
+      channels.forEach((channel, index) => buffer.getChannelData(index).set(channel));
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(context.destination);
