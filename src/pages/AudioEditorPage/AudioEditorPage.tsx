@@ -144,6 +144,11 @@ import {
   type BassTrebleSettings,
 } from '@/lib/bassTrebleEffect';
 import {
+  createNormalizePlan,
+  processNormalizeChannels,
+  type NormalizeSettings,
+} from '@/lib/normalizeEffect';
+import {
   loadGeneratorDuration,
   saveGeneratorDuration,
   type GeneratorKind,
@@ -201,6 +206,7 @@ import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import EchoEffectDialog from './sections/EchoEffectDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
+import { NormalizeDialog } from './sections/NormalizeDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -282,6 +288,8 @@ export default function AudioEditorPage() {
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
   const [bassTrebleDialogOpen, setBassTrebleDialogOpen] = useState(false);
   const [isApplyingBassTreble, setIsApplyingBassTreble] = useState(false);
+  const [normalizeDialogOpen, setNormalizeDialogOpen] = useState(false);
+  const [isApplyingNormalize, setIsApplyingNormalize] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -2505,70 +2513,94 @@ export default function AudioEditorPage() {
     toast.success(type === 'in' ? '已应用淡入' : '已应用淡出');
   }
 
-  async function applyNormalize() {
-    if (!project || !selection) return;
-    const before = JSON.parse(JSON.stringify(project)) as IProject;
+  async function handleNormalizePreview(settings: NormalizeSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const segmentsByChannel = target.clips[0]?.sampleData.map(() => [] as Float32Array[]) ?? [];
+    const prepared: { selectedChannels: Float32Array[] }[] = [];
 
-    const updated = JSON.parse(JSON.stringify(project)) as IProject;
-
-    for (const track of updated.tracks) {
-      for (const clip of track.clips) {
-        const clipEnd = clip.startTime + clip.duration;
-        if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
-
-        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
-        if (!effective) continue;
-        const clipChannels = effective.channels;
-
-        const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
-
-        const overlapStart = Math.max(clip.startTime, selection.start);
-        const overlapEnd = Math.min(clipEnd, selection.end);
-
-        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
-        const startSample = Math.floor(offsetInClip * project.sampleRate);
-        const endSample = Math.floor(
-          (offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate,
-        );
-
-        // Find one shared peak and gain so the stereo balance is preserved.
-        let peak = 0;
-        for (const dataCopy of dataCopies) {
-          for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
-            const abs = Math.abs(dataCopy[i]);
-            if (abs > peak) peak = abs;
-          }
-        }
-
-        if (peak > 0) {
-          const targetLin = dbToGain(-1);
-          const gain = targetLin / peak;
-          for (const dataCopy of dataCopies) {
-            for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
-              dataCopy[i] *= gain;
-            }
-          }
-        }
-
-        const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
-
-        clip.audioBufferId = newBufferId;
-        clip.offset = effective.sourceOffset;
-        clip.originalDuration = dataCopies[0].length / project.sampleRate;
-        clip.stretchRatio = 1;
-      }
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selectedChannels = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      selectedChannels.forEach((channel, channelIndex) => {
+        if (!segmentsByChannel[channelIndex]) throw new Error('试听轨道的选区声道数不一致');
+        segmentsByChannel[channelIndex].push(channel);
+      });
+      prepared.push({ selectedChannels });
     }
 
-    setProject(updated);
-    projectService.saveProject(updated);
-    historyManager.push({
-      id: generateId(),
-      label: '标准化',
-      execute: () => updated,
-      undo: () => before,
-    }, before);
-    updateHistoryState();
-    toast.success('已标准化到 -1 dB');
+    // Preview uses exactly the same whole-track analysis as the eventual commit.
+    const plan = createNormalizePlan(segmentsByChannel, settings);
+    const segments = prepared.map(({ selectedChannels }) => (
+      processNormalizeChannels(selectedChannels, settings, plan)
+    ));
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyNormalize(settings: NormalizeSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingNormalize(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.normalizeSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用标准化后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: '标准化',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setNormalizeDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用标准化`);
+    } catch (error) {
+      logger.error('应用标准化失败:', String(error));
+      toast.error(error instanceof Error ? `应用标准化失败：${error.message}` : '应用标准化失败');
+    } finally {
+      setIsApplyingNormalize(false);
+    }
   }
 
   async function applyReverse() {
@@ -3156,8 +3188,11 @@ export default function AudioEditorPage() {
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>处理</DropdownMenuLabel>
-              <DropdownMenuItem onClick={applyNormalize} disabled={!selection}>
-                标准化到 -1dB
+              <DropdownMenuItem
+                onClick={() => setNormalizeDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                标准化…
               </DropdownMenuItem>
               <DropdownMenuItem onClick={applyReverse} disabled={!selection}>
                 反转
@@ -3814,6 +3849,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingBassTreble}
           onPreview={handleBassTreblePreview}
           onApply={handleApplyBassTreble}
+        />
+
+        <NormalizeDialog
+          open={normalizeDialogOpen}
+          onOpenChange={setNormalizeDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingNormalize}
+          onPreview={handleNormalizePreview}
+          onApply={handleApplyNormalize}
         />
 
         <WahWahEffectDialog
