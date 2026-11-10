@@ -40,6 +40,7 @@
 | Wah Wah 效果 | ✅ | 对照 Audacity 4.0.2 正式版 `WahWahBase` 实现六参数 LFO 带通递归；每 30 采样更新系数，递归历史保存未加输出增益的值，声道独立处理；支持中文对话框、真实选区试听、多轨原子提交、单次撤销、选区外 PCM 与拉伸元数据保持 |
 | Normalize 标准化效果 | ✅ | 整轨选区统一分析直流与峰值，支持去直流、峰值 −145…0 dB、立体声联动／独立增益、真实试听、多轨原子提交和单次撤销 |
 | Amplify 放大效果 | ✅ | 全选区共享峰值分析，Amplification／New Peak 双向 dB 联动，禁止削波时阻止超 0 dB 应用，允许削波后保留真实浮点输出；支持真实试听、多轨原子提交和单次撤销 |
+| Change Tempo 效果 | ✅ | 对照官方 `ChangeTempoBase` 实现 −95%…3000% 保持音高时间拉伸，百分比／BPM／目标时长双向联动及正百分比滑块 warp；支持真实 WSOLA 试听、多轨多片段原子提交、选区间隙缩放、后续片段平移和单次撤销 |
 | 撤销 / 重做 | ✅ | 命令历史栈 + IndexedDB 持久化，刷新可恢复 |
 | 实时播放 | ✅ | Web Audio API 驱动，带播放头与游标 |
 | 窄屏与触屏编辑 | ✅ | 工具栏横向滚动；片段移动、修剪与拉伸使用 Pointer Capture 且禁用手势抢占 |
@@ -219,6 +220,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/wahWahEffect.test.ts` | Audacity 4.0.2 独立数值基线、30 采样系数更新、增益顺序、声道独立性、非法输入及 Float32 边界 | 24 |
 | `src/lib/normalizeEffect.test.ts` | 整轨直流／峰值分析、立体声联动、精确参考样本、参数边界与 Float32 输出 | 7 |
 | `src/lib/amplifyEffect.test.ts` | 官方倍率范围、双向 dB 换算、跨声道峰值、削波许可、输入不可变与非法样本 | 5 |
+| `src/lib/changeTempoEffect.test.ts` | 官方参数范围、BPM／时长换算、滑块 warp、短输入精确 PCM、多声道共享位置与输入不可变 | 10 |
 | `src/lib/noiseGenerator.test.ts` | 白／粉红／布朗噪声确定性、独立参考序列、采样率缩放与参数边界 | 5 |
 | `src/lib/silenceGenerator.test.ts` | 零振幅采样、选区写时复制、修剪偏移、拉伸映射与无效输入 | 5 |
 | `src/lib/generatorDuration.test.ts` | 六种生成器独立默认时长、上次时长持久化、损坏存储与精确显示 | 12 |
@@ -243,6 +245,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/services/projectService.wahWah.test.ts` | Wah Wah 双轨选区映射、源偏移、边界与拉伸元数据保持、单次提交及失败回滚 | 5 |
 | `src/services/projectService.normalize.test.ts` | Normalize 整轨分析、精确 PCM、多轨单次提交、立体声与失败回滚 | 7 |
 | `src/services/projectService.amplify.test.ts` | Amplify 共享峰值、选区写时复制、跨片段元数据、削波许可与失败回滚 | 7 |
+| `src/services/projectService.changeTempo.test.ts` | Change Tempo 多轨一次提交、部分选区 PCM、间隙缩放、已有拉伸归一化、0% 跳过与失败回滚 | 6 |
 | `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴 | 12 |
 | `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 9 |
 | `src/engine/recordingWorklet.test.ts` | 真实 Worklet 任意尾块 flush、停止确认与去重 | 2 |
@@ -262,6 +265,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/sections/WahWahEffectDialog.test.tsx` | Wah Wah 六参数默认值、完整提交、真实父级 PCM 试听、范围校验、busy 与关闭清理 | 6 |
 | `src/pages/AudioEditorPage/sections/NormalizeDialog.test.tsx` | Normalize 官方默认值、参数联动、真实试听、静音、无选区与关闭清理 | 6 |
 | `src/pages/AudioEditorPage/sections/AmplifyDialog.test.tsx` | Amplify 峰值分析、双向 dB 联动、削波许可、工程采样率试听与异常状态 | 6 |
+| `src/pages/AudioEditorPage/sections/ChangeTempoDialog.test.tsx` | Change Tempo 百分比／BPM／时长联动、滑块 warp、范围校验、0% 与无选区禁用 | 5 |
 | `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史与选区量化 | 23 |
 | `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
 | `src/pages/AudioEditorPage/AudioEditorPage.repeat.test.tsx` | 效果菜单、双轨 Repeat、单次历史命令与撤销 | 1 |
@@ -270,8 +274,9 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.wahWah.test.tsx` | Wah Wah 菜单、双声道真实试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.normalize.test.tsx` | Normalize 菜单、精确试听、多轨单次历史、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.amplify.test.tsx` | Amplify 菜单、共享峰值试听、多轨单次历史、失败无写入与无选区禁用 | 3 |
+| `src/pages/AudioEditorPage/AudioEditorPage.changeTempo.test.tsx` | Change Tempo 真实菜单、BPM 初值、精确试听、多轨单次历史、可见选区、真实撤销及失败无历史 | 3 |
 
-当前完整前端回归共 **69 个测试文件、628 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
+当前完整前端回归共 **73 个测试文件、652 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
 
 运行测试：
 

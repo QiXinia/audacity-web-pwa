@@ -155,6 +155,10 @@ import {
   type NormalizeSettings,
 } from '@/lib/normalizeEffect';
 import {
+  processChangeTempoChannels,
+  type ChangeTempoSettings,
+} from '@/lib/changeTempoEffect';
+import {
   loadGeneratorDuration,
   saveGeneratorDuration,
   type GeneratorKind,
@@ -214,6 +218,7 @@ import EchoEffectDialog from './sections/EchoEffectDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
+import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -299,6 +304,8 @@ export default function AudioEditorPage() {
   const [isApplyingAmplify, setIsApplyingAmplify] = useState(false);
   const [normalizeDialogOpen, setNormalizeDialogOpen] = useState(false);
   const [isApplyingNormalize, setIsApplyingNormalize] = useState(false);
+  const [changeTempoDialogOpen, setChangeTempoDialogOpen] = useState(false);
+  const [isApplyingChangeTempo, setIsApplyingChangeTempo] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -1535,6 +1542,7 @@ export default function AudioEditorPage() {
       track.clips.map((clip) => clipKeyId({ trackId: track.id, clipId: clip.id })),
     ));
     setProject(restoredProject);
+    setSelection(restoredProject.selection);
     setSelectedClips((current) => current.filter((key) => validClipKeys.has(clipKeyId(key))));
     setSelectedTrackId((current) => current && validTrackIds.has(current)
       ? current
@@ -2725,6 +2733,85 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleChangeTempoPreview(settings: ChangeTempoSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const segments: Float32Array[][] = [];
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selected = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      segments.push(processChangeTempoChannels(selected, settings, project.sampleRate));
+    }
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyChangeTempo(settings: ChangeTempoSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingChangeTempo) return;
+    setIsApplyingChangeTempo(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.changeTempoSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Change Tempo 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Change Tempo',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setChangeTempoDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Change Tempo（保持音高）`);
+    } catch (error) {
+      logger.error('应用 Change Tempo 失败:', String(error));
+      toast.error(error instanceof Error ? `Change Tempo 失败：${error.message}` : 'Change Tempo 失败');
+    } finally {
+      setIsApplyingChangeTempo(false);
+    }
+  }
+
   async function applyReverse() {
     if (!project || !selection) return;
     const before = JSON.parse(JSON.stringify(project)) as IProject;
@@ -3308,6 +3395,14 @@ export default function AudioEditorPage() {
                 Echo 回声…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuLabel>时间 / 音高</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => setChangeTempoDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Change Tempo（保持音高）…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => setRepeatDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
@@ -3568,8 +3663,8 @@ export default function AudioEditorPage() {
             {/* Empty state */}
             {project.tracks.every((t) => t.clips.length === 0) && (
               <div
-                className="flex items-center justify-center py-20"
-                style={{ width: totalWidth, minHeight: 300 }}
+                className="sticky left-0 flex items-center justify-center py-20"
+                style={{ width: '100%', minHeight: 300 }}
               >
                 <Empty className="w-auto border-0">
                   <EmptyContent>
@@ -4002,6 +4097,19 @@ export default function AudioEditorPage() {
           isApplying={isApplyingNormalize}
           onPreview={handleNormalizePreview}
           onApply={handleApplyNormalize}
+        />
+
+        <ChangeTempoDialog
+          open={changeTempoDialogOpen}
+          onOpenChange={setChangeTempoDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          initialBpm={project.tempo}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingChangeTempo}
+          onPreview={handleChangeTempoPreview}
+          onApply={handleApplyChangeTempo}
         />
 
         <WahWahEffectDialog
