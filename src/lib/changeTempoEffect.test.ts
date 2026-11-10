@@ -83,4 +83,26 @@ describe('Change Tempo WSOLA transaction kernel', () => {
       10,
     )).toThrow('非有限');
   });
+
+  it('handles 20,000,000 output samples without length or numeric overflow', {
+    timeout: 120_000,
+  }, () => {
+    const source = new Float32Array(1_000_000);
+    for (let index = 0; index < source.length; index += 1) {
+      source[index] = Math.sin(index * 0.01);
+    }
+    const sourceFirst = source[0];
+    const sourceLast = source[source.length - 1];
+
+    const output = processChangeTempoChannels([source], { percentChange: -95 }, 48_000);
+
+    expect(output).toHaveLength(1);
+    expect(output[0]).toHaveLength(20_000_000);
+    expect(output[0]).not.toBe(source);
+    for (const index of [0, 1, 1023, 1_000_000, 10_000_000, 19_999_998, 19_999_999]) {
+      expect(Number.isFinite(output[0][index])).toBe(true);
+    }
+    expect(source[0]).toBe(sourceFirst);
+    expect(source[source.length - 1]).toBe(sourceLast);
+  });
 });
