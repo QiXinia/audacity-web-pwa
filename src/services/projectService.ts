@@ -72,6 +72,13 @@ import {
   validateChangePitchSettings,
   type ChangePitchSettings,
 } from '@/lib/changePitchEffect';
+import {
+  MAX_PAULSTRETCH_TOTAL_OUTPUT_SAMPLES,
+  paulstretchOutputLength,
+  processPaulstretchChannels,
+  validatePaulstretchSettings,
+  type PaulstretchSettings,
+} from '@/lib/paulstretchEffect';
 
 type EffectType = IEffect['type'];
 
@@ -105,6 +112,8 @@ export type ChangeSpeedClipAudio = EchoClipAudio;
 export type ChangeSpeedTrackAudio = EchoTrackAudio;
 export type ChangePitchClipAudio = EchoClipAudio;
 export type ChangePitchTrackAudio = EchoTrackAudio;
+export type PaulstretchClipAudio = EchoClipAudio;
+export type PaulstretchTrackAudio = EchoTrackAudio;
 
 interface PendingAudioBuffer {
   id: string;
@@ -945,6 +954,187 @@ class ProjectService {
                 ...replacement,
                 startTime: clip.startTime > selection.start
                   ? selection.start + (clip.startTime - selection.start) / ratio
+                  : clip.startTime,
+              };
+            }
+            if (clip.startTime >= selection.end) {
+              return { ...clip, startTime: clip.startTime + timelineDelta };
+            }
+            return clip;
+          }).sort((left, right) => left.startTime - right.startTime),
+        };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return rendered.length;
+  }
+
+  /**
+   * Apply deterministic Paulstretch and warp the selected timeline atomically.
+   * The spectral algorithm is shared with Preview; all targets and output sizes
+   * are validated before any IndexedDB write, with rollback on later failures.
+   */
+  async paulstretchSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: PaulstretchSettings,
+    targets: readonly PaulstretchTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('Paulstretch 选区必须是有限的正时长区间');
+    }
+    validatePaulstretchSettings(settings);
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('选区内没有可处理的音频');
+
+    const seenTracks = new Set<string>();
+    const prepared: {
+      track: ITrack;
+      input: PaulstretchClipAudio;
+      clip: IClip;
+      range: { startSample: number; endSample: number };
+      selectedChannels: Float32Array[];
+    }[] = [];
+
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (ordered.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+      const selectedClipIds = track.clips.filter((clip) => (
+        clip.startTime + clip.duration > selection.start && clip.startTime < selection.end
+      )).map((clip) => clip.id);
+      if (
+        selectedClipIds.length !== ordered.length
+        || selectedClipIds.some((clipId) => !seenClips.has(clipId))
+      ) {
+        throw new Error(`轨道 ${target.trackId} 的选区片段覆盖不完整`);
+      }
+      const channelCount = ordered[0]?.input.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error(`轨道 ${target.trackId} 没有音频声道`);
+
+      for (const { input, clip } of ordered) {
+        if (input.sampleData.length !== channelCount) {
+          throw new Error(`轨道 ${target.trackId} 的选区声道数不一致`);
+        }
+        const channelLength = input.sampleData[0]?.length ?? 0;
+        const range = getClipSampleRange(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!range) throw new Error(`片段“${clip.name ?? clip.id}”不在 Paulstretch 选区内`);
+        const selectedChannels = input.sampleData.map((channel) => (
+          channel.slice(range.startSample, range.endSample)
+        ));
+        prepared.push({ track, input, clip, range, selectedChannels });
+      }
+    }
+
+    let totalOutputSamples = 0;
+    const rendered = prepared.map((item) => {
+      const channelLength = item.input.sampleData[0]?.length ?? 0;
+      const selectedLength = item.range.endSample - item.range.startSample;
+      const stretchedLength = paulstretchOutputLength(
+        selectedLength,
+        settings,
+        project.sampleRate,
+      );
+      const fullLength = channelLength - selectedLength + stretchedLength;
+      totalOutputSamples += fullLength * item.input.sampleData.length;
+      if (
+        !Number.isSafeInteger(fullLength)
+        || fullLength < 1
+        || !Number.isSafeInteger(totalOutputSamples)
+        || totalOutputSamples > MAX_PAULSTRETCH_TOTAL_OUTPUT_SAMPLES
+      ) {
+        throw new RangeError('Paulstretch 输出超过浏览器内存上限，请缩短选区或减少轨道');
+      }
+
+      const stretched = processPaulstretchChannels(
+        item.selectedChannels,
+        settings,
+        project.sampleRate,
+      );
+      const processed = item.input.sampleData.map((channel, channelIndex) => {
+        const next = new Float32Array(fullLength);
+        next.set(channel.slice(0, item.range.startSample), 0);
+        next.set(stretched[channelIndex], item.range.startSample);
+        next.set(
+          channel.slice(item.range.endSample),
+          item.range.startSample + stretched[channelIndex].length,
+        );
+        return next;
+      });
+      return { ...item, bufferId: generateId(), processed, selectedLength, stretchedLength };
+    });
+
+    const replacements = new Map<string, Map<string, IClip>>();
+    const pendingBuffers: PendingAudioBuffer[] = rendered.map((item) => {
+      const duration = item.clip.duration
+        + (item.stretchedLength - item.selectedLength) / project.sampleRate;
+      if (!Number.isFinite(duration) || duration <= 0) {
+        throw new RangeError(`片段“${item.clip.name ?? item.clip.id}”的 Paulstretch 输出时长无效`);
+      }
+      const trackReplacements = replacements.get(item.track.id) ?? new Map<string, IClip>();
+      trackReplacements.set(item.clip.id, {
+        ...item.clip,
+        audioBufferId: item.bufferId,
+        offset: item.input.sourceOffset,
+        duration,
+        originalDuration: item.processed[0].length / project.sampleRate,
+        stretchRatio: 1,
+        fadeIn: Math.min(item.clip.fadeIn, duration),
+        fadeOut: Math.min(item.clip.fadeOut, duration),
+      });
+      replacements.set(item.track.id, trackReplacements);
+      return {
+        id: item.bufferId,
+        sampleRate: project.sampleRate,
+        sampleData: item.processed,
+      };
+    });
+
+    const oldSelectionDuration = selection.end - selection.start;
+    const newSelectionDuration = oldSelectionDuration * settings.stretchFactor;
+    if (!Number.isFinite(newSelectionDuration) || newSelectionDuration <= 0) {
+      throw new RangeError('Paulstretch 选区输出时长无效');
+    }
+    const timelineDelta = newSelectionDuration - oldSelectionDuration;
+    const updatedProject: IProject = {
+      ...project,
+      selection: { start: selection.start, end: selection.start + newSelectionDuration },
+      tracks: project.tracks.map((track) => {
+        const trackReplacements = replacements.get(track.id);
+        if (!trackReplacements) return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => {
+            const replacement = trackReplacements.get(clip.id);
+            if (replacement) {
+              return {
+                ...replacement,
+                startTime: clip.startTime > selection.start
+                  ? selection.start + (clip.startTime - selection.start) * settings.stretchFactor
                   : clip.startTime,
               };
             }
