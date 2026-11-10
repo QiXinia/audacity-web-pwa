@@ -29,6 +29,13 @@ import {
   type BassTrebleSettings,
 } from '@/lib/bassTrebleEffect';
 import {
+  isAmplifyAllowed,
+  measureAmplifyPeak,
+  processAmplifyChannels,
+  validateAmplifySettings,
+  type AmplifySettings,
+} from '@/lib/amplifyEffect';
+import {
   createNormalizePlan,
   isNormalizeBypassed,
   processNormalizeChannels,
@@ -66,6 +73,8 @@ export type WahWahClipAudio = EchoClipAudio;
 export type WahWahTrackAudio = EchoTrackAudio;
 export type BassTrebleClipAudio = EchoClipAudio;
 export type BassTrebleTrackAudio = EchoTrackAudio;
+export type AmplifyClipAudio = EchoClipAudio;
+export type AmplifyTrackAudio = EchoTrackAudio;
 export type NormalizeClipAudio = EchoClipAudio;
 export type NormalizeTrackAudio = EchoTrackAudio;
 
@@ -917,6 +926,116 @@ class ProjectService {
     const updatedProject: IProject = {
       ...project,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
+  }
+
+  /** Apply Audacity Amplify with one shared peak and ratio across all targets. */
+  async amplifySelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: AmplifySettings,
+    targets: readonly AmplifyTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('放大选区必须是有限的正时长区间');
+    }
+    validateAmplifySettings(settings);
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('选区内没有可处理的音频');
+
+    const seenTracks = new Set<string>();
+    const selectedSegments: Float32Array[] = [];
+    const prepared: {
+      track: ITrack;
+      input: AmplifyClipAudio;
+      clip: IClip;
+      range: { startSample: number; endSample: number };
+      selectedChannels: Float32Array[];
+    }[] = [];
+
+    // Validate and analyse the complete selection before processing any clip.
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (ordered.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+      const channelCount = ordered[0]?.input.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error(`轨道 ${target.trackId} 没有音频声道`);
+
+      for (const { input, clip } of ordered) {
+        if (input.sampleData.length !== channelCount) {
+          throw new Error(`轨道 ${target.trackId} 的选区声道数不一致`);
+        }
+        const channelLength = input.sampleData[0]?.length ?? 0;
+        const range = getClipSampleRange(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!range) throw new Error(`片段“${clip.name ?? clip.id}”不在放大选区内`);
+        const selectedChannels = input.sampleData.map((channel) => (
+          channel.slice(range.startSample, range.endSample)
+        ));
+        selectedSegments.push(...selectedChannels);
+        prepared.push({ track, input, clip, range, selectedChannels });
+      }
+    }
+
+    const inputPeak = measureAmplifyPeak(selectedSegments);
+    if (inputPeak <= 0) throw new Error('所选音频为静音，没有可放大的内容');
+    if (!isAmplifyAllowed(settings, inputPeak)) {
+      throw new Error('不允许削波时，放大后的峰值不能超过 0 dB');
+    }
+
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, Map<string, IClip>>();
+    let changedClips = 0;
+    for (const { track, input, clip, range, selectedChannels } of prepared) {
+      const amplified = processAmplifyChannels(selectedChannels, settings);
+      const processed = input.sampleData.map((channel, channelIndex) => {
+        const next = new Float32Array(channel);
+        next.set(amplified[channelIndex], range.startSample);
+        return next;
+      });
+      const bufferId = generateId();
+      pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData: processed });
+      const trackReplacements = replacements.get(track.id) ?? new Map<string, IClip>();
+      trackReplacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+      replacements.set(track.id, trackReplacements);
+      changedClips += 1;
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => {
+        const trackReplacements = replacements.get(track.id);
+        if (!trackReplacements) return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => trackReplacements.get(clip.id) ?? clip),
+        };
+      }),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return changedClips;

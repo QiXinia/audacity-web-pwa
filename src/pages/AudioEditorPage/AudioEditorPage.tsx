@@ -144,6 +144,12 @@ import {
   type BassTrebleSettings,
 } from '@/lib/bassTrebleEffect';
 import {
+  isAmplifyAllowed,
+  measureAmplifyPeak,
+  processAmplifyChannels,
+  type AmplifySettings,
+} from '@/lib/amplifyEffect';
+import {
   createNormalizePlan,
   processNormalizeChannels,
   type NormalizeSettings,
@@ -206,6 +212,7 @@ import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import EchoEffectDialog from './sections/EchoEffectDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
+import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
@@ -288,6 +295,8 @@ export default function AudioEditorPage() {
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
   const [bassTrebleDialogOpen, setBassTrebleDialogOpen] = useState(false);
   const [isApplyingBassTreble, setIsApplyingBassTreble] = useState(false);
+  const [amplifyDialogOpen, setAmplifyDialogOpen] = useState(false);
+  const [isApplyingAmplify, setIsApplyingAmplify] = useState(false);
   const [normalizeDialogOpen, setNormalizeDialogOpen] = useState(false);
   const [isApplyingNormalize, setIsApplyingNormalize] = useState(false);
   const quantizedGeneratorSelection = project
@@ -2513,6 +2522,119 @@ export default function AudioEditorPage() {
     toast.success(type === 'in' ? '已应用淡入' : '已应用淡出');
   }
 
+  function prepareAmplifyTargets(
+    activeSelection: { start: number; end: number },
+    targets: EchoTrackAudio[],
+  ) {
+    if (!project) throw new Error('工程不可用');
+    return targets.map((target) => {
+      const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+      if (!sourceTrack) throw new Error('放大轨道不可用');
+      const clips = target.clips.map((input) => {
+        const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error('放大片段不可用');
+        const range = getClipSampleRange(
+          clip,
+          activeSelection,
+          input.sourceOffset,
+          project.sampleRate,
+          input.sampleData[0]?.length ?? 0,
+        );
+        if (!range) throw new Error('放大片段不在选区内');
+        return {
+          selectedChannels: input.sampleData.map((channel) => (
+            channel.slice(range.startSample, range.endSample)
+          )),
+        };
+      });
+      return { target, clips };
+    });
+  }
+
+  async function handleAnalyzeAmplify(): Promise<number> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要放大的音频');
+    const targets = await collectEffectTargets(quantizedGeneratorSelection);
+    if (targets.length === 0) throw new Error('选区内没有可放大的音频');
+    const prepared = prepareAmplifyTargets(quantizedGeneratorSelection, targets);
+    const segments = prepared.flatMap((target) => (
+      target.clips.flatMap((clip) => clip.selectedChannels)
+    ));
+    const peak = measureAmplifyPeak(segments);
+    if (peak <= 0) throw new Error('所选音频为静音，没有可放大的内容');
+    return peak;
+  }
+
+  async function handleAmplifyPreview(settings: AmplifySettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const prepared = prepareAmplifyTargets(activeSelection, targets);
+    const allSegments = prepared.flatMap((target) => (
+      target.clips.flatMap((clip) => clip.selectedChannels)
+    ));
+    const inputPeak = measureAmplifyPeak(allSegments);
+    if (inputPeak <= 0) throw new Error('所选音频为静音，没有可放大的内容');
+    if (!isAmplifyAllowed(settings, inputPeak)) {
+      throw new Error('不允许削波时，放大后的峰值不能超过 0 dB');
+    }
+    const target = prepared[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const segments = target.clips.map(({ selectedChannels }) => (
+      processAmplifyChannels(selectedChannels, settings)
+    ));
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyAmplify(settings: AmplifySettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingAmplify(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.amplifySelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用放大后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: '放大',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setAmplifyDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用放大`);
+    } catch (error) {
+      logger.error('应用放大失败:', String(error));
+      toast.error(error instanceof Error ? `应用放大失败：${error.message}` : '应用放大失败');
+    } finally {
+      setIsApplyingAmplify(false);
+    }
+  }
+
   async function handleNormalizePreview(settings: NormalizeSettings): Promise<Float32Array[]> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -3143,6 +3265,12 @@ export default function AudioEditorPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuLabel>增益 / 音量</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => setAmplifyDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                放大…
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => applyGainToSelection(3)} disabled={!selection}>
                 增益 +3 dB
               </DropdownMenuItem>
@@ -3849,6 +3977,19 @@ export default function AudioEditorPage() {
           isApplying={isApplyingBassTreble}
           onPreview={handleBassTreblePreview}
           onApply={handleApplyBassTreble}
+        />
+
+        <AmplifyDialog
+          open={amplifyDialogOpen}
+          onOpenChange={setAmplifyDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingAmplify}
+          onAnalyze={handleAnalyzeAmplify}
+          onPreview={handleAmplifyPreview}
+          onApply={handleApplyAmplify}
         />
 
         <NormalizeDialog
