@@ -51,16 +51,60 @@ export function boundClipStretchDelta(
   return clamp(requestedDelta, lower, upper);
 }
 
+export type ClipSelectionMode = 'replace' | 'range' | 'toggle';
+
+function findClipLocation(tracks: IProject['tracks'], key: ClipKey) {
+  const trackIndex = tracks.findIndex((track) => track.id === key.trackId);
+  if (trackIndex < 0) return null;
+  const clip = tracks[trackIndex].clips.find((item) => item.id === key.clipId);
+  return clip ? { trackIndex, clip } : null;
+}
+
+/**
+ * Audacity selection semantics: replace on plain activation, Shift selects the
+ * time/track rectangle from the anchor, and Ctrl/Cmd toggles individual clips.
+ */
 export function updateClipSelection(
-  current: ClipKey[],
+  current: readonly ClipKey[],
   key: ClipKey,
-  additive: boolean,
+  mode: ClipSelectionMode = 'replace',
+  tracks: IProject['tracks'] = [],
+  anchor: ClipKey | null = null,
 ): ClipKey[] {
-  if (!additive) return [key];
-  const id = clipKeyId(key);
-  return current.some((item) => clipKeyId(item) === id)
-    ? current.filter((item) => clipKeyId(item) !== id)
-    : [...current, key];
+  if (mode === 'replace') return [key];
+  if (mode === 'toggle') {
+    const id = clipKeyId(key);
+    return current.some((item) => clipKeyId(item) === id)
+      ? current.filter((item) => clipKeyId(item) !== id)
+      : [...current, key];
+  }
+
+  const target = findClipLocation(tracks, key);
+  if (!target) return [...current];
+  const rangeAnchor = [anchor, ...current]
+    .map((candidate) => candidate ? findClipLocation(tracks, candidate) : null)
+    .find((candidate) => candidate !== null);
+  if (!rangeAnchor) return [key];
+
+  const firstTrackIndex = Math.min(rangeAnchor.trackIndex, target.trackIndex);
+  const lastTrackIndex = Math.max(rangeAnchor.trackIndex, target.trackIndex);
+  const rangeStart = Math.min(rangeAnchor.clip.startTime, target.clip.startTime);
+  const rangeEnd = Math.max(
+    rangeAnchor.clip.startTime + rangeAnchor.clip.duration,
+    target.clip.startTime + target.clip.duration,
+  );
+  const selected: ClipKey[] = [];
+  for (let trackIndex = firstTrackIndex; trackIndex <= lastTrackIndex; trackIndex += 1) {
+    const track = tracks[trackIndex];
+    const orderedClips = [...track.clips].sort((left, right) =>
+      left.startTime - right.startTime || left.id.localeCompare(right.id),
+    );
+    for (const clip of orderedClips) {
+      if (clip.startTime < rangeStart || clip.startTime + clip.duration > rangeEnd) continue;
+      selected.push({ trackId: track.id, clipId: clip.id });
+    }
+  }
+  return selected.length > 0 ? selected : [key];
 }
 
 function selectedClipSet(keys: ClipKey[]): Set<string> {

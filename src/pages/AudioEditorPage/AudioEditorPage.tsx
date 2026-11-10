@@ -175,6 +175,7 @@ import {
   trimClipSelection,
   updateClipSelection,
   type ClipKey,
+  type ClipSelectionMode,
 } from '@/lib/clipEditing';
 import {
   collectClipSnapPoints,
@@ -261,6 +262,7 @@ export default function AudioEditorPage() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedClips, setSelectedClips] = useState<ClipKey[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const clipSelectionAnchorRef = useRef<ClipKey | null>(null);
   const [workspaceStore, setWorkspaceStore] = useState(loadWorkspaceStore);
   const initialWorkspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
     ?? workspaceStore.presets[0];
@@ -319,6 +321,13 @@ export default function AudioEditorPage() {
   const recordingSampleRateRef = useRef(44100);
   const workspaceHydratedRef = useRef(false);
   const workspaceStorageWarningShownRef = useRef(false);
+  useEffect(() => {
+    if (selectedClips.length === 0) {
+      clipSelectionAnchorRef.current = null;
+    } else if (clipSelectionAnchorRef.current === null) {
+      clipSelectionAnchorRef.current = selectedClips[0];
+    }
+  }, [selectedClips]);
   const workspaceLayout = useMemo<WorkspaceLayout>(() => ({
     showTrackPanel,
     showMixer,
@@ -734,9 +743,28 @@ export default function AudioEditorPage() {
   }
 
   // Clip operations
-  function selectClip(trackId: string, clipId: string, additive = false) {
+  function selectClip(trackId: string, clipId: string, mode: ClipSelectionMode = 'replace') {
+    const key = { trackId, clipId };
     setSelectedTrackId(trackId);
-    setSelectedClips((current) => updateClipSelection(current, { trackId, clipId }, additive));
+    setSelectedClips((current) => {
+      const alreadySelected = current.some((candidate) => clipKeyId(candidate) === clipKeyId(key));
+      const hadRangeAnchor = [clipSelectionAnchorRef.current, ...current].some((candidate) =>
+        candidate !== null && (project?.tracks ?? []).some((track) =>
+          track.id === candidate.trackId && track.clips.some((clip) => clip.id === candidate.clipId),
+        ),
+      );
+      const next = updateClipSelection(
+        current,
+        key,
+        mode,
+        project?.tracks ?? [],
+        clipSelectionAnchorRef.current,
+      );
+      if (mode === 'replace' || (mode === 'toggle' && !alreadySelected) || (mode === 'range' && !hadRangeAnchor)) {
+        clipSelectionAnchorRef.current = key;
+      }
+      return next;
+    });
   }
 
   function keysForClip(trackId: string, clipId: string): ClipKey[] {
@@ -3711,7 +3739,7 @@ export default function AudioEditorPage() {
                 verticalZoom={verticalZoom}
                 isSelected={selectedTrackId === track.id}
                 selectedClips={selectedClips}
-                onSelectClip={(clipId, additive) => selectClip(track.id, clipId, additive)}
+                onSelectClip={(clipId, mode) => selectClip(track.id, clipId, mode)}
                 onTrimClip={(clipId, edge, delta, bypassSnap) => handleClipEdgeTrim(track.id, clipId, edge, delta, bypassSnap)}
                 onStretchClip={(clipId, edge, delta, bypassSnap) => handleClipStretch(track.id, clipId, edge, delta, bypassSnap)}
                 onMoveClip={(clipId, delta, bypassSnap) => handleClipMove(track.id, clipId, delta, bypassSnap)}
@@ -4522,7 +4550,7 @@ function TrackTimeline({
   verticalZoom: number;
   isSelected: boolean;
   selectedClips: ClipKey[];
-  onSelectClip: (clipId: string, additive: boolean) => void;
+  onSelectClip: (clipId: string, mode: ClipSelectionMode) => void;
   onTrimClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number, bypassSnap?: boolean) => void;
   onStretchClip: (clipId: string, edge: 'left' | 'right', deltaSeconds: number, bypassSnap?: boolean) => void;
   onMoveClip: (clipId: string, deltaSeconds: number, bypassSnap?: boolean) => void;
@@ -4592,13 +4620,14 @@ function TrackTimeline({
           verticalZoom={verticalZoom}
           viewMode={viewMode}
           isSelected={selectedClips.some((key) => key.trackId === track.id && key.clipId === clip.id)}
+          hasMultipleSelections={selectedClips.length > 1}
           trackColor={track.color}
           onTrim={(edge, delta, bypassSnap) => onTrimClip(clip.id, edge, delta, bypassSnap)}
           onStretch={(edge, delta, bypassSnap) => onStretchClip(clip.id, edge, delta, bypassSnap)}
           onMove={(delta, bypassSnap) => onMoveClip(clip.id, delta, bypassSnap)}
           onResolveDelta={(operation, delta, bypassSnap) => onResolveClipDelta(clip.id, operation, delta, bypassSnap)}
           onReset={() => onResetClip(clip.id)}
-          onSelect={(additive) => onSelectClip(clip.id, additive)}
+          onSelect={(mode) => onSelectClip(clip.id, mode)}
         />
       ))}
     </div>
@@ -4616,6 +4645,7 @@ function ClipItem({
   verticalZoom,
   viewMode,
   isSelected,
+  hasMultipleSelections,
   trackColor,
   onTrim,
   onStretch,
@@ -4633,13 +4663,14 @@ function ClipItem({
   verticalZoom: number;
   viewMode: ViewMode;
   isSelected: boolean;
+  hasMultipleSelections: boolean;
   trackColor: string;
   onTrim: (edge: 'left' | 'right', deltaSeconds: number, bypassSnap?: boolean) => void;
   onStretch: (edge: 'left' | 'right', deltaSeconds: number, bypassSnap?: boolean) => void;
   onMove: (deltaSeconds: number, bypassSnap?: boolean) => void;
   onResolveDelta: (operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onReset: () => void;
-  onSelect: (additive: boolean) => void;
+  onSelect: (mode: ClipSelectionMode) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [audioData, setAudioData] = useState<Float32Array | null>(null);
@@ -4793,6 +4824,15 @@ function ClipItem({
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
+  function handleSelection(e: React.MouseEvent<HTMLDivElement> | React.KeyboardEvent<HTMLDivElement>) {
+    const mode: ClipSelectionMode = e.ctrlKey || e.metaKey
+      ? 'toggle'
+      : e.shiftKey ? 'range' : 'replace';
+    // Audacity keeps a multi-clip selection intact when one selected clip is activated.
+    if (mode === 'replace' && isSelected && hasMultipleSelections) return;
+    onSelect(mode);
+  }
+
   return (
     <div
       className="au-clip group absolute top-1 bottom-1 overflow-hidden rounded-[3px] border text-[#20252a]"
@@ -4812,7 +4852,7 @@ function ClipItem({
           suppressClickRef.current = false;
           return;
         }
-        onSelect(e.shiftKey);
+        handleSelection(e);
       }}
       onKeyDown={(e) => {
         if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
@@ -4824,7 +4864,7 @@ function ClipItem({
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           e.stopPropagation();
-          onSelect(e.shiftKey);
+          handleSelection(e);
         }
       }}
     >

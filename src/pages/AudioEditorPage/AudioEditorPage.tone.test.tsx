@@ -160,7 +160,7 @@ function renderTwoTrackProject(project: IProject) {
 
 async function selectBothClips() {
   fireEvent.click(await screen.findByRole('button', { name: /^Clip A/ }));
-  fireEvent.click(await screen.findByRole('button', { name: /^Clip B/ }), { shiftKey: true });
+  fireEvent.click(await screen.findByRole('button', { name: /^Clip B/ }), { ctrlKey: true });
 }
 
 beforeEach(() => {
@@ -248,7 +248,7 @@ describe('AudioEditorPage tone command integration', () => {
     await waitFor(() => expect(projectService.getProject).toHaveBeenCalledWith(project.id));
   });
 
-  it('generates into every Shift-selected clip track with one history command', async () => {
+  it('generates into every multi-selected clip track with one history command', async () => {
     const project = createTwoTrackProject();
     renderTwoTrackProject(project);
     await selectBothClips();
@@ -731,5 +731,93 @@ describe('AudioEditorPage Chirp command integration', () => {
     expect(targets.map(({ sampleData }) => sampleData[0].length)).toEqual([10, 10]);
     expect(targets[0].sampleData[0]).toEqual(targets[1].sampleData[0]);
     expect(historyManager.push).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AudioEditorPage official clip selection integration', () => {
+  it('uses Shift range and Ctrl toggle, then deletes and undoes one cross-track group command', async () => {
+    const project = createTwoTrackProject();
+    project.tracks[0].clips.push({
+      ...project.tracks[0].clips[0],
+      id: 'clip-later-a', audioBufferId: 'buffer-later-a', startTime: 0.02, name: 'Later A',
+    });
+    project.tracks[1].clips.push({
+      ...project.tracks[1].clips[0],
+      id: 'clip-later-b', audioBufferId: 'buffer-later-b', startTime: 0.02, name: 'Later B',
+    });
+    vi.mocked(historyManager.canUndo).mockReturnValue(true);
+    renderTwoTrackProject(project);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Clip A/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Clip B/ }), { shiftKey: true });
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /^Later A/ })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: /^Later B/ })).toHaveAttribute('aria-pressed', 'false');
+
+    const laterB = screen.getByRole('button', { name: /^Later B/ });
+    fireEvent.click(laterB, { ctrlKey: true });
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(3);
+    fireEvent.click(laterB);
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(3);
+
+    fireEvent.click(screen.getByRole('button', { name: '删除选中片段' }));
+    await waitFor(() => expect(historyManager.push).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('删除 3 个片段');
+    await waitFor(() => expect(document.querySelectorAll('.au-clip')).toHaveLength(1));
+    expect(screen.getByRole('button', { name: /^Later A/ })).toBeInTheDocument();
+
+    vi.mocked(historyManager.undo).mockReturnValue({
+      project,
+      command: { label: '删除 3 个片段' },
+    } as never);
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }));
+    await waitFor(() => expect(document.querySelectorAll('.au-clip')).toHaveLength(4));
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(0);
+  });
+
+  it('moves the range anchor on Ctrl add and preserves it on Ctrl remove', async () => {
+    const project = createTwoTrackProject();
+    project.tracks[0].clips.push({
+      ...project.tracks[0].clips[0],
+      id: 'clip-later-a', audioBufferId: 'buffer-later-a', startTime: 0.02, name: 'Later A',
+    });
+    project.tracks[1].clips.push({
+      ...project.tracks[1].clips[0],
+      id: 'clip-later-b', audioBufferId: 'buffer-later-b', startTime: 0.02, name: 'Later B',
+    });
+    renderTwoTrackProject(project);
+
+    const clipA = await screen.findByRole('button', { name: /^Clip A/ });
+    const clipB = screen.getByRole('button', { name: /^Clip B/ });
+    const laterA = screen.getByRole('button', { name: /^Later A/ });
+    fireEvent.click(clipA);
+    fireEvent.click(clipB, { ctrlKey: true });
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(2);
+
+    fireEvent.click(laterA, { shiftKey: true });
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(4);
+
+    fireEvent.click(clipB, { ctrlKey: true });
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(3);
+    fireEvent.click(clipA, { shiftKey: true });
+    expect(clipA).toHaveAttribute('aria-pressed', 'true');
+    expect(clipB).toHaveAttribute('aria-pressed', 'true');
+    expect(laterA).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: /^Later B/ })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('selects only the target for an initial Shift activation before establishing an anchor', async () => {
+    const project = createTwoTrackProject();
+    renderTwoTrackProject(project);
+    const clipA = await screen.findByRole('button', { name: /^Clip A/ });
+    const clipB = screen.getByRole('button', { name: /^Clip B/ });
+
+    fireEvent.click(clipA, { shiftKey: true });
+    expect(clipA).toHaveAttribute('aria-pressed', 'true');
+    expect(clipB).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(clipB, { shiftKey: true });
+    expect(clipA).toHaveAttribute('aria-pressed', 'true');
+    expect(clipB).toHaveAttribute('aria-pressed', 'true');
   });
 });

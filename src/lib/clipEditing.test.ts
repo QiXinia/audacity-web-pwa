@@ -59,13 +59,32 @@ const b = { trackId: 'track-a', clipId: 'b' } satisfies ClipKey;
 const c = { trackId: 'track-b', clipId: 'c' } satisfies ClipKey;
 
 describe('clip selection editing', () => {
-  it('toggles non-contiguous Shift selections without reordering clips', () => {
-    let selected = updateClipSelection([], a, false);
-    selected = updateClipSelection(selected, c, true);
-    selected = updateClipSelection(selected, b, true);
+  it('toggles non-contiguous Ctrl selections without reordering clips', () => {
+    let selected = updateClipSelection([], a, 'replace');
+    selected = updateClipSelection(selected, c, 'toggle');
+    selected = updateClipSelection(selected, b, 'toggle');
     expect(selected).toEqual([a, c, b]);
-    expect(updateClipSelection(selected, c, true)).toEqual([a, b]);
-    expect(updateClipSelection(selected, b, false)).toEqual([b]);
+    expect(updateClipSelection(selected, c, 'toggle')).toEqual([a, b]);
+    expect(updateClipSelection(selected, b, 'replace')).toEqual([b]);
+  });
+
+  it('selects the official Shift time/track rectangle in either direction', () => {
+    const source = project();
+    const middle = {
+      id: 'track-middle', name: 'Middle', type: 'audio' as const, gain: 0, pan: 0,
+      muted: false, solo: false, armed: false, color: '', effects: [],
+      clips: [
+        clip('middle-late', { startTime: 7, duration: 1, originalDuration: 1 }),
+        clip('middle-inside', { startTime: 2, duration: 1, originalDuration: 1 }),
+        clip('middle-partial', { startTime: 4.5, duration: 1, originalDuration: 1 }),
+      ],
+    };
+    source.tracks.splice(1, 0, middle);
+    const inside = { trackId: 'track-middle', clipId: 'middle-inside' } satisfies ClipKey;
+
+    expect(updateClipSelection([a], c, 'range', source.tracks, a)).toEqual([a, inside, c]);
+    expect(updateClipSelection([c], a, 'range', source.tracks, c)).toEqual([a, inside, c]);
+    expect(updateClipSelection([], c, 'range', source.tracks, null)).toEqual([c]);
   });
 
   it('clamps a group left trim by the shortest duration and source start', () => {
