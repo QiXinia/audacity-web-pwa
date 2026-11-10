@@ -29,6 +29,12 @@ import {
   type BassTrebleSettings,
 } from '@/lib/bassTrebleEffect';
 import {
+  createReverbState,
+  processReverbSelection,
+  validateReverbSettings,
+  type ReverbSettings,
+} from '@/lib/reverbEffect';
+import {
   isAmplifyAllowed,
   measureAmplifyPeak,
   processAmplifyChannels,
@@ -102,6 +108,8 @@ export type WahWahClipAudio = EchoClipAudio;
 export type WahWahTrackAudio = EchoTrackAudio;
 export type BassTrebleClipAudio = EchoClipAudio;
 export type BassTrebleTrackAudio = EchoTrackAudio;
+export type ReverbClipAudio = EchoClipAudio;
+export type ReverbTrackAudio = EchoTrackAudio;
 export type AmplifyClipAudio = EchoClipAudio;
 export type AmplifyTrackAudio = EchoTrackAudio;
 export type NormalizeClipAudio = EchoClipAudio;
@@ -1482,6 +1490,104 @@ class ProjectService {
           next.set(filtered[channelIndex], range.startSample);
           return next;
         });
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData: processed });
+        replacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+        changedClips += 1;
+      }
+      nextTracks.set(track.id, {
+        ...track,
+        clips: track.clips.map((clip) => replacements.get(clip.id) ?? clip),
+      });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
+  }
+
+  /**
+   * Apply Audacity's libSoX/Freeverb Reverb to selected clips without changing
+   * timeline geometry. One state per track preserves pre-delay and filter tails
+   * across adjacent selected clips; the shared commit rolls back every target on
+   * any processing, storage, or project-save failure.
+   */
+  async reverbSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: ReverbSettings,
+    targets: readonly ReverbTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('Reverb 选区必须是有限的正时长区间');
+    }
+    validateReverbSettings(settings);
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('选区内没有可处理的音频');
+
+    const seenTracks = new Set<string>();
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    let changedClips = 0;
+
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (ordered.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+      const selectedClipIds = track.clips.filter((clip) => (
+        clip.startTime + clip.duration > selection.start && clip.startTime < selection.end
+      )).map((clip) => clip.id);
+      if (
+        selectedClipIds.length !== ordered.length
+        || selectedClipIds.some((clipId) => !seenClips.has(clipId))
+      ) {
+        throw new Error(`轨道 ${target.trackId} 的选区片段覆盖不完整`);
+      }
+      const channelCount = ordered[0]?.input.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error(`轨道 ${target.trackId} 没有音频声道`);
+      const state = createReverbState(settings, project.sampleRate, channelCount);
+
+      const replacements = new Map<string, IClip>();
+      for (const { input, clip } of ordered) {
+        if (input.sampleData.length !== channelCount) {
+          throw new Error(`轨道 ${target.trackId} 的选区声道数不一致`);
+        }
+        const channelLength = input.sampleData[0]?.length ?? 0;
+        const range = getClipSampleRange(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!range) throw new Error(`片段“${clip.name ?? clip.id}”不在 Reverb 选区内`);
+        const processed = processReverbSelection(
+          input.sampleData,
+          range.startSample,
+          range.endSample,
+          state,
+        );
         const bufferId = generateId();
         pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData: processed });
         replacements.set(clip.id, { ...clip, audioBufferId: bufferId });
