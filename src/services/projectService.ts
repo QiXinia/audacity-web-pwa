@@ -65,6 +65,13 @@ import {
   MAX_CHANGE_SPEED_TOTAL_OUTPUT_SAMPLES,
   type ChangeSpeedSettings,
 } from '@/lib/changeSpeedEffect';
+import {
+  isChangePitchBypassed,
+  MAX_CHANGE_PITCH_TOTAL_OUTPUT_SAMPLES,
+  processChangePitchChannels,
+  validateChangePitchSettings,
+  type ChangePitchSettings,
+} from '@/lib/changePitchEffect';
 
 type EffectType = IEffect['type'];
 
@@ -96,6 +103,8 @@ export type ChangeTempoClipAudio = EchoClipAudio;
 export type ChangeTempoTrackAudio = EchoTrackAudio;
 export type ChangeSpeedClipAudio = EchoClipAudio;
 export type ChangeSpeedTrackAudio = EchoTrackAudio;
+export type ChangePitchClipAudio = EchoClipAudio;
+export type ChangePitchTrackAudio = EchoTrackAudio;
 
 interface PendingAudioBuffer {
   id: string;
@@ -1300,6 +1309,133 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return changedClips;
+  }
+
+  /**
+   * Apply Change Pitch to every selected clip without changing timeline geometry.
+   * All targets and samples are validated before staging; commitPendingAudioBuffers
+   * rolls back every buffer if any storage or project write fails.
+   */
+  async changePitchSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: ChangePitchSettings,
+    targets: readonly ChangePitchTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('变调选区必须是有限的正时长区间');
+    }
+    validateChangePitchSettings(settings);
+    if (isChangePitchBypassed(settings)) return 0;
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('选区内没有可处理的音频');
+
+    const seenTracks = new Set<string>();
+    const prepared: {
+      track: ITrack;
+      input: ChangePitchClipAudio;
+      clip: IClip;
+      range: { startSample: number; endSample: number };
+      selectedChannels: Float32Array[];
+    }[] = [];
+    let totalOutputSamples = 0;
+
+    // Complete all ownership, geometry and source validation before processing.
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const expectedClipIds = track.clips
+        .filter((clip) => (
+          selection.end > clip.startTime
+          && selection.start < clip.startTime + clip.duration
+        ))
+        .map((clip) => clip.id)
+        .sort();
+      const suppliedClipIds = target.clips.map((input) => input.clipId).sort();
+      if (
+        expectedClipIds.length !== suppliedClipIds.length
+        || expectedClipIds.some((clipId, index) => clipId !== suppliedClipIds[index])
+      ) {
+        throw new Error(`轨道 ${target.trackId} 的选区片段覆盖不完整`);
+      }
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (ordered.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+      const channelCount = ordered[0]?.input.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error(`轨道 ${target.trackId} 没有音频声道`);
+
+      for (const { input, clip } of ordered) {
+        if (input.sampleData.length !== channelCount) {
+          throw new Error(`轨道 ${target.trackId} 的选区声道数不一致`);
+        }
+        const channelLength = input.sampleData[0]?.length ?? 0;
+        const range = getClipSampleRange(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!range) throw new Error(`片段“${clip.name ?? clip.id}”不在变调选区内`);
+        const selectedChannels = input.sampleData.map((channel) => (
+          channel.slice(range.startSample, range.endSample)
+        ));
+        totalOutputSamples += channelLength * channelCount;
+        if (!Number.isSafeInteger(totalOutputSamples)
+          || totalOutputSamples > MAX_CHANGE_PITCH_TOTAL_OUTPUT_SAMPLES) {
+          throw new RangeError('Change Pitch 总输出超过浏览器内存上限');
+        }
+        prepared.push({ track, input, clip, range, selectedChannels });
+      }
+    }
+
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, Map<string, IClip>>();
+    for (const { track, input, clip, range, selectedChannels } of prepared) {
+      const shifted = processChangePitchChannels(selectedChannels, settings, project.sampleRate);
+      const processed = input.sampleData.map((channel, channelIndex) => {
+        const next = new Float32Array(channel);
+        next.set(shifted[channelIndex], range.startSample);
+        return next;
+      });
+      const bufferId = generateId();
+      pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData: processed });
+      const trackReplacements = replacements.get(track.id) ?? new Map<string, IClip>();
+      // Preserve selection, clip boundaries, trim, gain, fades and stretch metadata.
+      trackReplacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+      replacements.set(track.id, trackReplacements);
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      selection,
+      tracks: project.tracks.map((track) => {
+        const trackReplacements = replacements.get(track.id);
+        if (!trackReplacements) return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => trackReplacements.get(clip.id) ?? clip),
+        };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return prepared.length;
   }
 
   /** Apply Audacity Amplify with one shared peak and ratio across all targets. */

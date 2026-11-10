@@ -163,6 +163,10 @@ import {
   type ChangeSpeedSettings,
 } from '@/lib/changeSpeedEffect';
 import {
+  processChangePitchChannels,
+  type ChangePitchSettings,
+} from '@/lib/changePitchEffect';
+import {
   loadGeneratorDuration,
   saveGeneratorDuration,
   type GeneratorKind,
@@ -225,6 +229,7 @@ import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
 import { ChangeSpeedDialog } from './sections/ChangeSpeedDialog';
+import { ChangePitchDialog } from './sections/ChangePitchDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -315,6 +320,8 @@ export default function AudioEditorPage() {
   const [isApplyingChangeTempo, setIsApplyingChangeTempo] = useState(false);
   const [changeSpeedDialogOpen, setChangeSpeedDialogOpen] = useState(false);
   const [isApplyingChangeSpeed, setIsApplyingChangeSpeed] = useState(false);
+  const [changePitchDialogOpen, setChangePitchDialogOpen] = useState(false);
+  const [isApplyingChangePitch, setIsApplyingChangePitch] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -2847,6 +2854,85 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleChangePitchPreview(settings: ChangePitchSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const segments: Float32Array[][] = [];
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selected = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      segments.push(processChangePitchChannels(selected, settings, project.sampleRate));
+    }
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyChangePitch(settings: ChangePitchSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingChangePitch) return;
+    setIsApplyingChangePitch(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.changePitchSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Change Pitch 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Change Pitch',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setChangePitchDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Change Pitch（保持时长）`);
+    } catch (error) {
+      logger.error('应用 Change Pitch 失败:', String(error));
+      toast.error(error instanceof Error ? `Change Pitch 失败：${error.message}` : 'Change Pitch 失败');
+    } finally {
+      setIsApplyingChangePitch(false);
+    }
+  }
+
   async function handleChangeTempoPreview(settings: ChangeTempoSettings): Promise<Float32Array[]> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -3515,6 +3601,12 @@ export default function AudioEditorPage() {
                 disabled={!quantizedGeneratorSelection}
               >
                 Change Speed（速度及音高）…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setChangePitchDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Change Pitch（保持时长）…
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setChangeTempoDialogOpen(true)}
@@ -4230,6 +4322,16 @@ export default function AudioEditorPage() {
           applying={isApplyingChangeSpeed}
           onPreview={handleChangeSpeedPreview}
           onApply={handleApplyChangeSpeed}
+        />
+
+        <ChangePitchDialog
+          open={changePitchDialogOpen}
+          onOpenChange={setChangePitchDialogOpen}
+          sampleRate={project.sampleRate}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          applying={isApplyingChangePitch}
+          onPreview={handleChangePitchPreview}
+          onApply={handleApplyChangePitch}
         />
 
         <ChangeTempoDialog
