@@ -149,6 +149,11 @@ import {
   type ReverbSettings,
 } from '@/lib/reverbEffect';
 import {
+  createDistortionState,
+  processDistortionChannels,
+  type DistortionSettings,
+} from '@/lib/distortionEffect';
+import {
   isAmplifyAllowed,
   measureAmplifyPeak,
   processAmplifyChannels,
@@ -235,6 +240,7 @@ import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import EchoEffectDialog from './sections/EchoEffectDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
+import DistortionDialog from './sections/DistortionDialog';
 import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
@@ -325,6 +331,8 @@ export default function AudioEditorPage() {
   const [isApplyingBassTreble, setIsApplyingBassTreble] = useState(false);
   const [reverbDialogOpen, setReverbDialogOpen] = useState(false);
   const [isApplyingReverb, setIsApplyingReverb] = useState(false);
+  const [distortionDialogOpen, setDistortionDialogOpen] = useState(false);
+  const [isApplyingDistortion, setIsApplyingDistortion] = useState(false);
   const [amplifyDialogOpen, setAmplifyDialogOpen] = useState(false);
   const [isApplyingAmplify, setIsApplyingAmplify] = useState(false);
   const [normalizeDialogOpen, setNormalizeDialogOpen] = useState(false);
@@ -2136,6 +2144,88 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleDistortionPreview(settings: DistortionSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const channelCount = target.clips[0]?.sampleData.length ?? 0;
+    const state = createDistortionState(settings, project.sampleRate, channelCount);
+    const segments: Float32Array[][] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selectedChannels = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      segments.push(processDistortionChannels(selectedChannels, settings, project.sampleRate, state));
+    }
+
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const previewChannelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || previewChannelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: previewChannelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyDistortion(settings: DistortionSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingDistortion(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.distortionSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Distortion 后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Distortion 失真',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setDistortionDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Distortion 失真`);
+    } catch (error) {
+      logger.error('应用 Distortion 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Distortion 失败：${error.message}` : '应用 Distortion 失败');
+    } finally {
+      setIsApplyingDistortion(false);
+    }
+  }
+
   // Effect operations
   async function addEffect(trackId: string, type: EffectType) {
     if (!project) return;
@@ -3788,6 +3878,12 @@ export default function AudioEditorPage() {
               >
                 Reverb 混响…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setDistortionDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Distortion 失真（离线）…
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>时间 / 音高</DropdownMenuLabel>
               <DropdownMenuItem
@@ -4496,6 +4592,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingReverb}
           onPreview={handleReverbPreview}
           onApply={handleApplyReverb}
+        />
+
+        <DistortionDialog
+          open={distortionDialogOpen}
+          onOpenChange={setDistortionDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingDistortion}
+          onPreview={handleDistortionPreview}
+          onApply={handleApplyDistortion}
         />
 
         <AmplifyDialog
