@@ -42,6 +42,7 @@
 | Amplify 放大效果 | ✅ | 全选区共享峰值分析，Amplification／New Peak 双向 dB 联动，禁止削波时阻止超 0 dB 应用，允许削波后保留真实浮点输出；支持真实试听、多轨原子提交和单次撤销 |
 | Change Tempo 效果 | ✅ | 对照官方 `ChangeTempoBase` 实现 −95%…3000% 保持音高时间拉伸，百分比／BPM／目标时长双向联动及正百分比滑块 warp；支持真实 WSOLA 试听、多轨多片段原子提交、选区间隙缩放、后续片段平移和单次撤销 |
 | Distortion 失真效果 | ✅ | 对照 Audacity 4.0.2 `DistortionBase` 实现 11 种 2049 点查找表模式、线性插值、重复处理与每声道 DC blocking；动态中文参数界面支持真实选区试听、多轨原子提交、单次撤销、跨片段状态和拉伸元数据保持 |
+| Compressor 压缩器效果 | ✅ | 对照 Audacity 4.0.2 `SimpleCompressor` 与当前动态处理器实现共享立体声 sidechain、FastLog2、软／硬膝、动态平滑、look-ahead 及离线延迟补偿；七参数界面含实时传递曲线、选区试听、多轨原子提交和单次撤销，并经官方 C++ PCM oracle 对拍 |
 | 撤销 / 重做 | ✅ | 命令历史栈 + IndexedDB 持久化，刷新可恢复 |
 | 实时播放 | ✅ | Web Audio API 驱动，带播放头与游标 |
 | 窄屏与触屏编辑 | ✅ | 工具栏横向滚动；片段移动、修剪与拉伸使用 Pointer Capture 且禁用手势抢占 |
@@ -223,6 +224,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/amplifyEffect.test.ts` | 官方倍率范围、双向 dB 换算、跨声道峰值、削波许可、输入不可变与非法样本 | 5 |
 | `src/lib/changeTempoEffect.test.ts` | 官方参数范围、BPM／时长换算、滑块 warp、短输入精确 PCM、多声道共享位置与输入不可变 | 10 |
 | `src/lib/distortionEffect.test.ts` | 11 种官方查找表、线性插值、增益混合、重复处理、DC 状态、多声道与参数边界 | 20 |
+| `src/lib/compressorEffect.test.ts` | 官方 C++ PCM 对拍、共享 sidechain、软／硬膝、look-ahead 延迟补偿、任意分块、传递曲线、旁路及参数边界 | 18 |
 | `src/lib/noiseGenerator.test.ts` | 白／粉红／布朗噪声确定性、独立参考序列、采样率缩放与参数边界 | 5 |
 | `src/lib/silenceGenerator.test.ts` | 零振幅采样、选区写时复制、修剪偏移、拉伸映射与无效输入 | 5 |
 | `src/lib/generatorDuration.test.ts` | 六种生成器独立默认时长、上次时长持久化、损坏存储与精确显示 | 12 |
@@ -249,6 +251,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/services/projectService.amplify.test.ts` | Amplify 共享峰值、选区写时复制、跨片段元数据、削波许可与失败回滚 | 7 |
 | `src/services/projectService.changeTempo.test.ts` | Change Tempo 多轨一次提交、部分选区 PCM、间隙缩放、已有拉伸归一化、0% 跳过与失败回滚 | 6 |
 | `src/services/projectService.distortion.test.ts` | Distortion 精确 PCM、跨片段 DC 状态、多轨单次提交、拉伸元数据与失败回滚 | 6 |
+| `src/services/projectService.compressor.test.ts` | Compressor 跨片段统一延迟补偿、立体声精确 PCM、多轨单次提交、拉伸元数据、旁路与失败回滚 | 6 |
 | `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴 | 12 |
 | `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 9 |
 | `src/engine/recordingWorklet.test.ts` | 真实 Worklet 任意尾块 flush、停止确认与去重 | 2 |
@@ -270,6 +273,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/sections/AmplifyDialog.test.tsx` | Amplify 峰值分析、双向 dB 联动、削波许可、工程采样率试听与异常状态 | 6 |
 | `src/pages/AudioEditorPage/sections/ChangeTempoDialog.test.tsx` | Change Tempo 百分比／BPM／时长联动、滑块 warp、范围校验、0% 与无选区禁用 | 5 |
 | `src/pages/AudioEditorPage/sections/DistortionDialog.test.tsx` | 11 种类型、动态控件、官方范围、真实试听、重复次数与 DC blocking 状态清理 | 6 |
+| `src/pages/AudioEditorPage/sections/CompressorDialog.test.tsx` | 七参数官方默认值与范围、传递曲线、试听提交、恢复默认及非法输入 | 5 |
 | `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史与选区量化 | 23 |
 | `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
 | `src/pages/AudioEditorPage/AudioEditorPage.repeat.test.tsx` | 效果菜单、双轨 Repeat、单次历史命令与撤销 | 1 |
@@ -280,8 +284,9 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.amplify.test.tsx` | Amplify 菜单、共享峰值试听、多轨单次历史、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.changeTempo.test.tsx` | Change Tempo 真实菜单、BPM 初值、精确试听、多轨单次历史、可见选区、真实撤销及失败无历史 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.distortion.test.tsx` | Distortion 真实菜单、双声道精确试听、多轨单次历史、真实撤销、失败无写入与无选区禁用 | 3 |
+| `src/pages/AudioEditorPage/AudioEditorPage.compressor.test.tsx` | Compressor 真实菜单、跨片段立体声拼接试听、多轨单次历史、选区撤销、失败无写入与无选区禁用 | 3 |
 
-当前完整前端回归共 **93 个测试文件、793 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
+当前完整前端回归共 **97 个测试文件、825 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
 
 运行测试：
 

@@ -154,6 +154,10 @@ import {
   type DistortionSettings,
 } from '@/lib/distortionEffect';
 import {
+  processCompressorChannels,
+  type CompressorSettings,
+} from '@/lib/compressorEffect';
+import {
   isAmplifyAllowed,
   measureAmplifyPeak,
   processAmplifyChannels,
@@ -241,6 +245,7 @@ import EchoEffectDialog from './sections/EchoEffectDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
 import DistortionDialog from './sections/DistortionDialog';
+import CompressorDialog from './sections/CompressorDialog';
 import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
@@ -333,6 +338,8 @@ export default function AudioEditorPage() {
   const [isApplyingReverb, setIsApplyingReverb] = useState(false);
   const [distortionDialogOpen, setDistortionDialogOpen] = useState(false);
   const [isApplyingDistortion, setIsApplyingDistortion] = useState(false);
+  const [compressorDialogOpen, setCompressorDialogOpen] = useState(false);
+  const [isApplyingCompressor, setIsApplyingCompressor] = useState(false);
   const [amplifyDialogOpen, setAmplifyDialogOpen] = useState(false);
   const [isApplyingAmplify, setIsApplyingAmplify] = useState(false);
   const [normalizeDialogOpen, setNormalizeDialogOpen] = useState(false);
@@ -2226,6 +2233,95 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleCompressorPreview(settings: CompressorSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const channelCount = target.clips[0]?.sampleData.length ?? 0;
+    const segments: { channels: Float32Array[]; start: number; end: number }[] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      if (input.sampleData.length !== channelCount) throw new Error('试听片段的声道数不一致');
+      segments.push({
+        channels: input.sampleData.map((channel) => channel.slice(range.startSample, range.endSample)),
+        start: range.startSample,
+        end: range.endSample,
+      });
+    }
+
+    const totalLength = segments.reduce((total, segment) => total + segment.end - segment.start, 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const selected = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment.end - segment.start;
+      selected.forEach((channel, channelIndex) => channel.set(segment.channels[channelIndex], destinationOffset));
+      destinationOffset += length;
+    }
+    // Preview uses the same per-track concatenation and one-time latency compensation as Apply.
+    return processCompressorChannels(selected, settings, project.sampleRate);
+  }
+
+  async function handleApplyCompressor(settings: CompressorSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingCompressor) return;
+    setIsApplyingCompressor(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.compressorSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      if (changed === 0) {
+        setCompressorDialogOpen(false);
+        toast.info('Compressor 参数为直通，未修改音频');
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Compressor 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Compressor 压缩器',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setCompressorDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Compressor 压缩器`);
+    } catch (error) {
+      logger.error('应用 Compressor 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Compressor 失败：${error.message}` : '应用 Compressor 失败');
+    } finally {
+      setIsApplyingCompressor(false);
+    }
+  }
+
   // Effect operations
   async function addEffect(trackId: string, type: EffectType) {
     if (!project) return;
@@ -3865,6 +3961,14 @@ export default function AudioEditorPage() {
                 Wah Wah…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuLabel>动态</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => setCompressorDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Compressor 压缩器…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuLabel>延迟 / 混响</DropdownMenuLabel>
               <DropdownMenuItem
                 onClick={() => setEchoDialogOpen(true)}
@@ -4604,6 +4708,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingDistortion}
           onPreview={handleDistortionPreview}
           onApply={handleApplyDistortion}
+        />
+
+        <CompressorDialog
+          open={compressorDialogOpen}
+          onOpenChange={setCompressorDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingCompressor}
+          onPreview={handleCompressorPreview}
+          onApply={handleApplyCompressor}
         />
 
         <AmplifyDialog
