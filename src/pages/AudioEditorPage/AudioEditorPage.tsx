@@ -124,6 +124,10 @@ import {
   type LoudnessSettings,
 } from '@/lib/loudnessEffect';
 import {
+  processFilterCurveEqTrack,
+  type FilterCurveEqSettings,
+} from '@/lib/filterCurveEffect';
+import {
   processTruncateSilenceTracks,
   type TruncateSilenceSettings,
 } from '@/lib/truncateSilenceEffect';
@@ -274,6 +278,7 @@ import LimiterDialog, { type LimiterPreview } from './sections/LimiterDialog';
 import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
 import { LoudnessDialog } from './sections/LoudnessDialog';
+import { FilterCurveEqDialog } from './sections/FilterCurveEqDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
 import { ChangeSpeedDialog } from './sections/ChangeSpeedDialog';
 import { ChangePitchDialog } from './sections/ChangePitchDialog';
@@ -382,6 +387,8 @@ export default function AudioEditorPage() {
   const [isApplyingNormalize, setIsApplyingNormalize] = useState(false);
   const [loudnessDialogOpen, setLoudnessDialogOpen] = useState(false);
   const [isApplyingLoudness, setIsApplyingLoudness] = useState(false);
+  const [filterCurveEqDialogOpen, setFilterCurveEqDialogOpen] = useState(false);
+  const [isApplyingFilterCurveEq, setIsApplyingFilterCurveEq] = useState(false);
   const [changeTempoDialogOpen, setChangeTempoDialogOpen] = useState(false);
   const [isApplyingChangeTempo, setIsApplyingChangeTempo] = useState(false);
   const [changeSpeedDialogOpen, setChangeSpeedDialogOpen] = useState(false);
@@ -3493,6 +3500,60 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleFilterCurveEqPreview(settings: FilterCurveEqSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectFullTrackTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    // Preview and apply share curve sampling, FIR design and full-track mapping.
+    return processFilterCurveEqTrack(
+      sourceTrack, target, activeSelection, settings, project.sampleRate,
+    ).selectionChannels;
+  }
+
+  async function handleApplyFilterCurveEq(settings: FilterCurveEqSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingFilterCurveEq(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectFullTrackTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.filterCurveEqSelectionOnTracks(
+        project.id, activeSelection, settings, targets,
+      );
+      if (changed === 0) {
+        setFilterCurveEqDialogOpen(false);
+        toast.info('Filter Curve EQ 曲线为平直，未修改音频');
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Filter Curve EQ 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Filter Curve EQ 滤波曲线均衡',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setFilterCurveEqDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Filter Curve EQ`);
+    } catch (error) {
+      logger.error('应用 Filter Curve EQ 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Filter Curve EQ 失败：${error.message}` : '应用 Filter Curve EQ 失败');
+    } finally {
+      setIsApplyingFilterCurveEq(false);
+    }
+  }
+
   async function handleChangeSpeedPreview(settings: ChangeSpeedSettings): Promise<Float32Array[]> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -4390,6 +4451,12 @@ export default function AudioEditorPage() {
                 低音和高音…
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => setFilterCurveEqDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Filter Curve EQ 滤波曲线均衡…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setWahWahDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
               >
@@ -5284,6 +5351,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingLoudness}
           onPreview={handleLoudnessPreview}
           onApply={handleApplyLoudness}
+        />
+
+        <FilterCurveEqDialog
+          open={filterCurveEqDialogOpen}
+          onOpenChange={setFilterCurveEqDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingFilterCurveEq}
+          onPreview={handleFilterCurveEqPreview}
+          onApply={handleApplyFilterCurveEq}
         />
 
         <ChangeSpeedDialog

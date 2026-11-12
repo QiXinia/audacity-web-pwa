@@ -107,6 +107,17 @@ The implementation follows Audacity 4.0.2's fixed advanced settings: 2048-sample
 
 The implementation follows Audacity 4.0.2's two-stage K-weighting, double-state/float-return biquads, 400ms blocks, 100ms steps, 65,536-bin loudness histogram, absolute/relative gating and incomplete-short-selection fallback. Linked LUFS combines stereo channel power; linked RMS combines the two channels in the quadratic domain. Independently processed stereo channels use the official −3 LU rule, while true mono applies it only when dual-mono is enabled. `scripts/loudness-oracle.cpp` independently generates eight frozen cases covering LUFS/RMS, mono/stereo, linked/independent channels, short selections and 8k/44.1kHz sample rates; `npm run test:loudness:oracle` regenerates and compares the fixture, then checks every gain and PCM sample. No Audacity executable or upstream golden audio is bundled.
 
+## Audacity Filter Curve EQ algorithm
+
+- Upstream release: https://github.com/audacity/audacity/releases/tag/Audacity-4.0.2
+- Effect, parameter and view-model source: https://github.com/audacity/audacity/tree/Audacity-4.0.2/src/effects/builtin_collection/filtercurveeq
+- Equalization DSP and factory-preset source: https://github.com/audacity/audacity/tree/Audacity-4.0.2/au3/libraries/au3-builtin-effects
+- Envelope and real-FFT source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-mixer/Envelope.cpp and https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-fft/RealFFTf.cpp
+- Purpose: GPL-licensed dB-envelope, Blackman FIR, overlap-add convolution, factory-preset and dialog reference for `src/lib/filterCurveEffect.ts` and its editor integration
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows Audacity 4.0.2's 16384-point real FFT, 20 Hz lower envelope reference, sample-rate/2 upper limit, odd filter length 21–8191 (default 8191), Blackman taper, centred impulse, and `L = 16384 - (M - 1)` overlap-add processing with original-selection-length restoration. The editor exposes linear/log frequency scales, grid lines, dB zoom/reset/invert, editable points and the ten factory presets. The captured 4.0.2 envelope evaluation uses piecewise-linear dB interpolation; this repository does not claim that the retained B-spline/Cosine/Cubic enumeration is fully wired into that release's Filter Curve DSP. `scripts/filter-curve-oracle.cpp` independently uses direct symmetric DFT and direct linear convolution rather than the product FFT; `npm run test:filter-curve:oracle` regenerates six frozen cases and checks FIR coefficients and PCM within accumulated Float32 round-off. No Audacity executable or upstream golden audio is bundled.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.
