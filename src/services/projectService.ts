@@ -15,6 +15,8 @@ import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
 import { silenceClipSelection } from '@/lib/silenceGenerator';
+import { getClipStretchRatio } from '@/lib/clipEditing';
+import { createRepairRandom, interpolateRepairAudio, MAX_REPAIR_SAMPLES } from '@/lib/repairEffect';
 import {
   getClipSampleRange,
   replaceTrackSelectionWithClip,
@@ -127,6 +129,9 @@ export type BassTrebleClipAudio = EchoClipAudio;
 export type BassTrebleTrackAudio = EchoTrackAudio;
 export type ReverbClipAudio = EchoClipAudio;
 export type ReverbTrackAudio = EchoTrackAudio;
+
+export type RepairClipAudio = EchoClipAudio;
+export type RepairTrackAudio = EchoTrackAudio;
 export type DistortionClipAudio = EchoClipAudio;
 export type DistortionTrackAudio = EchoTrackAudio;
 export type CompressorClipAudio = EchoClipAudio;
@@ -1993,6 +1998,187 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return prepared.length;
+  }
+
+  /**
+   * Apply Audacity 4.0.2 Repair to each selected track. Every target supplies
+   * all clips on its track so context can cross adjacent clip boundaries.
+   * Stretched selected clips, >128-sample selections and missing context are
+   * rejected before any interpolation or IndexedDB write takes place.
+   */
+  async repairSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    targets: RepairTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start) || !Number.isFinite(selection.end)
+      || selection.start < 0 || selection.end <= selection.start
+    ) throw new RangeError('Repair 需要有效的正时长选区');
+    if (targets.length === 0) throw new Error('选区内没有可修复的音频');
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    const rate = project.sampleRate;
+    const seenTracks = new Set<string>();
+
+    type RepairAffected = {
+      clip: IClip;
+      input: RepairClipAudio;
+      clipStart: number;
+      sourceStart: number;
+      overlapStart: number;
+      overlapEnd: number;
+    };
+    const prepared: Array<{
+      track: ITrack;
+      contextStart: number;
+      firstBad: number;
+      repairLength: number;
+      contextChannels: Float32Array[];
+      affected: RepairAffected[];
+    }> = [];
+
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error('Repair 目标轨道重复');
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find(({ id }) => id === target.trackId);
+      if (!track) throw new Error('目标轨道不可用');
+      if (track.clips.length === 0) continue;
+      const inputs = new Map<string, RepairClipAudio>();
+      for (const input of target.clips) {
+        if (inputs.has(input.clipId) || !track.clips.some(({ id }) => id === input.clipId)) {
+          throw new Error('Repair 目标片段不可用');
+        }
+        inputs.set(input.clipId, input);
+      }
+      if (inputs.size !== track.clips.length || track.clips.some(({ id }) => !inputs.has(id))) {
+        throw new Error('Repair 需要完整轨道音频以读取上下文');
+      }
+
+      const selectedClips = track.clips.filter((clip) => (
+        selection.end > clip.startTime && selection.start < clip.startTime + clip.duration
+      ));
+      if (selectedClips.length === 0) throw new Error('Repair 选区内没有可处理的片段');
+      for (const clip of selectedClips) {
+        if (Math.abs(getClipStretchRatio(clip) - 1) >= 0.000001) {
+          throw new Error('Repair 不能用于包含时间拉伸或变调剪辑的选区');
+        }
+      }
+
+      const trackStart = Math.min(...track.clips.map(({ startTime }) => startTime));
+      const trackEnd = Math.max(...track.clips.map((clip) => clip.startTime + clip.duration));
+      const repairTimeStart = Math.max(trackStart, selection.start);
+      const repairTimeEnd = Math.min(trackEnd, selection.end);
+      if (repairTimeEnd <= repairTimeStart) throw new Error('Repair 选区与轨道没有有效重叠');
+      const repairStart = Math.round(repairTimeStart * rate);
+      const repairEnd = Math.round(repairTimeEnd * rate);
+      const repairLength = repairEnd - repairStart;
+      if (repairLength <= 0) throw new Error('Repair 选区内没有采样');
+      if (repairLength > MAX_REPAIR_SAMPLES) {
+        throw new RangeError(`Repair 每条轨道每次最多修复 ${MAX_REPAIR_SAMPLES} 个采样`);
+      }
+
+      const spacing = Math.max((repairTimeEnd - repairTimeStart) * 2, MAX_REPAIR_SAMPLES / rate);
+      const contextStart = Math.round(Math.max(trackStart, repairTimeStart - spacing) * rate);
+      const contextEnd = Math.round(Math.min(trackEnd, repairTimeEnd + spacing) * rate);
+      if (contextStart === repairStart && contextEnd === repairEnd) {
+        throw new Error('Repair 需要选区至少一侧有音频上下文');
+      }
+      const contextLength = contextEnd - contextStart;
+      const channelCount = inputs.get(track.clips[0].id)?.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error('Repair 音频没有可用声道');
+      for (const clip of track.clips) {
+        const input = inputs.get(clip.id)!;
+        if (input.sampleData.length !== channelCount
+          || input.sampleData.some((channel) => channel.length !== input.sampleData[0].length)) {
+          throw new Error('Repair 轨道的片段声道布局不一致');
+        }
+      }
+      const contextChannels = Array.from(
+        { length: channelCount },
+        () => new Float32Array(contextLength),
+      );
+      const affected: RepairAffected[] = [];
+
+      for (const clip of track.clips) {
+        const input = inputs.get(clip.id)!;
+        if (!Number.isFinite(input.sourceOffset) || input.sourceOffset < 0) {
+          throw new Error('Repair 片段源偏移无效');
+        }
+        const clipStart = Math.round(clip.startTime * rate);
+        const clipEnd = Math.round((clip.startTime + clip.duration) * rate);
+        const sourceStart = Math.round(input.sourceOffset * rate);
+        const copyStart = Math.max(contextStart, clipStart);
+        const copyEnd = Math.min(contextEnd, clipEnd);
+        for (let position = copyStart; position < copyEnd; position += 1) {
+          const sourceIndex = sourceStart + position - clipStart;
+          if (sourceIndex < 0 || sourceIndex >= input.sampleData[0].length) continue;
+          for (let channel = 0; channel < channelCount; channel += 1) {
+            contextChannels[channel][position - contextStart] = input.sampleData[channel][sourceIndex];
+          }
+        }
+        if (selectedClips.some(({ id }) => id === clip.id)) {
+          affected.push({
+            clip,
+            input,
+            clipStart,
+            sourceStart,
+            overlapStart: Math.max(repairStart, clipStart),
+            overlapEnd: Math.min(repairEnd, clipEnd),
+          });
+        }
+      }
+      prepared.push({
+        track,
+        contextStart,
+        firstBad: repairStart - contextStart,
+        repairLength,
+        contextChannels,
+        affected,
+      });
+    }
+
+    const random = createRepairRandom();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, Map<string, IClip>>();
+    for (const item of prepared) {
+      const repaired = item.contextChannels.map((channel) => (
+        interpolateRepairAudio(channel, item.firstBad, item.repairLength, random)
+      ));
+      for (const affected of item.affected) {
+        if (affected.overlapEnd <= affected.overlapStart) continue;
+        const processed = affected.input.sampleData.map((channel) => new Float32Array(channel));
+        for (let position = affected.overlapStart; position < affected.overlapEnd; position += 1) {
+          const sourceIndex = affected.sourceStart + position - affected.clipStart;
+          if (sourceIndex < 0 || sourceIndex >= processed[0].length) continue;
+          for (let channel = 0; channel < processed.length; channel += 1) {
+            processed[channel][sourceIndex] = repaired[channel][position - item.contextStart];
+          }
+        }
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: rate, sampleData: processed });
+        const trackReplacements = replacements.get(item.track.id) ?? new Map<string, IClip>();
+        trackReplacements.set(affected.clip.id, { ...affected.clip, audioBufferId: bufferId });
+        replacements.set(item.track.id, trackReplacements);
+      }
+    }
+    if (pendingBuffers.length === 0) throw new Error('Repair 没有可写入的选区采样');
+    const updatedProject: IProject = {
+      ...project,
+      selection,
+      tracks: project.tracks.map((track) => {
+        const trackReplacements = replacements.get(track.id);
+        if (!trackReplacements) return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => trackReplacements.get(clip.id) ?? clip),
+        };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return pendingBuffers.length;
   }
 
   /**

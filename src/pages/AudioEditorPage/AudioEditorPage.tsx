@@ -92,7 +92,7 @@ import {
 import { audioEngine, type PlaybackState, type RecordingState } from '@/engine/audioEngine';
 import { audioDb } from '@/db/audioDb';
 import { getMp3SampleRate } from '@/engine/mp3Encoder';
-import { projectService, type EchoTrackAudio } from '@/services/projectService';
+import { projectService, type EchoTrackAudio, type RepairTrackAudio } from '@/services/projectService';
 import { historyManager } from '@/services/historyService';
 import {
   parseAudioClipboard,
@@ -341,6 +341,7 @@ export default function AudioEditorPage() {
   const [isApplyingBassTreble, setIsApplyingBassTreble] = useState(false);
   const [reverbDialogOpen, setReverbDialogOpen] = useState(false);
   const [isApplyingReverb, setIsApplyingReverb] = useState(false);
+  const [isApplyingRepair, setIsApplyingRepair] = useState(false);
   const [distortionDialogOpen, setDistortionDialogOpen] = useState(false);
   const [isApplyingDistortion, setIsApplyingDistortion] = useState(false);
   const [compressorDialogOpen, setCompressorDialogOpen] = useState(false);
@@ -1819,6 +1820,29 @@ export default function AudioEditorPage() {
     return targets;
   }
 
+  async function collectRepairTargets(activeSelection: { start: number; end: number }): Promise<RepairTrackAudio[]> {
+    if (!project) return [];
+    const targets: RepairTrackAudio[] = [];
+    for (const track of project.tracks) {
+      const intersects = track.clips.some((clip) => (
+        activeSelection.end > clip.startTime && activeSelection.start < clip.startTime + clip.duration
+      ));
+      if (!intersects) continue;
+      const clips: RepairTrackAudio['clips'] = [];
+      for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+        if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+        clips.push({
+          clipId: clip.id,
+          sampleData: effective.channels,
+          sourceOffset: effective.sourceOffset,
+        });
+      }
+      targets.push({ trackId: track.id, clips });
+    }
+    return targets;
+  }
+
   async function handleEchoPreview(delaySeconds: number, decay: number): Promise<Float32Array[]> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -1905,6 +1929,41 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用回声失败：${error.message}` : '应用回声失败');
     } finally {
       setIsApplyingEcho(false);
+    }
+  }
+
+  async function handleApplyRepair() {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingRepair(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectRepairTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可修复的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.repairSelectionOnTracks(
+        project.id,
+        activeSelection,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Repair 后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Repair 修复',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      toast.success(`已对 ${changed} 个片段应用 Repair 修复`);
+    } catch (error) {
+      logger.error('应用 Repair 修复失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Repair 修复失败：${error.message}` : '应用 Repair 修复失败');
+    } finally {
+      setIsApplyingRepair(false);
     }
   }
 
@@ -4122,6 +4181,13 @@ export default function AudioEditorPage() {
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>处理</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={handleApplyRepair}
+                disabled={!quantizedGeneratorSelection || isApplyingRepair}
+                title="使用周边音频插值修复，每条轨道最多 128 个采样"
+              >
+                修复（Repair）
+              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setNormalizeDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}

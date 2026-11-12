@@ -39,6 +39,7 @@
 | 低音和高音效果 | ✅ | 对照 Audacity 4.0.2 `BassTrebleBase` 实现 250 Hz 低架与 4 kHz 高架二阶 IIR；低音／高音／输出音量均为 -30…30 dB，支持官方音量随音调联动补偿、真实选区试听、多轨原子提交、单次撤销、每声道跨片段状态及选区外 PCM／拉伸元数据保持 |
 | Wah Wah 效果 | ✅ | 对照 Audacity 4.0.2 正式版 `WahWahBase` 实现六参数 LFO 带通递归；每 30 采样更新系数，递归历史保存未加输出增益的值，声道独立处理；支持中文对话框、真实选区试听、多轨原子提交、单次撤销、选区外 PCM 与拉伸元数据保持 |
 | Normalize 标准化效果 | ✅ | 整轨选区统一分析直流与峰值，支持去直流、峰值 −145…0 dB、立体声联动／独立增益、真实试听、多轨原子提交和单次撤销 |
+| Repair 修复效果 | ✅ | 对照 Audacity 4.0.2 实现 LSAR 插值与线性／衰减回退；每轨选区最多 128 采样，支持跨片段上下文、多轨原子提交和单次撤销 |
 | Amplify 放大效果 | ✅ | 全选区共享峰值分析，Amplification／New Peak 双向 dB 联动，禁止削波时阻止超 0 dB 应用，允许削波后保留真实浮点输出；支持真实试听、多轨原子提交和单次撤销 |
 | Change Tempo 效果 | ✅ | 对照官方 `ChangeTempoBase` 实现 −95%…3000% 保持音高时间拉伸，百分比／BPM／目标时长双向联动及正百分比滑块 warp；支持真实 WSOLA 试听、多轨多片段原子提交、选区间隙缩放、后续片段平移和单次撤销 |
 | Distortion 失真效果 | ✅ | 对照 Audacity 4.0.2 `DistortionBase` 实现 11 种 2049 点查找表模式、线性插值、重复处理与每声道 DC blocking；动态中文参数界面支持真实选区试听、多轨原子提交、单次撤销、跨片段状态和拉伸元数据保持 |
@@ -224,10 +225,12 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/wahWahEffect.test.ts` | Audacity 4.0.2 独立数值基线、30 采样系数更新、增益顺序、声道独立性、非法输入及 Float32 边界 | 24 |
 | `src/lib/normalizeEffect.test.ts` | 整轨直流／峰值分析、立体声联动、精确参考样本、参数边界与 Float32 输出 | 7 |
 | `src/lib/amplifyEffect.test.ts` | 官方倍率范围、双向 dB 换算、跨声道峰值、削波许可、输入不可变与非法样本 | 5 |
-| `src/lib/changeTempoEffect.test.ts` | 官方参数范围、BPM／时长换算、滑块 warp、短输入精确 PCM、多声道共享位置与输入不可变 | 10 |
+| `src/lib/changeTempoEffect.test.ts` | 官方参数范围、BPM／时长换算、滑块 warp、短输入精确 PCM、多声道共享位置、2000 万采样压力回归与输入不可变 | 11 |
 | `src/lib/distortionEffect.test.ts` | 11 种官方查找表、线性插值、增益混合、重复处理、DC 状态、多声道与参数边界 | 20 |
 | `src/lib/compressorEffect.test.ts` | 官方 C++ PCM 对拍、共享 sidechain、软／硬膝、look-ahead 延迟补偿、任意分块、传递曲线、旁路及参数边界 | 18 |
 | `src/lib/limiterEffect.test.ts` | 官方 Limiter 默认立体声及零平滑硬膝 C++ PCM 对拍、无限压缩比映射、硬／软膝、任意分块、512 采样上限、延迟补偿、立体声联动、极端 PCM 与参数边界 | 20 |
+| `src/lib/reverbEffect.test.ts` | 官方 C++ PCM 对拍、零宽度双声道隔离、早期反射、混响尾部与参数边界 | 6 |
+| `src/lib/repairEffect.test.ts` | 官方 glibc 随机序列、C++ LSAR 立体声与左边界对拍、线性回退及非法范围 | 4 |
 | `src/lib/noiseGenerator.test.ts` | 白／粉红／布朗噪声确定性、独立参考序列、采样率缩放与参数边界 | 5 |
 | `src/lib/silenceGenerator.test.ts` | 零振幅采样、选区写时复制、修剪偏移、拉伸映射与无效输入 | 5 |
 | `src/lib/generatorDuration.test.ts` | 六种生成器独立默认时长、上次时长持久化、损坏存储与精确显示 | 12 |
@@ -256,6 +259,8 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/services/projectService.distortion.test.ts` | Distortion 精确 PCM、跨片段 DC 状态、多轨单次提交、拉伸元数据与失败回滚 | 6 |
 | `src/services/projectService.compressor.test.ts` | Compressor 跨片段统一延迟补偿、立体声精确 PCM、多轨单次提交、拉伸元数据、旁路与失败回滚 | 6 |
 | `src/services/projectService.limiter.test.ts` | Limiter 选区外 PCM 与当前选区保持、跨片段统一延迟补偿、独立轨道状态、多轨单次提交、永不旁路及失败回滚 | 6 |
+| `src/services/projectService.reverb.test.ts` | Reverb 双轨精确 PCM、跨片段历史、零宽度声道隔离、多轨单次提交与失败回滚 | 7 |
+| `src/services/projectService.repair.test.ts` | Repair 双轨双声道原子提交、跨片段上下文、精确 128 边界、超限／拉伸／无上下文拒绝及失败回滚 | 7 |
 | `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴 | 12 |
 | `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 9 |
 | `src/engine/recordingWorklet.test.ts` | 真实 Worklet 任意尾块 flush、停止确认与去重 | 2 |
@@ -279,7 +284,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/sections/DistortionDialog.test.tsx` | 11 种类型、动态控件、官方范围、真实试听、重复次数与 DC blocking 状态清理 | 6 |
 | `src/pages/AudioEditorPage/sections/CompressorDialog.test.tsx` | 七参数官方默认值与范围、传递曲线、试听提交、恢复默认及非法输入 | 5 |
 | `src/pages/AudioEditorPage/sections/LimiterDialog.test.tsx` | 五参数官方默认值与范围、2 秒动态历史、真实输入／输出试听、显示开关、恢复默认及非法输入防崩溃 | 5 |
-| `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史与选区量化 | 23 |
+| `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史、选区量化与 Shift 多选 | 26 |
 | `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
 | `src/pages/AudioEditorPage/AudioEditorPage.repeat.test.tsx` | 效果菜单、双轨 Repeat、单次历史命令与撤销 | 1 |
 | `src/pages/AudioEditorPage/AudioEditorPage.echo.test.tsx` | Echo 菜单、双声道精确试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
@@ -291,8 +296,10 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.distortion.test.tsx` | Distortion 真实菜单、双声道精确试听、多轨单次历史、真实撤销、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.compressor.test.tsx` | Compressor 真实菜单、跨片段立体声拼接试听、多轨单次历史、选区撤销、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.limiter.test.tsx` | Limiter 真实菜单、输入历史与跨片段立体声试听、多轨单次历史、选区撤销、失败无写入与无选区禁用 | 3 |
+| `src/pages/AudioEditorPage/AudioEditorPage.reverb.test.tsx` | Reverb 真实菜单、零宽度双声道试听、多轨单次历史、失败无写入与无选区禁用 | 3 |
+| `src/pages/AudioEditorPage/AudioEditorPage.repair.test.tsx` | Repair 真实菜单、完整轨道上下文、多轨单次历史、撤销快照、失败无历史与无选区禁用 | 3 |
 
-当前完整前端回归共 **101 个测试文件、860 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
+当前完整前端回归共 **104 个测试文件、874 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
 
 运行测试：
 
