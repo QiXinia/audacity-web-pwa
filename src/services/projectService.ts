@@ -47,6 +47,11 @@ import {
   type CompressorSettings,
 } from '@/lib/compressorEffect';
 import {
+  processLimiterChannels,
+  validateLimiterSettings,
+  type LimiterSettings,
+} from '@/lib/limiterEffect';
+import {
   isAmplifyAllowed,
   measureAmplifyPeak,
   processAmplifyChannels,
@@ -126,6 +131,8 @@ export type DistortionClipAudio = EchoClipAudio;
 export type DistortionTrackAudio = EchoTrackAudio;
 export type CompressorClipAudio = EchoClipAudio;
 export type CompressorTrackAudio = EchoTrackAudio;
+export type LimiterClipAudio = EchoClipAudio;
+export type LimiterTrackAudio = EchoTrackAudio;
 export type AmplifyClipAudio = EchoClipAudio;
 export type AmplifyTrackAudio = EchoTrackAudio;
 export type NormalizeClipAudio = EchoClipAudio;
@@ -1986,6 +1993,156 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return prepared.length;
+  }
+
+  /**
+   * Apply Audacity 4.0.2 Limiter to complete selected ranges. LimiterSettings
+   * always process audio (there is no neutral-parameter bypass); concatenating
+   * clips per track preserves the shared sidechain, release and look-ahead
+   * state, with one latency compensation before the single atomic commit.
+   */
+  async limiterSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: LimiterSettings,
+    targets: readonly LimiterTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('Limiter 选区必须是有限的正时长区间');
+    }
+    validateLimiterSettings(settings);
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('选区内没有可处理的音频');
+
+    const seenTracks = new Set<string>();
+    const prepared: {
+      track: ITrack;
+      ordered: {
+        input: LimiterClipAudio;
+        clip: IClip;
+        range: { startSample: number; endSample: number };
+      }[];
+      selectedChannels: Float32Array[];
+    }[] = [];
+
+    // Validate every owner, range and channel layout before processing or writes.
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const mapped = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (mapped.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+      const selectedClipIds = track.clips.filter((clip) => (
+        clip.startTime + clip.duration > selection.start && clip.startTime < selection.end
+      )).map((clip) => clip.id);
+      if (
+        selectedClipIds.length !== mapped.length
+        || selectedClipIds.some((clipId) => !seenClips.has(clipId))
+      ) {
+        throw new Error(`轨道 ${target.trackId} 的选区片段覆盖不完整`);
+      }
+
+      const channelCount = mapped[0]?.input.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error(`轨道 ${target.trackId} 没有音频声道`);
+      let totalSelectedSamples = 0;
+      const ordered = mapped.map(({ input, clip }) => {
+        if (input.sampleData.length !== channelCount) {
+          throw new Error(`轨道 ${target.trackId} 的选区声道数不一致`);
+        }
+        const channelLength = input.sampleData[0]?.length ?? 0;
+        if (input.sampleData.some((channel) => channel.length !== channelLength)) {
+          throw new Error(`片段“${clip.name ?? clip.id}”的声道长度不一致`);
+        }
+        const range = getClipSampleRange(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!range) throw new Error(`片段“${clip.name ?? clip.id}”不在 Limiter 选区内`);
+        totalSelectedSamples += range.endSample - range.startSample;
+        return { input, clip, range };
+      });
+      if (!Number.isSafeInteger(totalSelectedSamples) || totalSelectedSamples < 1) {
+        throw new RangeError(`轨道 ${target.trackId} 的 Limiter 选区采样数无效`);
+      }
+      const selectedChannels = Array.from(
+        { length: channelCount },
+        () => new Float32Array(totalSelectedSamples),
+      );
+      let cursor = 0;
+      for (const { input, range } of ordered) {
+        const length = range.endSample - range.startSample;
+        input.sampleData.forEach((channel, index) => {
+          selectedChannels[index].set(channel.subarray(range.startSample, range.endSample), cursor);
+        });
+        cursor += length;
+      }
+      prepared.push({ track, ordered, selectedChannels });
+    }
+
+    // No project write happens until every selected track has processed successfully.
+    const pendingBuffers: { id: string; sampleRate: number; sampleData: Float32Array[] }[] = [];
+    const nextTracks = new Map<string, ITrack>();
+    let changedClips = 0;
+    try {
+      for (const { track, ordered, selectedChannels } of prepared) {
+        const processed = processLimiterChannels(selectedChannels, settings, project.sampleRate);
+        const replacements = new Map<string, IClip>();
+        let cursor = 0;
+        for (const { input, clip, range } of ordered) {
+          const selectedLength = range.endSample - range.startSample;
+          const sampleData = input.sampleData.map((source, channel) => {
+            const next = new Float32Array(source);
+            next.set(processed[channel].subarray(cursor, cursor + selectedLength), range.startSample);
+            return next;
+          });
+          const bufferId = generateId();
+          pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData });
+          replacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+          changedClips += 1;
+          cursor += selectedLength;
+        }
+        nextTracks.set(track.id, {
+          ...track,
+          clips: track.clips.map((clip) => replacements.get(clip.id) ?? clip),
+        });
+      }
+    } catch (error) {
+      for (const buffer of pendingBuffers) {
+        try {
+          await audioDb.audioBuffers.delete(buffer.id);
+        } catch {
+          // No newly staged buffer is exposed through the project on failure.
+        }
+      }
+      throw error;
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      selection: { ...selection },
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
   }
 
   /** Apply Audacity Amplify with one shared peak and ratio across all targets. */

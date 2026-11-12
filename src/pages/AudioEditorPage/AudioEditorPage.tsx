@@ -158,6 +158,10 @@ import {
   type CompressorSettings,
 } from '@/lib/compressorEffect';
 import {
+  processLimiterChannels,
+  type LimiterSettings,
+} from '@/lib/limiterEffect';
+import {
   isAmplifyAllowed,
   measureAmplifyPeak,
   processAmplifyChannels,
@@ -246,6 +250,7 @@ import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
 import DistortionDialog from './sections/DistortionDialog';
 import CompressorDialog from './sections/CompressorDialog';
+import LimiterDialog, { type LimiterPreview } from './sections/LimiterDialog';
 import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
@@ -340,6 +345,8 @@ export default function AudioEditorPage() {
   const [isApplyingDistortion, setIsApplyingDistortion] = useState(false);
   const [compressorDialogOpen, setCompressorDialogOpen] = useState(false);
   const [isApplyingCompressor, setIsApplyingCompressor] = useState(false);
+  const [limiterDialogOpen, setLimiterDialogOpen] = useState(false);
+  const [isApplyingLimiter, setIsApplyingLimiter] = useState(false);
   const [amplifyDialogOpen, setAmplifyDialogOpen] = useState(false);
   const [isApplyingAmplify, setIsApplyingAmplify] = useState(false);
   const [normalizeDialogOpen, setNormalizeDialogOpen] = useState(false);
@@ -2322,6 +2329,92 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleLimiterPreview(settings: LimiterSettings): Promise<LimiterPreview> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const channelCount = target.clips[0]?.sampleData.length ?? 0;
+    const segments: { channels: Float32Array[]; start: number; end: number }[] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      if (input.sampleData.length !== channelCount) throw new Error('试听片段的声道数不一致');
+      segments.push({
+        channels: input.sampleData.map((channel) => channel.slice(range.startSample, range.endSample)),
+        start: range.startSample,
+        end: range.endSample,
+      });
+    }
+
+    const totalLength = segments.reduce((total, segment) => total + segment.end - segment.start, 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const selected = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment.end - segment.start;
+      selected.forEach((channel, channelIndex) => channel.set(segment.channels[channelIndex], destinationOffset));
+      destinationOffset += length;
+    }
+    return {
+      inputChannels: selected,
+      channels: processLimiterChannels(selected, settings, project.sampleRate),
+    };
+  }
+
+  async function handleApplyLimiter(settings: LimiterSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingLimiter) return;
+    setIsApplyingLimiter(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.limiterSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Limiter 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Limiter 限制器',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setLimiterDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Limiter 限制器`);
+    } catch (error) {
+      logger.error('应用 Limiter 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Limiter 失败：${error.message}` : '应用 Limiter 失败');
+    } finally {
+      setIsApplyingLimiter(false);
+    }
+  }
+
   // Effect operations
   async function addEffect(trackId: string, type: EffectType) {
     if (!project) return;
@@ -3968,6 +4061,12 @@ export default function AudioEditorPage() {
               >
                 Compressor 压缩器…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setLimiterDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Limiter 限制器…
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>延迟 / 混响</DropdownMenuLabel>
               <DropdownMenuItem
@@ -4720,6 +4819,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingCompressor}
           onPreview={handleCompressorPreview}
           onApply={handleApplyCompressor}
+        />
+
+        <LimiterDialog
+          open={limiterDialogOpen}
+          onOpenChange={setLimiterDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingLimiter}
+          onPreview={handleLimiterPreview}
+          onApply={handleApplyLimiter}
         />
 
         <AmplifyDialog

@@ -1,3 +1,8 @@
+export interface CompressorProcessorOptions {
+  /** Audacity's Limiter uses the same processor with an infinite ratio. */
+  allowInfiniteRatio?: boolean;
+}
+
 export interface CompressorSettings {
   thresholdDb: number;
   makeupGainDb: number;
@@ -30,11 +35,19 @@ function assertRange(value: number, minimum: number, maximum: number, label: str
   }
 }
 
-export function validateCompressorSettings(settings: CompressorSettings): void {
+export function validateCompressorSettings(
+  settings: CompressorSettings,
+  options: CompressorProcessorOptions = {},
+): void {
   assertRange(settings.thresholdDb, -60, 0, '阈值');
   assertRange(settings.makeupGainDb, -30, 30, '补偿增益');
   assertRange(settings.kneeWidthDb, 0, 30, '拐点宽度');
-  assertRange(settings.compressionRatio, 1, 100, '压缩比');
+  if (settings.compressionRatio === Infinity && options.allowInfiniteRatio) {
+    // The Limiter mapping deliberately uses an infinite ratio; ordinary
+    // Compressor inputs retain the documented finite 1…100 range.
+  } else {
+    assertRange(settings.compressionRatio, 1, 100, '压缩比');
+  }
   assertRange(settings.lookaheadMs, 0, 100, 'Lookahead');
   assertRange(settings.attackMs, 0, 200, 'Attack');
   assertRange(settings.releaseMs, 0, 1000, 'Release');
@@ -54,8 +67,12 @@ function applyCharacteristic(overshootDb: number, kneeDb: number, slope: number)
 }
 
 /** Audacity GainReductionComputer::getCharacteristicSample, including make-up gain. */
-export function evaluateCompressorTransferFunction(settings: CompressorSettings, inputDb: number): number {
-  validateCompressorSettings(settings);
+export function evaluateCompressorTransferFunction(
+  settings: CompressorSettings,
+  inputDb: number,
+  options: CompressorProcessorOptions = {},
+): number {
+  validateCompressorSettings(settings, options);
   if (!Number.isFinite(inputDb)) throw new RangeError('曲线输入电平必须是有限数值');
   const slope = Math.fround(1 / settings.compressionRatio - 1);
   const overshoot = Math.fround(inputDb - settings.thresholdDb);
@@ -108,8 +125,9 @@ export function createCompressorState(
   settings: CompressorSettings,
   sampleRate: number,
   channelCount: number,
+  options: CompressorProcessorOptions = {},
 ): CompressorState {
-  validateCompressorSettings(settings);
+  validateCompressorSettings(settings, options);
   if (!Number.isSafeInteger(sampleRate) || sampleRate <= 0) {
     throw new RangeError('采样率必须是大于零的安全整数');
   }
@@ -280,8 +298,9 @@ export function processCompressorChannels(
   channels: readonly Float32Array[],
   settings: CompressorSettings,
   sampleRate: number,
+  options: CompressorProcessorOptions = {},
 ): Float32Array[] {
-  const state = createCompressorState(settings, sampleRate, channels.length);
+  const state = createCompressorState(settings, sampleRate, channels.length, options);
   const delayed = processCompressorStream(channels, state);
   const delay = state.delayInSamples;
   if (delay === 0) return delayed;
