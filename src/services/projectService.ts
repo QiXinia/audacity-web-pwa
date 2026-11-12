@@ -25,7 +25,13 @@ import {
   type ClickRemovalSettings,
 } from '@/lib/clickRemovalEffect';
 import {
+  processTruncateSilenceTracks,
+  type TruncateSilenceSettings,
+  type TruncateSilenceTrackInput,
+} from '@/lib/truncateSilenceEffect';
+import {
   getClipSampleRange,
+  quantizeSelectionToSamples,
   replaceTrackSelectionWithClip,
   type GeneratorSelection,
 } from '@/lib/generatorEditing';
@@ -2073,6 +2079,86 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return pendingBuffers.length;
+  }
+
+  /**
+   * Apply Audacity 4.0.2 Truncate Silence with one multi-track project commit.
+   * The affected timeline range is rendered into a new clip; untouched edges
+   * remain non-destructive and all following clips ripple by the exact delta.
+   */
+  async truncateSilenceSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: TruncateSilenceSettings,
+    targets: readonly TruncateSilenceTrackInput[],
+  ): Promise<{ project: IProject; selectionEnd: number; changedTracks: number }> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('Project not found');
+    const quantized = quantizeSelectionToSamples(selection, project.sampleRate);
+    if (!quantized) throw new RangeError('Truncate Silence 需要有效的正时长选区');
+
+    // Every owner, layout, finite sample and DSP result exists before any I/O.
+    const processed = processTruncateSilenceTracks(
+      project.tracks,
+      targets,
+      quantized,
+      settings,
+      project.sampleRate,
+    );
+    const changed = processed.tracks.filter(({ changed: hasCuts }) => hasCuts);
+    if (changed.length === 0) {
+      return { project, selectionEnd: quantized.end, changedTracks: 0 };
+    }
+
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, ITrack>();
+    for (const result of changed) {
+      const track = project.tracks.find(({ id }) => id === result.trackId);
+      if (!track) throw new Error(`Track not found: ${result.trackId}`);
+      const audioBufferId = generateId();
+      const duration = result.sampleData[0].length / project.sampleRate;
+      pendingBuffers.push({
+        id: audioBufferId,
+        sampleRate: project.sampleRate,
+        sampleData: result.sampleData,
+      });
+      const generatedClip: IClip = {
+        id: generateId(),
+        audioBufferId,
+        startTime: result.editStart,
+        offset: 0,
+        duration,
+        originalDuration: duration,
+        stretchRatio: 1,
+        gain: 0,
+        fadeIn: 0,
+        fadeOut: 0,
+        name: `${track.name ?? '音轨'} · Truncate Silence`,
+      };
+      replacements.set(track.id, replaceTrackSelectionWithClip(
+        track,
+        {
+          start: result.editStart,
+          end: result.editStart + result.originalEditDuration,
+          allowDurationChange: true,
+        },
+        generatedClip,
+        generateId,
+      ));
+    }
+    const updatedProject: IProject = {
+      ...project,
+      selection: { start: quantized.start, end: processed.selectionEnd },
+      tracks: project.tracks.map((track) => replacements.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return {
+      project: updatedProject,
+      selectionEnd: processed.selectionEnd,
+      changedTracks: changed.length,
+    };
   }
 
   /**

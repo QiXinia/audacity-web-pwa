@@ -114,6 +114,10 @@ import {
   processClickRemovalTrack,
   type ClickRemovalSettings,
 } from '@/lib/clickRemovalEffect';
+import {
+  processTruncateSilenceTracks,
+  type TruncateSilenceSettings,
+} from '@/lib/truncateSilenceEffect';
 import { drawWaveform } from '@/lib/waveformDrawing';
 import {
   DEFAULT_VERTICAL_ZOOM,
@@ -254,6 +258,7 @@ import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
 import DistortionDialog from './sections/DistortionDialog';
 import ClickRemovalDialog from './sections/ClickRemovalDialog';
+import TruncateSilenceDialog from './sections/TruncateSilenceDialog';
 import CompressorDialog from './sections/CompressorDialog';
 import LimiterDialog, { type LimiterPreview } from './sections/LimiterDialog';
 import { AmplifyDialog } from './sections/AmplifyDialog';
@@ -349,6 +354,8 @@ export default function AudioEditorPage() {
   const [isApplyingRepair, setIsApplyingRepair] = useState(false);
   const [clickRemovalDialogOpen, setClickRemovalDialogOpen] = useState(false);
   const [isApplyingClickRemoval, setIsApplyingClickRemoval] = useState(false);
+  const [truncateSilenceDialogOpen, setTruncateSilenceDialogOpen] = useState(false);
+  const [isApplyingTruncateSilence, setIsApplyingTruncateSilence] = useState(false);
   const [distortionDialogOpen, setDistortionDialogOpen] = useState(false);
   const [isApplyingDistortion, setIsApplyingDistortion] = useState(false);
   const [compressorDialogOpen, setCompressorDialogOpen] = useState(false);
@@ -2033,6 +2040,68 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Click Removal 失败：${error.message}` : '应用 Click Removal 失败');
     } finally {
       setIsApplyingClickRemoval(false);
+    }
+  }
+
+  async function handleTruncateSilencePreview(settings: TruncateSilenceSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectFullTrackTargets(activeSelection);
+    if (targets.length === 0) throw new Error('选区内没有可试听的音频');
+    const processed = processTruncateSilenceTracks(
+      project.tracks,
+      targets,
+      activeSelection,
+      settings,
+      project.sampleRate,
+    );
+    const changed = processed.tracks.find(({ changed: hasCuts }) => hasCuts);
+    if (!changed) throw new Error('未检测到符合参数且可缩短的静音');
+    return changed.sampleData;
+  }
+
+  async function handleApplyTruncateSilence(settings: TruncateSilenceSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingTruncateSilence) return;
+    setIsApplyingTruncateSilence(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectFullTrackTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const result = await projectService.truncateSilenceSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      if (result.changedTracks === 0) {
+        toast.info('未检测到符合参数且可缩短的静音，未修改音频');
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Truncate Silence 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Truncate Silence 静音截断',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setTruncateSilenceDialogOpen(false);
+      toast.success(`已对 ${result.changedTracks} 条轨道应用 Truncate Silence 静音截断`);
+    } catch (error) {
+      logger.error('应用 Truncate Silence 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Truncate Silence 失败：${error.message}` : '应用 Truncate Silence 失败');
+    } finally {
+      setIsApplyingTruncateSilence(false);
     }
   }
 
@@ -4258,6 +4327,13 @@ export default function AudioEditorPage() {
                 Click Removal 咔哒声消除…
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => setTruncateSilenceDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+                title="按 Audacity 4.0.2 截断或压缩静音，并在剪切点交叉淡化"
+              >
+                Truncate Silence 静音截断…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={handleApplyRepair}
                 disabled={!quantizedGeneratorSelection || isApplyingRepair}
                 title="使用周边音频插值修复，每条轨道最多 128 个采样"
@@ -4961,6 +5037,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingClickRemoval}
           onPreview={handleClickRemovalPreview}
           onApply={handleApplyClickRemoval}
+        />
+
+        <TruncateSilenceDialog
+          open={truncateSilenceDialogOpen}
+          onOpenChange={setTruncateSilenceDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingTruncateSilence}
+          onPreview={handleTruncateSilencePreview}
+          onApply={handleApplyTruncateSilence}
         />
 
         <CompressorDialog
