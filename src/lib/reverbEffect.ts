@@ -217,8 +217,9 @@ export function createReverbState(
 
 /**
  * Audacity 4 ReverbEffect::InstanceProcess and Reverb_libSoX.h. Each input
- * channel owns an independent reverb core; stereo outputs average the two wet
- * cores. Pre-delay and all filter histories persist across selected clips.
+ * channel owns an independent reverb core. Positive stereo widths average the
+ * two wet cores; zero width follows the official independent mono path for
+ * each channel. Pre-delay and all filter histories persist across selected clips.
  * Source: https://github.com/audacity/audacity/tree/master/src/effects/builtin_collection/reverb
  */
 export function processReverbSelection(
@@ -255,9 +256,9 @@ export function processReverbSelection(
       wet.push(processCore(state.cores[channel], input));
     }
     for (let channel = 0; channel < state.channelCount; channel += 1) {
-      const wetSample = state.channelCount === 1
-        ? wet[0][0]
-        : 0.5 * (wet[0][channel] + wet[1][channel]);
+      const wetSample = state.channelCount === 2 && state.settings.stereoWidth > 0
+        ? 0.5 * (wet[0][channel] + wet[1][channel])
+        : wet[channel][0];
       const value = Math.fround(dryMultiplier * channels[channel][index] + wetSample);
       if (!Number.isFinite(value)) throw new RangeError(`Reverb 在第 ${index} 个采样产生非有限输出`);
       output[channel][index] = value;

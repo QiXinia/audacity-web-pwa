@@ -146,6 +146,26 @@ describe('ProjectService Reverb transactions', () => {
     expect(audioEngine.cacheBuffer).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps zero-width stereo selection channels independent through the atomic service', async () => {
+    const project = makeProject();
+    project.tracks = [track('track-a', [clip('a')])];
+    setCurrentProject(project);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const left = Float32Array.from([0.75, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const right = Float32Array.from([-0.25, 0, 0, 0, 0, 0, 0, 0, 0.5, 0]);
+    const zeroWidth = { ...settings, stereoWidth: 0, wetOnly: true };
+    await projectService.reverbSelectionOnTracks(
+      project.id, { start: 0, end: 0.01 }, zeroWidth,
+      [{ trackId: 'track-a', clips: [{ clipId: 'a', sourceOffset: 0, sampleData: [left, right] }] }],
+    );
+
+    const record = writes()[0];
+    expect(pcm(record, 0)).toEqual(processReverbChannels([left], zeroWidth, project.sampleRate)[0]);
+    expect(pcm(record, 1)).toEqual(processReverbChannels([right], zeroWidth, project.sampleRate)[0]);
+    expect(pcm(record, 0)).not.toEqual(pcm(record, 1));
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves pre-delay and reverb history across selected clips and stretch metadata', async () => {
     const project = makeProject();
     project.tracks = [track('track-a', [

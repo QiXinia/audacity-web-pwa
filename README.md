@@ -44,6 +44,7 @@
 | Distortion 失真效果 | ✅ | 对照 Audacity 4.0.2 `DistortionBase` 实现 11 种 2049 点查找表模式、线性插值、重复处理与每声道 DC blocking；动态中文参数界面支持真实选区试听、多轨原子提交、单次撤销、跨片段状态和拉伸元数据保持 |
 | Compressor 压缩器效果 | ✅ | 对照 Audacity 4.0.2 `SimpleCompressor` 与当前动态处理器实现共享立体声 sidechain、FastLog2、软／硬膝、动态平滑、look-ahead 及离线延迟补偿；七参数界面含实时传递曲线、选区试听、多轨原子提交和单次撤销，并经官方 C++ PCM oracle 对拍 |
 | Limiter 限制器效果 | ✅ | 对照 Audacity 4.0.2 `LimiterEffect` 映射共享动态处理器：无限压缩比、Attack 0 ms、Threshold／Output／Lookahead／Knee width／Release 五参数；含 2 秒、−12…0 dB、3 dB 网格的选区动态历史、真实输入／输出 PCM 试听、跨片段状态、多轨原子提交、单次撤销及官方 C++ PCM oracle 对拍 |
+| Reverb 混响效果 | ✅ | 对照 Audacity 4.0.2 libSoX/Freeverb 实现完整九参数与仅湿声模式；Stereo Width=0 时按官方语义独立处理每路单声道，正宽度双声道才平均两个湿声核心，支持真实选区试听、多轨原子提交、单次撤销及官方 C++ PCM oracle 对拍 |
 | 撤销 / 重做 | ✅ | 命令历史栈 + IndexedDB 持久化，刷新可恢复 |
 | 实时播放 | ✅ | Web Audio API 驱动，带播放头与游标 |
 | 窄屏与触屏编辑 | ✅ | 工具栏横向滚动；片段移动、修剪与拉伸使用 Pointer Capture 且禁用手势抢占 |
@@ -291,7 +292,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.compressor.test.tsx` | Compressor 真实菜单、跨片段立体声拼接试听、多轨单次历史、选区撤销、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.limiter.test.tsx` | Limiter 真实菜单、输入历史与跨片段立体声试听、多轨单次历史、选区撤销、失败无写入与无选区禁用 | 3 |
 
-当前完整前端回归共 **101 个测试文件、859 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
+当前完整前端回归共 **101 个测试文件、860 项测试**；Rust/WASM 另有 **4 项** WSOLA 单元测试（本轮未执行）。
 
 运行测试：
 

@@ -56,7 +56,7 @@ describe('reverbEffect', () => {
     expect(input.slice(1).every((sample) => sample === 0)).toBe(true);
   });
 
-  it('honours wet-only and zero-width mono wet processing', () => {
+  it('processes zero-width stereo channels as independent official mono paths', () => {
     const settings: ReverbSettings = {
       ...impulseSettings,
       preDelayMs: 0,
@@ -65,10 +65,12 @@ describe('reverbEffect', () => {
     const left = new Float32Array(500);
     const right = new Float32Array(500);
     left[0] = 0.75;
-    right[0] = 0.75;
+    right[0] = -0.25;
+    right[17] = 0.5;
     const output = processReverbChannels([left, right], settings, 1000);
-    expect(output[0]).toEqual(output[1]);
-    expect(output[0].some((sample) => sample !== 0)).toBe(true);
+    expect(output[0]).toEqual(processReverbChannels([left], settings, 1000)[0]);
+    expect(output[1]).toEqual(processReverbChannels([right], settings, 1000)[0]);
+    expect(output[0]).not.toEqual(output[1]);
   });
 
   it('uses independent stereo filter delays when stereo width is enabled', () => {
