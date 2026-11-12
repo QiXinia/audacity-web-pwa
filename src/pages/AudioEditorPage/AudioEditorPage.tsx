@@ -115,6 +115,11 @@ import {
   type ClickRemovalSettings,
 } from '@/lib/clickRemovalEffect';
 import {
+  processNoiseReductionTrack,
+  type NoiseReductionProfile,
+  type NoiseReductionSettings,
+} from '@/lib/noiseReductionEffect';
+import {
   processTruncateSilenceTracks,
   type TruncateSilenceSettings,
 } from '@/lib/truncateSilenceEffect';
@@ -258,6 +263,7 @@ import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
 import DistortionDialog from './sections/DistortionDialog';
 import ClickRemovalDialog from './sections/ClickRemovalDialog';
+import NoiseReductionDialog from './sections/NoiseReductionDialog';
 import TruncateSilenceDialog from './sections/TruncateSilenceDialog';
 import CompressorDialog from './sections/CompressorDialog';
 import LimiterDialog, { type LimiterPreview } from './sections/LimiterDialog';
@@ -354,6 +360,9 @@ export default function AudioEditorPage() {
   const [isApplyingRepair, setIsApplyingRepair] = useState(false);
   const [clickRemovalDialogOpen, setClickRemovalDialogOpen] = useState(false);
   const [isApplyingClickRemoval, setIsApplyingClickRemoval] = useState(false);
+  const [noiseReductionDialogOpen, setNoiseReductionDialogOpen] = useState(false);
+  const [isApplyingNoiseReduction, setIsApplyingNoiseReduction] = useState(false);
+  const [noiseReductionProfile, setNoiseReductionProfile] = useState<NoiseReductionProfile | null>(null);
   const [truncateSilenceDialogOpen, setTruncateSilenceDialogOpen] = useState(false);
   const [isApplyingTruncateSilence, setIsApplyingTruncateSilence] = useState(false);
   const [distortionDialogOpen, setDistortionDialogOpen] = useState(false);
@@ -2040,6 +2049,86 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Click Removal 失败：${error.message}` : '应用 Click Removal 失败');
     } finally {
       setIsApplyingClickRemoval(false);
+    }
+  }
+
+  async function handleGetNoiseReductionProfile() {
+    if (!project || !quantizedGeneratorSelection) {
+      toast.info('请先选择一段纯噪声');
+      return;
+    }
+    try {
+      const targets = await collectFullTrackTargets(quantizedGeneratorSelection);
+      const profile = await projectService.learnNoiseReductionProfile(
+        project.id,
+        quantizedGeneratorSelection,
+        targets,
+      );
+      setNoiseReductionProfile(profile);
+      setNoiseReductionDialogOpen(false);
+      toast.success(`Noise Profile 已获取：${profile.totalWindows} 个窗口，请重新选择待处理音频`);
+    } catch (error) {
+      logger.error('获取 Noise Profile 失败:', String(error));
+      toast.error(error instanceof Error ? `获取 Noise Profile 失败：${error.message}` : '获取 Noise Profile 失败');
+    }
+  }
+
+  async function handleNoiseReductionPreview(
+    settings: NoiseReductionSettings,
+    profile: NoiseReductionProfile,
+  ): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectFullTrackTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    return processNoiseReductionTrack(
+      sourceTrack,
+      target,
+      activeSelection,
+      profile,
+      settings,
+      project.sampleRate,
+    ).selectionChannels;
+  }
+
+  async function handleApplyNoiseReduction(settings: NoiseReductionSettings, profile: NoiseReductionProfile) {
+    if (!project || !quantizedGeneratorSelection || isApplyingNoiseReduction) return;
+    setIsApplyingNoiseReduction(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectFullTrackTargets(activeSelection);
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.noiseReductionSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        profile,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Noise Reduction 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Noise Reduction 降噪',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setNoiseReductionDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Noise Reduction 降噪`);
+    } catch (error) {
+      logger.error('应用 Noise Reduction 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Noise Reduction 失败：${error.message}` : '应用 Noise Reduction 失败');
+    } finally {
+      setIsApplyingNoiseReduction(false);
     }
   }
 
@@ -4320,6 +4409,13 @@ export default function AudioEditorPage() {
               <DropdownMenuSeparator />
               <DropdownMenuLabel>处理</DropdownMenuLabel>
               <DropdownMenuItem
+                onClick={() => setNoiseReductionDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+                title="先选择纯噪声获取 Profile，再选择待处理音频应用官方频谱降噪"
+              >
+                Noise Reduction 降噪…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setClickRemovalDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
                 title="检测并替换窄尖峰，每条轨道的选区必须大于 4096 个采样"
@@ -5037,6 +5133,21 @@ export default function AudioEditorPage() {
           isApplying={isApplyingClickRemoval}
           onPreview={handleClickRemovalPreview}
           onApply={handleApplyClickRemoval}
+        />
+
+        <NoiseReductionDialog
+          open={noiseReductionDialogOpen}
+          onOpenChange={setNoiseReductionDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingNoiseReduction}
+          profile={noiseReductionProfile}
+          onGetProfile={handleGetNoiseReductionProfile}
+          onClearProfile={() => setNoiseReductionProfile(null)}
+          onPreview={handleNoiseReductionPreview}
+          onApply={handleApplyNoiseReduction}
         />
 
         <TruncateSilenceDialog

@@ -85,6 +85,17 @@ The implementation follows the Audacity 4.0.2 release algorithm: a 250 Hz low sh
 
 The implementation follows Audacity 4.0.2: Threshold defaults to 200 with range 0–900 and step 10; Max spike width defaults to 20 with range 0–40 and step 10. Either zero parameter skips processing. Each track selection must contain more than 4096 samples. The detector uses 8192-sample zero-padded windows at 4096-sample steps, the initial 2049/2048 cascade, multiple spike-width scales, and linear replacement from the samples on either side. If no sample is changed, the official ineffective-audio diagnostic is returned without committing audio. Tests compare an 8192-sample result against an independently compiled C++ oracle derived from the official function, including all output samples and the replacement count. No Audacity executable or upstream golden audio is bundled.
 
+## Audacity Noise Reduction algorithm
+
+- Upstream release: https://github.com/audacity/audacity/releases/tag/Audacity-4.0.2
+- DSP source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/noisereduction/noisereductioneffect.cpp
+- Parameter and QML source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/noisereduction/noisereductionviewmodel.cpp and https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/noisereduction/NoiseReductionView.qml
+- Spectral transformation source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-fft/SpectrumTransformer.cpp and https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-fft/RealFFTf.cpp
+- Purpose: GPL-licensed two-pass noise-profile statistics, spectral discrimination, smoothing, FFT/OLA, parameter and dialog reference for `src/lib/noiseReductionEffect.ts` and its editor integration
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows Audacity 4.0.2's fixed advanced settings: 2048-sample Hann/Hann windows, four steps per window, 512-sample steps and 1025 power-spectrum bins; second-greatest noise discrimination; 0.02-second attack and 0.1-second release; geometric frequency smoothing; and Reduce or Noise-only residue output. Defaults and ranges are 6 dB (0–48 integer), Sensitivity 6 (0.01–24), and Frequency smoothing 6 bands (0–12 integer). Profiles are weighted by complete windows across selected tracks and channels, and processing rejects a sample-rate mismatch. The standalone C++ oracle in `scripts/noise-reduction-oracle.cpp` independently implements the same numerical contract with `std::complex` FFT; its committed PCM fixture is generated locally and checked by `npm run test:noise-reduction:oracle`. No Audacity executable or upstream golden audio is bundled.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

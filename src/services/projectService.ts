@@ -25,6 +25,14 @@ import {
   type ClickRemovalSettings,
 } from '@/lib/clickRemovalEffect';
 import {
+  MAX_NOISE_REDUCTION_TOTAL_SAMPLES,
+  learnNoiseProfileFromTracks,
+  processNoiseReductionTrack,
+  validateNoiseReductionSettings,
+  type NoiseReductionProfile,
+  type NoiseReductionSettings,
+} from '@/lib/noiseReductionEffect';
+import {
   processTruncateSilenceTracks,
   type TruncateSilenceSettings,
   type TruncateSilenceTrackInput,
@@ -147,6 +155,8 @@ export type RepairClipAudio = EchoClipAudio;
 export type RepairTrackAudio = EchoTrackAudio;
 export type ClickRemovalClipAudio = EchoClipAudio;
 export type ClickRemovalTrackAudio = EchoTrackAudio;
+export type NoiseReductionClipAudio = EchoClipAudio;
+export type NoiseReductionTrackAudio = EchoTrackAudio;
 export type DistortionClipAudio = EchoClipAudio;
 export type DistortionTrackAudio = EchoTrackAudio;
 export type CompressorClipAudio = EchoClipAudio;
@@ -2061,6 +2071,96 @@ class ProjectService {
         trackReplacements.set(clip.clipId, id);
       }
       replacements.set(track.id, trackReplacements);
+    }
+    const updatedProject: IProject = {
+      ...project,
+      selection,
+      tracks: project.tracks.map((track) => {
+        const trackReplacements = replacements.get(track.id);
+        if (!trackReplacements) return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => {
+            const audioBufferId = trackReplacements.get(clip.id);
+            return audioBufferId ? { ...clip, audioBufferId } : clip;
+          }),
+        };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return pendingBuffers.length;
+  }
+
+  /** Learn the official 1025-bin noise profile without changing project audio. */
+  async learnNoiseReductionProfile(
+    projectId: string,
+    selection: GeneratorSelection,
+    targets: NoiseReductionTrackAudio[],
+  ): Promise<NoiseReductionProfile> {
+    if (
+      !Number.isFinite(selection.start) || !Number.isFinite(selection.end)
+      || selection.start < 0 || selection.end <= selection.start
+    ) throw new RangeError('Noise Profile 需要有效的正时长选区');
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('Project not found');
+    return learnNoiseProfileFromTracks(project.tracks, targets, selection, project.sampleRate);
+  }
+
+  /** Apply Audacity Noise Reduction as one all-or-nothing multi-track transaction. */
+  async noiseReductionSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: NoiseReductionSettings,
+    profile: NoiseReductionProfile,
+    targets: NoiseReductionTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start) || !Number.isFinite(selection.end)
+      || selection.start < 0 || selection.end <= selection.start
+    ) throw new RangeError('Noise Reduction 需要有效的正时长选区');
+    validateNoiseReductionSettings(settings);
+    if (targets.length === 0) throw new Error('没有可应用 Noise Reduction 的音频选区');
+    if (new Set(targets.map(({ trackId }) => trackId)).size !== targets.length) {
+      throw new Error('Noise Reduction 目标包含重复轨道');
+    }
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('Project not found');
+
+    // All ownership, selection, profile and DSP checks finish before the first write.
+    const processed = targets.map((target) => {
+      const track = project.tracks.find(({ id }) => id === target.trackId);
+      if (!track) throw new Error(`Track not found: ${target.trackId}`);
+      return processNoiseReductionTrack(
+        track,
+        target,
+        selection,
+        profile,
+        settings,
+        project.sampleRate,
+      );
+    });
+    const totalSamples = processed.reduce(
+      (sum, result) => sum + result.selectionChannels.reduce((trackSum, channel) => trackSum + channel.length, 0),
+      0,
+    );
+    if (totalSamples > MAX_NOISE_REDUCTION_TOTAL_SAMPLES) {
+      throw new RangeError('Noise Reduction 选区过大，请分段处理');
+    }
+
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, Map<string, string>>();
+    for (const result of processed) {
+      const trackReplacements = new Map<string, string>();
+      for (const clip of result.clips) {
+        const id = generateId();
+        pendingBuffers.push({ id, sampleRate: project.sampleRate, sampleData: clip.sampleData });
+        trackReplacements.set(clip.clipId, id);
+      }
+      replacements.set(result.trackId, trackReplacements);
     }
     const updatedProject: IProject = {
       ...project,
