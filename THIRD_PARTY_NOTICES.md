@@ -96,6 +96,17 @@ The implementation follows Audacity 4.0.2: Threshold defaults to 200 with range 
 
 The implementation follows Audacity 4.0.2's fixed advanced settings: 2048-sample Hann/Hann windows, four steps per window, 512-sample steps and 1025 power-spectrum bins; second-greatest noise discrimination; 0.02-second attack and 0.1-second release; geometric frequency smoothing; and Reduce or Noise-only residue output. Defaults and ranges are 6 dB (0–48 integer), Sensitivity 6 (0.01–24), and Frequency smoothing 6 bands (0–12 integer). Profiles are weighted by complete windows across selected tracks and channels, and processing rejects a sample-rate mismatch. The standalone C++ oracle in `scripts/noise-reduction-oracle.cpp` independently implements the same numerical contract with `std::complex` FFT; its committed PCM fixture is generated locally and checked by `npm run test:noise-reduction:oracle`. No Audacity executable or upstream golden audio is bundled.
 
+## Audacity Loudness Normalization / EBU R128 algorithm
+
+- Upstream release: https://github.com/audacity/audacity/releases/tag/Audacity-4.0.2
+- Effect and parameter source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/normalizeloudness/normalizeloudnesseffect.cpp and https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/normalizeloudness/normalizeloudnessviewmodel.cpp
+- QML source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/normalizeloudness/NormalizeLoudnessView.qml
+- EBU R128 and biquad source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-math/EBUR128.cpp and https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-math/Biquad.cpp
+- Purpose: GPL-licensed loudness/RMS analysis, dual-mono/stereo, gating, parameter and dialog reference for `src/lib/loudnessEffect.ts` and its editor integration
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows Audacity 4.0.2's two-stage K-weighting, double-state/float-return biquads, 400ms blocks, 100ms steps, 65,536-bin loudness histogram, absolute/relative gating and incomplete-short-selection fallback. Linked LUFS combines stereo channel power; linked RMS combines the two channels in the quadratic domain. Independently processed stereo channels use the official −3 LU rule, while true mono applies it only when dual-mono is enabled. `scripts/loudness-oracle.cpp` independently generates eight frozen cases covering LUFS/RMS, mono/stereo, linked/independent channels, short selections and 8k/44.1kHz sample rates; `npm run test:loudness:oracle` regenerates and compares the fixture, then checks every gain and PCM sample. No Audacity executable or upstream golden audio is bundled.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

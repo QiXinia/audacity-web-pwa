@@ -13,6 +13,7 @@
     "lint:eslint": "eslint src",
     "test": "vitest run",
     "test:noise-reduction:oracle": "bash scripts/verify-noise-reduction-oracle.sh",
+    "test:loudness:oracle": "bash scripts/verify-loudness-oracle.sh",
     "test:watch": "vitest",
     "precommit": "npm run lint",
     "prepare": "node scripts/setup-git-hooks.mjs"

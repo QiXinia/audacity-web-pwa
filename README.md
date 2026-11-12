@@ -39,6 +39,7 @@
 | 低音和高音效果 | ✅ | 对照 Audacity 4.0.2 `BassTrebleBase` 实现 250 Hz 低架与 4 kHz 高架二阶 IIR；低音／高音／输出音量均为 -30…30 dB，支持官方音量随音调联动补偿、真实选区试听、多轨原子提交、单次撤销、每声道跨片段状态及选区外 PCM／拉伸元数据保持 |
 | Wah Wah 效果 | ✅ | 对照 Audacity 4.0.2 正式版 `WahWahBase` 实现六参数 LFO 带通递归；每 30 采样更新系数，递归历史保存未加输出增益的值，声道独立处理；支持中文对话框、真实选区试听、多轨原子提交、单次撤销、选区外 PCM 与拉伸元数据保持 |
 | Normalize 标准化效果 | ✅ | 整轨选区统一分析直流与峰值，支持去直流、峰值 −145…0 dB、立体声联动／独立增益、真实试听、多轨原子提交和单次撤销 |
+| Loudness Normalization 响度标准化 | ✅ | 对照 Audacity 4.0.2 实现 EBU R128 两级 K-weighting、400ms block／100ms step、绝对与相对门控及 RMS；支持 LUFS／RMS 目标、立体声联动／独立、mono dual-mono、短选区、跨片段时间空隙、真实试听、多轨原子提交、单次撤销和独立 C++ 逐采样对拍 |
 | Repair 修复效果 | ✅ | 对照 Audacity 4.0.2 实现 LSAR 插值与线性／衰减回退；每轨选区最多 128 采样，支持跨片段上下文、多轨原子提交和单次撤销 |
 | Click Removal 咔哒声消除 | ✅ | 对照 Audacity 4.0.2 实现 8192 采样窗口、多尺度 RMS 尖峰检测与线性替换；Threshold 0…900、Width 0…40，每轨选区须大于 4096 采样，支持连续选区试听、多轨原子提交、单次撤销及官方 C++ 逐样本对拍 |
 | Noise Reduction 降噪 | ✅ | 对照 Audacity 4.0.2 实现两步 Noise Profile、2048 点 Hann/Hann STFT、1025 bin 功率统计、第二高功率判别、attack/release 时间平滑、几何频率平滑及 Reduce／Noise only 输出；官方 0…48 dB、Sensitivity 0.01…24、Smoothing 0…12 bands，支持双声道试听、多轨原子提交、单次撤销和独立 C++ 数值对拍 |
@@ -130,6 +131,9 @@ npm run typecheck
 
 # 运行单元测试
 npm test
+
+# 重新编译独立 C++ Loudness oracle、核对冻结 fixture 并运行 PCM 对拍
+npm run test:loudness:oracle
 
 # 测试 watch 模式
 npm run test:watch

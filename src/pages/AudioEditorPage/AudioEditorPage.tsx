@@ -120,6 +120,10 @@ import {
   type NoiseReductionSettings,
 } from '@/lib/noiseReductionEffect';
 import {
+  processLoudnessTrack,
+  type LoudnessSettings,
+} from '@/lib/loudnessEffect';
+import {
   processTruncateSilenceTracks,
   type TruncateSilenceSettings,
 } from '@/lib/truncateSilenceEffect';
@@ -269,6 +273,7 @@ import CompressorDialog from './sections/CompressorDialog';
 import LimiterDialog, { type LimiterPreview } from './sections/LimiterDialog';
 import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
+import { LoudnessDialog } from './sections/LoudnessDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
 import { ChangeSpeedDialog } from './sections/ChangeSpeedDialog';
 import { ChangePitchDialog } from './sections/ChangePitchDialog';
@@ -375,6 +380,8 @@ export default function AudioEditorPage() {
   const [isApplyingAmplify, setIsApplyingAmplify] = useState(false);
   const [normalizeDialogOpen, setNormalizeDialogOpen] = useState(false);
   const [isApplyingNormalize, setIsApplyingNormalize] = useState(false);
+  const [loudnessDialogOpen, setLoudnessDialogOpen] = useState(false);
+  const [isApplyingLoudness, setIsApplyingLoudness] = useState(false);
   const [changeTempoDialogOpen, setChangeTempoDialogOpen] = useState(false);
   const [isApplyingChangeTempo, setIsApplyingChangeTempo] = useState(false);
   const [changeSpeedDialogOpen, setChangeSpeedDialogOpen] = useState(false);
@@ -3437,6 +3444,55 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleLoudnessPreview(settings: LoudnessSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectFullTrackTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    // Preview and apply share full-track assembly, EBU gating and gain mapping.
+    return processLoudnessTrack(
+      sourceTrack, target, activeSelection, settings, project.sampleRate,
+    ).selectionChannels;
+  }
+
+  async function handleApplyLoudness(settings: LoudnessSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingLoudness(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectFullTrackTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.loudnessSelectionOnTracks(
+        project.id, activeSelection, settings, targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Loudness 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Loudness Normalization 响度标准化',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setLoudnessDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Loudness Normalization`);
+    } catch (error) {
+      logger.error('应用 Loudness 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Loudness 失败：${error.message}` : '应用 Loudness 失败');
+    } finally {
+      setIsApplyingLoudness(false);
+    }
+  }
+
   async function handleChangeSpeedPreview(settings: ChangeSpeedSettings): Promise<Float32Array[]> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -4442,6 +4498,13 @@ export default function AudioEditorPage() {
               >
                 标准化…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setLoudnessDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+                title="按 Audacity EBU R128 感知响度或 RMS 标准化完整选区"
+              >
+                Loudness Normalization 响度标准化…
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={applyReverse} disabled={!selection}>
                 反转
               </DropdownMenuItem>
@@ -5209,6 +5272,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingNormalize}
           onPreview={handleNormalizePreview}
           onApply={handleApplyNormalize}
+        />
+
+        <LoudnessDialog
+          open={loudnessDialogOpen}
+          onOpenChange={setLoudnessDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingLoudness}
+          onPreview={handleLoudnessPreview}
+          onApply={handleApplyLoudness}
         />
 
         <ChangeSpeedDialog
