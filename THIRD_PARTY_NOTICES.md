@@ -74,6 +74,17 @@ The implementation follows the Audacity 4.0.2 release algorithm: default control
 
 The implementation follows the Audacity 4.0.2 release algorithm: a 250 Hz low shelf followed by a 4 kHz high shelf, both using slope 0.4; bass, treble and output gain controls from -30 to 30 dB with zero defaults; final output gain after the filters; and linked-volume compensation using half the change for boosts and one quarter for cuts, clamped to the output-gain range. Each channel owns independent recursive history that can continue across selected clips. Tests compare selected samples with an independently calculated numerical baseline, verify segmented-versus-contiguous processing and cover channel isolation, invalid inputs, silence, gain-only processing and Float32 output storage. No Audacity executable or upstream golden audio is bundled, and no claim of equivalence with other upstream revisions is made.
 
+## Audacity Click Removal algorithm
+
+- Upstream release: https://github.com/audacity/audacity/releases/tag/Audacity-4.0.2
+- DSP source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/clickremoval/clickremovaleffect.cpp
+- Parameter and view-model source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/clickremoval/clickremovalviewmodel.cpp
+- QML source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/clickremoval/ClickRemovalView.qml
+- Purpose: GPL-licensed multi-scale RMS click detector, linear replacement, parameter, and dialog reference for `src/lib/clickRemovalEffect.ts` and its editor integration
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows Audacity 4.0.2: Threshold defaults to 200 with range 0–900 and step 10; Max spike width defaults to 20 with range 0–40 and step 10. Either zero parameter skips processing. Each track selection must contain more than 4096 samples. The detector uses 8192-sample zero-padded windows at 4096-sample steps, the initial 2049/2048 cascade, multiple spike-width scales, and linear replacement from the samples on either side. If no sample is changed, the official ineffective-audio diagnostic is returned without committing audio. Tests compare an 8192-sample result against an independently compiled C++ oracle derived from the official function, including all output samples and the replacement count. No Audacity executable or upstream golden audio is bundled.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

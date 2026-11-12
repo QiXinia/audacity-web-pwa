@@ -18,6 +18,13 @@ import { silenceClipSelection } from '@/lib/silenceGenerator';
 import { getClipStretchRatio } from '@/lib/clipEditing';
 import { createRepairRandom, interpolateRepairAudio, MAX_REPAIR_SAMPLES } from '@/lib/repairEffect';
 import {
+  CLICK_REMOVAL_INEFFECTIVE_ERROR,
+  isClickRemovalBypassed,
+  processClickRemovalTrack,
+  validateClickRemovalSettings,
+  type ClickRemovalSettings,
+} from '@/lib/clickRemovalEffect';
+import {
   getClipSampleRange,
   replaceTrackSelectionWithClip,
   type GeneratorSelection,
@@ -132,6 +139,8 @@ export type ReverbTrackAudio = EchoTrackAudio;
 
 export type RepairClipAudio = EchoClipAudio;
 export type RepairTrackAudio = EchoTrackAudio;
+export type ClickRemovalClipAudio = EchoClipAudio;
+export type ClickRemovalTrackAudio = EchoTrackAudio;
 export type DistortionClipAudio = EchoClipAudio;
 export type DistortionTrackAudio = EchoTrackAudio;
 export type CompressorClipAudio = EchoClipAudio;
@@ -1998,6 +2007,72 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return prepared.length;
+  }
+
+  /** Apply Audacity Click Removal as one all-or-nothing multi-track transaction. */
+  async clickRemovalSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: ClickRemovalSettings,
+    targets: ClickRemovalTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start) || !Number.isFinite(selection.end)
+      || selection.start < 0 || selection.end <= selection.start
+    ) {
+      throw new RangeError('Click Removal 需要有效的正时长选区');
+    }
+    validateClickRemovalSettings(settings);
+    if (targets.length === 0) throw new Error('没有可应用 Click Removal 的音频选区');
+    if (new Set(targets.map(({ trackId }) => trackId)).size !== targets.length) {
+      throw new Error('Click Removal 目标包含重复轨道');
+    }
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('Project not found');
+    if (isClickRemovalBypassed(settings)) return 0;
+
+    // No I/O occurs until every track has passed ownership, layout and DSP checks.
+    const processed = targets.map((target) => {
+      const track = project.tracks.find(({ id }) => id === target.trackId);
+      if (!track) throw new Error(`Track not found: ${target.trackId}`);
+      return {
+        track,
+        result: processClickRemovalTrack(track, target, selection, settings, project.sampleRate),
+      };
+    });
+    const changedTracks = processed.filter(({ result }) => result.changed);
+    if (changedTracks.length === 0) throw new Error(CLICK_REMOVAL_INEFFECTIVE_ERROR);
+
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, Map<string, string>>();
+    for (const { track, result } of changedTracks) {
+      const trackReplacements = new Map<string, string>();
+      for (const clip of result.clips) {
+        const id = generateId();
+        pendingBuffers.push({ id, sampleRate: project.sampleRate, sampleData: clip.sampleData });
+        trackReplacements.set(clip.clipId, id);
+      }
+      replacements.set(track.id, trackReplacements);
+    }
+    const updatedProject: IProject = {
+      ...project,
+      selection,
+      tracks: project.tracks.map((track) => {
+        const trackReplacements = replacements.get(track.id);
+        if (!trackReplacements) return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => {
+            const audioBufferId = trackReplacements.get(clip.id);
+            return audioBufferId ? { ...clip, audioBufferId } : clip;
+          }),
+        };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return pendingBuffers.length;
   }
 
   /**

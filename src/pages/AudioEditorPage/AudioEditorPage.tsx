@@ -110,6 +110,10 @@ import { generateRhythmTrack, type RhythmTrackRequest } from '@/lib/rhythmTrackG
 import { generateRissetDrum, type RissetDrumRequest } from '@/lib/rissetDrumGenerator';
 import { generateNoise, type NoiseRequest } from '@/lib/noiseGenerator';
 import { generateSilence } from '@/lib/silenceGenerator';
+import {
+  processClickRemovalTrack,
+  type ClickRemovalSettings,
+} from '@/lib/clickRemovalEffect';
 import { drawWaveform } from '@/lib/waveformDrawing';
 import {
   DEFAULT_VERTICAL_ZOOM,
@@ -249,6 +253,7 @@ import EchoEffectDialog from './sections/EchoEffectDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
 import DistortionDialog from './sections/DistortionDialog';
+import ClickRemovalDialog from './sections/ClickRemovalDialog';
 import CompressorDialog from './sections/CompressorDialog';
 import LimiterDialog, { type LimiterPreview } from './sections/LimiterDialog';
 import { AmplifyDialog } from './sections/AmplifyDialog';
@@ -342,6 +347,8 @@ export default function AudioEditorPage() {
   const [reverbDialogOpen, setReverbDialogOpen] = useState(false);
   const [isApplyingReverb, setIsApplyingReverb] = useState(false);
   const [isApplyingRepair, setIsApplyingRepair] = useState(false);
+  const [clickRemovalDialogOpen, setClickRemovalDialogOpen] = useState(false);
+  const [isApplyingClickRemoval, setIsApplyingClickRemoval] = useState(false);
   const [distortionDialogOpen, setDistortionDialogOpen] = useState(false);
   const [isApplyingDistortion, setIsApplyingDistortion] = useState(false);
   const [compressorDialogOpen, setCompressorDialogOpen] = useState(false);
@@ -1820,7 +1827,7 @@ export default function AudioEditorPage() {
     return targets;
   }
 
-  async function collectRepairTargets(activeSelection: { start: number; end: number }): Promise<RepairTrackAudio[]> {
+  async function collectFullTrackTargets(activeSelection: { start: number; end: number }): Promise<RepairTrackAudio[]> {
     if (!project) return [];
     const targets: RepairTrackAudio[] = [];
     for (const track of project.tracks) {
@@ -1937,7 +1944,7 @@ export default function AudioEditorPage() {
     setIsApplyingRepair(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
-      const targets = await collectRepairTargets(activeSelection);
+      const targets = await collectFullTrackTargets(activeSelection);
       if (targets.length === 0) {
         toast.info('选区内没有可修复的音频');
         return;
@@ -1964,6 +1971,68 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Repair 修复失败：${error.message}` : '应用 Repair 修复失败');
     } finally {
       setIsApplyingRepair(false);
+    }
+  }
+
+  async function handleClickRemovalPreview(settings: ClickRemovalSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectFullTrackTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    return processClickRemovalTrack(
+      sourceTrack,
+      target,
+      activeSelection,
+      settings,
+      project.sampleRate,
+    ).selectionChannels;
+  }
+
+  async function handleApplyClickRemoval(settings: ClickRemovalSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingClickRemoval) return;
+    setIsApplyingClickRemoval(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectFullTrackTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.clickRemovalSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      if (changed === 0) {
+        toast.info('Click Removal 参数为 0，已按官方行为跳过，未修改音频');
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Click Removal 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Click Removal 咔哒声消除',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setClickRemovalDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Click Removal 咔哒声消除`);
+    } catch (error) {
+      logger.error('应用 Click Removal 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Click Removal 失败：${error.message}` : '应用 Click Removal 失败');
+    } finally {
+      setIsApplyingClickRemoval(false);
     }
   }
 
@@ -4182,6 +4251,13 @@ export default function AudioEditorPage() {
               <DropdownMenuSeparator />
               <DropdownMenuLabel>处理</DropdownMenuLabel>
               <DropdownMenuItem
+                onClick={() => setClickRemovalDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+                title="检测并替换窄尖峰，每条轨道的选区必须大于 4096 个采样"
+              >
+                Click Removal 咔哒声消除…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={handleApplyRepair}
                 disabled={!quantizedGeneratorSelection || isApplyingRepair}
                 title="使用周边音频插值修复，每条轨道最多 128 个采样"
@@ -4873,6 +4949,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingDistortion}
           onPreview={handleDistortionPreview}
           onApply={handleApplyDistortion}
+        />
+
+        <ClickRemovalDialog
+          open={clickRemovalDialogOpen}
+          onOpenChange={setClickRemovalDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingClickRemoval}
+          onPreview={handleClickRemovalPreview}
+          onApply={handleApplyClickRemoval}
         />
 
         <CompressorDialog
