@@ -381,22 +381,26 @@ export function evaluateFilterCurveDb(
   return coordinates[coordinates.length - 1].y;
 }
 
-export function createFilterCurveEqPlan(
-  settings: FilterCurveEqSettings,
+/** Shared Audacity equalization FIR builder; valueAt returns dB at each FFT bin. */
+export function createEqualizationPlanFromResponse(
   sampleRate: number,
-): FilterCurveEqPlan | undefined {
-  validateFilterCurveEqSettings(settings);
+  filterLength: number,
+  signature: string,
+  dcFrequency: number,
+  valueAt: (frequency: number) => number,
+): FilterCurveEqPlan {
+  if (
+    !Number.isInteger(filterLength)
+    || filterLength < FILTER_CURVE_EQ_MIN_FILTER_LENGTH
+    || filterLength > FILTER_CURVE_EQ_MAX_FILTER_LENGTH
+    || filterLength % 2 === 0
+  ) throw new RangeError('Filter Length 必须是 21–8191 之间的奇数');
   validateSampleRate(sampleRate);
-  if (isFilterCurveEqBypassed(settings)) return undefined;
   const size = FILTER_CURVE_EQ_WINDOW_SIZE;
   const half = size / 2;
   const hiFreq = sampleRate / 2;
-  const points = sortedPoints(settings);
   const response = new Float32Array(size);
-  const valueAt = (frequency: number) => evaluateFilterCurveDb(
-    points, frequency, sampleRate, settings.linearFrequencyScale,
-  );
-  const val0 = valueAt(settings.linearFrequencyScale ? 0 : FILTER_CURVE_EQ_LO_FREQ);
+  const val0 = valueAt(dcFrequency);
   const val1 = valueAt(hiFreq);
   const delta = hiFreq / half;
   response[0] = fround(10 ** (val0 / 20));
@@ -408,7 +412,7 @@ export function createFilterCurveEqPlan(
   }
 
   const time = inverseRealSpectrum(response);
-  const M = settings.filterLength;
+  const M = filterLength;
   const centre = (M - 1) / 2;
   let index = 0;
   for (; index <= centre; index += 1) {
@@ -431,14 +435,24 @@ export function createFilterCurveEqPlan(
   time.fill(0, M);
   for (let tap = 0; tap < M; tap += 1) time[tap] = impulse[tap];
   const { real, imaginary } = forwardRealSpectrum(time);
-  return {
+  return { sampleRate, filterLength: M, signature, impulse, filterReal: real, filterImaginary: imaginary };
+}
+
+export function createFilterCurveEqPlan(
+  settings: FilterCurveEqSettings,
+  sampleRate: number,
+): FilterCurveEqPlan | undefined {
+  validateFilterCurveEqSettings(settings);
+  validateSampleRate(sampleRate);
+  if (isFilterCurveEqBypassed(settings)) return undefined;
+  const points = sortedPoints(settings);
+  return createEqualizationPlanFromResponse(
     sampleRate,
-    filterLength: M,
-    signature: signatureFor(settings),
-    impulse,
-    filterReal: real,
-    filterImaginary: imaginary,
-  };
+    settings.filterLength,
+    signatureFor(settings),
+    settings.linearFrequencyScale ? 0 : FILTER_CURVE_EQ_LO_FREQ,
+    (frequency) => evaluateFilterCurveDb(points, frequency, sampleRate, settings.linearFrequencyScale),
+  );
 }
 
 function filterWindow(buffer: Float32Array, plan: FilterCurveEqPlan): void {
@@ -462,35 +476,28 @@ function filterWindow(buffer: Float32Array, plan: FilterCurveEqPlan): void {
   reorderToTime(transformed, buffer);
 }
 
-function validateChannels(channels: readonly Float32Array[]): number {
+function validateChannels(channels: readonly Float32Array[], errorLabel = 'Filter Curve EQ'): number {
   const length = channels[0]?.length ?? 0;
   if (channels.length === 0 || length === 0 || channels.some((channel) => channel.length !== length)) {
-    throw new RangeError('Filter Curve EQ 输入声道必须非空且等长');
+    throw new RangeError(`${errorLabel} 输入声道必须非空且等长`);
   }
   for (const channel of channels) {
     for (let index = 0; index < channel.length; index += 1) {
       if (!Number.isFinite(channel[index])) {
-        throw new RangeError(`Filter Curve EQ 输入在第 ${index} 个采样包含非有限值`);
+        throw new RangeError(`${errorLabel} 输入在第 ${index} 个采样包含非有限值`);
       }
     }
   }
   return length;
 }
 
-export function processFilterCurveEqChannels(
+/** Shared overlap-add processor for Audacity Filter Curve EQ and Graphic EQ. */
+export function processEqualizationChannelsWithPlan(
   channels: readonly Float32Array[],
-  settings: FilterCurveEqSettings,
-  sampleRate: number,
-  suppliedPlan?: FilterCurveEqPlan,
+  plan: FilterCurveEqPlan,
+  errorLabel = 'Filter Curve EQ',
 ): Float32Array[] {
-  validateFilterCurveEqSettings(settings);
-  validateSampleRate(sampleRate);
-  const length = validateChannels(channels);
-  if (isFilterCurveEqBypassed(settings)) return channels.map((channel) => new Float32Array(channel));
-  const plan = suppliedPlan ?? createFilterCurveEqPlan(settings, sampleRate);
-  if (!plan || plan.sampleRate !== sampleRate || plan.signature !== signatureFor(settings)) {
-    throw new RangeError('Filter Curve EQ 滤波计划与当前参数或采样率不一致');
-  }
+  const length = validateChannels(channels, errorLabel);
   const size = FILTER_CURVE_EQ_WINDOW_SIZE;
   const M = plan.filterLength;
   const L = size - (M - 1);
@@ -511,11 +518,28 @@ export function processFilterCurveEqChannels(
     const output = extended.slice(centre, centre + length);
     for (let index = 0; index < output.length; index += 1) {
       if (!Number.isFinite(output[index])) {
-        throw new RangeError(`Filter Curve EQ 在第 ${index} 个采样产生非有限输出`);
+        throw new RangeError(`${errorLabel} 在第 ${index} 个采样产生非有限输出`);
       }
     }
     return output;
   });
+}
+
+export function processFilterCurveEqChannels(
+  channels: readonly Float32Array[],
+  settings: FilterCurveEqSettings,
+  sampleRate: number,
+  suppliedPlan?: FilterCurveEqPlan,
+): Float32Array[] {
+  validateFilterCurveEqSettings(settings);
+  validateSampleRate(sampleRate);
+  validateChannels(channels);
+  if (isFilterCurveEqBypassed(settings)) return channels.map((channel) => new Float32Array(channel));
+  const plan = suppliedPlan ?? createFilterCurveEqPlan(settings, sampleRate);
+  if (!plan || plan.sampleRate !== sampleRate || plan.signature !== signatureFor(settings)) {
+    throw new RangeError('Filter Curve EQ 滤波计划与当前参数或采样率不一致');
+  }
+  return processEqualizationChannelsWithPlan(channels, plan);
 }
 
 interface AffectedClip {
@@ -532,44 +556,45 @@ function assembleTrack(
   target: FilterCurveEqTrackInput,
   selection: GeneratorSelection,
   sampleRate: number,
+  errorLabel = 'Filter Curve EQ',
 ): { selectedStart: number; selectedChannels: Float32Array[]; affected: AffectedClip[] } {
   validateSampleRate(sampleRate);
   if (
     !Number.isFinite(selection.start) || !Number.isFinite(selection.end)
     || selection.start < 0 || selection.end <= selection.start
-  ) throw new RangeError('Filter Curve EQ 需要有效的正时长选区');
+  ) throw new RangeError(`${errorLabel} 需要有效的正时长选区`);
   if (track.id !== target.trackId || track.clips.length === 0) {
-    throw new Error('Filter Curve EQ 目标轨道不可用');
+    throw new Error(`${errorLabel} 目标轨道不可用`);
   }
   const inputs = new Map<string, FilterCurveEqClipInput>();
   for (const input of target.clips) {
     if (inputs.has(input.clipId) || !track.clips.some(({ id }) => id === input.clipId)) {
-      throw new Error('Filter Curve EQ 目标片段不可用或重复');
+      throw new Error(`${errorLabel} 目标片段不可用或重复`);
     }
     inputs.set(input.clipId, input);
   }
   if (inputs.size !== track.clips.length || track.clips.some(({ id }) => !inputs.has(id))) {
-    throw new Error('Filter Curve EQ 需要完整轨道音频以保持选区连续');
+    throw new Error(`${errorLabel} 需要完整轨道音频以保持选区连续`);
   }
   const ordered = [...track.clips].sort((left, right) => left.startTime - right.startTime);
   const channelCount = inputs.get(ordered[0].id)?.sampleData.length ?? 0;
-  if (channelCount < 1) throw new Error('Filter Curve EQ 轨道没有音频声道');
+  if (channelCount < 1) throw new Error(`${errorLabel} 轨道没有音频声道`);
   for (const clip of ordered) {
     const input = inputs.get(clip.id)!;
     if (!Number.isFinite(input.sourceOffset) || input.sourceOffset < 0) {
-      throw new Error('Filter Curve EQ 片段源偏移无效');
+      throw new Error(`${errorLabel} 片段源偏移无效`);
     }
     if (
       input.sampleData.length !== channelCount
       || input.sampleData.some((channel) => channel.length !== input.sampleData[0]?.length)
-    ) throw new Error('Filter Curve EQ 轨道的片段声道布局不一致');
+    ) throw new Error(`${errorLabel} 轨道的片段声道布局不一致`);
   }
   const trackStart = Math.min(...ordered.map(({ startTime }) => startTime));
   const trackEnd = Math.max(...ordered.map((clip) => clip.startTime + clip.duration));
   const selectedStart = Math.round(Math.max(trackStart, selection.start) * sampleRate);
   const selectedEnd = Math.round(Math.min(trackEnd, selection.end) * sampleRate);
   const selectedLength = selectedEnd - selectedStart;
-  if (selectedLength <= 0) throw new Error('Filter Curve EQ 选区与轨道没有有效重叠');
+  if (selectedLength <= 0) throw new Error(`${errorLabel} 选区与轨道没有有效重叠`);
   const selectedChannels = Array.from({ length: channelCount }, () => new Float32Array(selectedLength));
   const affected: AffectedClip[] = [];
   for (const clip of ordered) {
@@ -589,12 +614,40 @@ function assembleTrack(
     }
     affected.push({ clip, input, clipStart, sourceStart, overlapStart, overlapEnd });
   }
-  if (affected.length === 0) throw new Error('Filter Curve EQ 选区内没有可处理的片段');
-  validateChannels(selectedChannels);
+  if (affected.length === 0) throw new Error(`${errorLabel} 选区内没有可处理的片段`);
+  validateChannels(selectedChannels, errorLabel);
   return { selectedStart, selectedChannels, affected };
 }
 
 /** Shared preview/apply mapping across clips, source offsets and timeline gaps. */
+export function processEqualizationTrackWithPlan(
+  track: ITrack,
+  target: FilterCurveEqTrackInput,
+  selection: GeneratorSelection,
+  sampleRate: number,
+  plan: FilterCurveEqPlan | undefined,
+  errorLabel = 'Filter Curve EQ',
+): FilterCurveEqTrackResult {
+  const { selectedStart, selectedChannels, affected } = assembleTrack(
+    track, target, selection, sampleRate, errorLabel,
+  );
+  const processed = plan
+    ? processEqualizationChannelsWithPlan(selectedChannels, plan, errorLabel)
+    : selectedChannels.map((channel) => new Float32Array(channel));
+  const clips = affected.map(({ clip, input, clipStart, sourceStart, overlapStart, overlapEnd }) => {
+    const sampleData = input.sampleData.map((channel) => new Float32Array(channel));
+    for (let position = overlapStart; position < overlapEnd; position += 1) {
+      const sourceIndex = sourceStart + position - clipStart;
+      if (sourceIndex < 0 || sourceIndex >= sampleData[0].length) continue;
+      for (let channel = 0; channel < sampleData.length; channel += 1) {
+        sampleData[channel][sourceIndex] = processed[channel][position - selectedStart];
+      }
+    }
+    return { clipId: clip.id, sampleData };
+  });
+  return { trackId: track.id, selectionChannels: processed, clips, plan };
+}
+
 export function processFilterCurveEqTrack(
   track: ITrack,
   target: FilterCurveEqTrackInput,
@@ -603,21 +656,12 @@ export function processFilterCurveEqTrack(
   sampleRate: number,
   suppliedPlan?: FilterCurveEqPlan,
 ): FilterCurveEqTrackResult {
-  const { selectedStart, selectedChannels, affected } = assembleTrack(track, target, selection, sampleRate);
-  const plan = suppliedPlan ?? createFilterCurveEqPlan(settings, sampleRate);
-  const processed = processFilterCurveEqChannels(selectedChannels, settings, sampleRate, plan);
-  const clips = affected.map(({ clip, input, clipStart, sourceStart, overlapStart, overlapEnd }) => {
-    const sampleData = input.sampleData.map((channel) => new Float32Array(channel));
-    for (let position = overlapStart; position < overlapEnd; position += 1) {
-      const sourceIndex = sourceStart + position - clipStart;
-      if (sourceIndex < 0 || sourceIndex >= sampleData[0].length) continue;
-      for (let channel = 0; channel < sampleData.length; channel += 1) {
-        sampleData[channel][sourceIndex] = processed[channel][position - Math.round(Math.max(
-          Math.min(...track.clips.map(({ startTime }) => startTime)), selection.start,
-        ) * sampleRate)];
-      }
-    }
-    return { clipId: clip.id, sampleData };
-  });
-  return { trackId: track.id, selectionChannels: processed, clips, plan };
+  validateFilterCurveEqSettings(settings);
+  validateSampleRate(sampleRate);
+  const bypassed = isFilterCurveEqBypassed(settings);
+  const plan = bypassed ? undefined : suppliedPlan ?? createFilterCurveEqPlan(settings, sampleRate);
+  if (!bypassed && (!plan || plan.sampleRate !== sampleRate || plan.signature !== signatureFor(settings))) {
+    throw new RangeError('Filter Curve EQ 滤波计划与当前参数或采样率不一致');
+  }
+  return processEqualizationTrackWithPlan(track, target, selection, sampleRate, plan);
 }

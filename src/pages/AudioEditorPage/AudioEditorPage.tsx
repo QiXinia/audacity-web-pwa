@@ -128,6 +128,10 @@ import {
   type FilterCurveEqSettings,
 } from '@/lib/filterCurveEffect';
 import {
+  processGraphicEqTrack,
+  type GraphicEqSettings,
+} from '@/lib/graphicEqEffect';
+import {
   processTruncateSilenceTracks,
   type TruncateSilenceSettings,
 } from '@/lib/truncateSilenceEffect';
@@ -279,6 +283,7 @@ import { AmplifyDialog } from './sections/AmplifyDialog';
 import { NormalizeDialog } from './sections/NormalizeDialog';
 import { LoudnessDialog } from './sections/LoudnessDialog';
 import { FilterCurveEqDialog } from './sections/FilterCurveEqDialog';
+import { GraphicEqDialog } from './sections/GraphicEqDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
 import { ChangeSpeedDialog } from './sections/ChangeSpeedDialog';
 import { ChangePitchDialog } from './sections/ChangePitchDialog';
@@ -389,6 +394,8 @@ export default function AudioEditorPage() {
   const [isApplyingLoudness, setIsApplyingLoudness] = useState(false);
   const [filterCurveEqDialogOpen, setFilterCurveEqDialogOpen] = useState(false);
   const [isApplyingFilterCurveEq, setIsApplyingFilterCurveEq] = useState(false);
+  const [graphicEqDialogOpen, setGraphicEqDialogOpen] = useState(false);
+  const [isApplyingGraphicEq, setIsApplyingGraphicEq] = useState(false);
   const [changeTempoDialogOpen, setChangeTempoDialogOpen] = useState(false);
   const [isApplyingChangeTempo, setIsApplyingChangeTempo] = useState(false);
   const [changeSpeedDialogOpen, setChangeSpeedDialogOpen] = useState(false);
@@ -3554,6 +3561,60 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleGraphicEqPreview(settings: GraphicEqSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectFullTrackTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    // Preview and apply share the official B-spline FIR and full-track mapping.
+    return processGraphicEqTrack(
+      sourceTrack, target, activeSelection, settings, project.sampleRate,
+    ).selectionChannels;
+  }
+
+  async function handleApplyGraphicEq(settings: GraphicEqSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingGraphicEq(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectFullTrackTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.graphicEqSelectionOnTracks(
+        project.id, activeSelection, settings, targets,
+      );
+      if (changed === 0) {
+        setGraphicEqDialogOpen(false);
+        toast.info('Graphic EQ 各频段为平直，未修改音频');
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Graphic EQ 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Graphic EQ 图示均衡',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setGraphicEqDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Graphic EQ`);
+    } catch (error) {
+      logger.error('应用 Graphic EQ 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Graphic EQ 失败：${error.message}` : '应用 Graphic EQ 失败');
+    } finally {
+      setIsApplyingGraphicEq(false);
+    }
+  }
+
   async function handleChangeSpeedPreview(settings: ChangeSpeedSettings): Promise<Float32Array[]> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -4455,6 +4516,12 @@ export default function AudioEditorPage() {
                 disabled={!quantizedGeneratorSelection}
               >
                 Filter Curve EQ 滤波曲线均衡…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setGraphicEqDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Graphic EQ 图示均衡…
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setWahWahDialogOpen(true)}
@@ -5363,6 +5430,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingFilterCurveEq}
           onPreview={handleFilterCurveEqPreview}
           onApply={handleApplyFilterCurveEq}
+        />
+
+        <GraphicEqDialog
+          open={graphicEqDialogOpen}
+          onOpenChange={setGraphicEqDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingGraphicEq}
+          onPreview={handleGraphicEqPreview}
+          onApply={handleApplyGraphicEq}
         />
 
         <ChangeSpeedDialog

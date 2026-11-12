@@ -118,6 +118,17 @@ The implementation follows Audacity 4.0.2's two-stage K-weighting, double-state/
 
 The implementation follows Audacity 4.0.2's 16384-point real FFT, 20 Hz lower envelope reference, sample-rate/2 upper limit, odd filter length 21–8191 (default 8191), Blackman taper, centred impulse, and `L = 16384 - (M - 1)` overlap-add processing with original-selection-length restoration. The editor exposes linear/log frequency scales, grid lines, dB zoom/reset/invert, editable points and the ten factory presets. The captured 4.0.2 envelope evaluation uses piecewise-linear dB interpolation; this repository does not claim that the retained B-spline/Cosine/Cubic enumeration is fully wired into that release's Filter Curve DSP. `scripts/filter-curve-oracle.cpp` independently uses direct symmetric DFT and direct linear convolution rather than the product FFT; `npm run test:filter-curve:oracle` regenerates six frozen cases and checks FIR coefficients and PCM within accumulated Float32 round-off. No Audacity executable or upstream golden audio is bundled.
 
+## Audacity Graphic EQ algorithm
+
+- Upstream release: https://github.com/audacity/audacity/releases/tag/Audacity-4.0.2
+- Band-slider and B-spline source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/graphiceq/equalizationbandsliders.cpp and https://github.com/audacity/audacity/blob/Audacity-4.0.2/src/effects/builtin_collection/graphiceq/equalizationbandsliders.h
+- Band model and dialog source: https://github.com/audacity/audacity/tree/Audacity-4.0.2/src/effects/builtin_collection/graphiceq
+- Shared equalization DSP source: https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-builtin-effects/EqualizationFilter.cpp and https://github.com/audacity/audacity/blob/Audacity-4.0.2/au3/libraries/au3-builtin-effects/EqualizationBase.cpp
+- Purpose: GPL-licensed 31-band B-spline response, Blackman FIR, overlap-add convolution and fader-dialog reference for `src/lib/graphicEqEffect.ts` and its editor integration
+- License: GNU GPL Version 3; this repository's corresponding license is preserved in [`LICENSE`](LICENSE)
+
+The implementation follows Audacity 4.0.2's 31 third-octave band centres, −25…25 dB faders, B-spline response (including the 180-point envelope's endpoint behaviour), 16384-point real FFT, default 8191-tap Blackman taper, centred impulse and original-length overlap-add processing. The dialog implements Reset, Invert and double-click-to-zero, and disables bands above Nyquist. `scripts/graphic-eq-oracle.cpp` independently uses direct symmetric DFT and direct linear convolution rather than the product FFT; `npm run test:graphic-eq:oracle` regenerates four frozen cases and checks FIR coefficients and PCM within accumulated Float32 round-off. The implementation fixes the exact-Nyquist/highest-active-band interval boundary so it cannot generate non-finite output; this is a defensive boundary guard, not a claim of bit-identical behaviour for undefined upstream input states. No Audacity executable or upstream golden audio is bundled.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

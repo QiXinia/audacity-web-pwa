@@ -41,6 +41,7 @@
 | Normalize 标准化效果 | ✅ | 整轨选区统一分析直流与峰值，支持去直流、峰值 −145…0 dB、立体声联动／独立增益、真实试听、多轨原子提交和单次撤销 |
 | Loudness Normalization 响度标准化 | ✅ | 对照 Audacity 4.0.2 实现 EBU R128 两级 K-weighting、400ms block／100ms step、绝对与相对门控及 RMS；支持 LUFS／RMS 目标、立体声联动／独立、mono dual-mono、短选区、跨片段时间空隙、真实试听、多轨原子提交、单次撤销和独立 C++ 逐采样对拍 |
 | Filter Curve EQ 滤波曲线均衡 | ✅ | 对照 Audacity 4.0.2 实现 16384 点实数 FFT、21–8191 奇数 taps、Blackman FIR 与居中重叠相加卷积；支持对数／线性 dB 折线、十个工厂预设、控制点添加／拖动／删除、网格、dB 缩放、重置、反转、真实试听、多轨原子提交、单次撤销和独立直接 DFT／卷积 C++ oracle |
+| Graphic EQ 图示均衡 | ✅ | 对照 Audacity 4.0.2 实现 31 个三分之一倍频程滑杆、−25…25 dB、180 点包络语义的 B-spline 响应、16384 点实数 FFT、默认 8191 taps Blackman FIR；支持 Reset、Invert、双击归零、Nyquist 外频段停用、真实试听、多轨原子提交、单次撤销和独立直接 DFT／卷积 C++ oracle |
 | Repair 修复效果 | ✅ | 对照 Audacity 4.0.2 实现 LSAR 插值与线性／衰减回退；每轨选区最多 128 采样，支持跨片段上下文、多轨原子提交和单次撤销 |
 | Click Removal 咔哒声消除 | ✅ | 对照 Audacity 4.0.2 实现 8192 采样窗口、多尺度 RMS 尖峰检测与线性替换；Threshold 0…900、Width 0…40，每轨选区须大于 4096 采样，支持连续选区试听、多轨原子提交、单次撤销及官方 C++ 逐样本对拍 |
 | Noise Reduction 降噪 | ✅ | 对照 Audacity 4.0.2 实现两步 Noise Profile、2048 点 Hann/Hann STFT、1025 bin 功率统计、第二高功率判别、attack/release 时间平滑、几何频率平滑及 Reduce／Noise only 输出；官方 0…48 dB、Sensitivity 0.01…24、Smoothing 0…12 bands，支持双声道试听、多轨原子提交、单次撤销和独立 C++ 数值对拍 |
@@ -138,6 +139,9 @@ npm run test:loudness:oracle
 
 # 重新编译独立直接 DFT／卷积 Filter Curve EQ oracle 并核对冻结 fixture
 npm run test:filter-curve:oracle
+
+# 重新编译独立直接 DFT／卷积 Graphic EQ oracle 并核对冻结 fixture
+npm run test:graphic-eq:oracle
 
 # 测试 watch 模式
 npm run test:watch
@@ -237,6 +241,8 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/normalizeEffect.test.ts` | 整轨直流／峰值分析、立体声联动、精确参考样本、参数边界与 Float32 输出 | 7 |
 | `src/lib/filterCurveEffect.test.ts` | 官方默认 FIR、对数／线性包络、参数边界、立体声、重叠相加接缝、跨片段空隙与源偏移 | 9 |
 | `src/lib/filterCurveEffect.oracle.test.ts` | 独立 C++ 直接 DFT／线性卷积的默认及自定义 FIR、立体声、跨区块 PCM 数值对拍 | 7 |
+| `src/lib/graphicEqEffect.test.ts` | 官方 31 频段、B-spline 滑杆／中点／端点、8191 taps、采样率与参数边界、立体声、跨片段空隙及源偏移 | 7 |
+| `src/lib/graphicEqEffect.oracle.test.ts` | 独立 C++ 直接 DFT／线性卷积的多频段、立体声、短选区、Nyquist 重合与低采样率 PCM 数值对拍 | 4 |
 | `src/lib/amplifyEffect.test.ts` | 官方倍率范围、双向 dB 换算、跨声道峰值、削波许可、输入不可变与非法样本 | 5 |
 | `src/lib/changeTempoEffect.test.ts` | 官方参数范围、BPM／时长换算、滑块 warp、短输入精确 PCM、多声道共享位置、2000 万采样压力回归与输入不可变 | 11 |
 | `src/lib/distortionEffect.test.ts` | 11 种官方查找表、线性插值、增益混合、重复处理、DC 状态、多声道与参数边界 | 20 |
@@ -272,6 +278,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/services/projectService.wahWah.test.ts` | Wah Wah 双轨选区映射、源偏移、边界与拉伸元数据保持、单次提交及失败回滚 | 5 |
 | `src/services/projectService.normalize.test.ts` | Normalize 整轨分析、精确 PCM、多轨单次提交、立体声与失败回滚 | 7 |
 | `src/services/projectService.filterCurve.test.ts` | Filter Curve EQ 双轨精确 PCM、跨片段空隙、非有限输入零写入、完整所有权、平直跳过及失败清理 | 7 |
+| `src/services/projectService.graphicEq.test.ts` | Graphic EQ 双轨精确 PCM、跨片段空隙、非有限输入零写入、完整所有权、平直跳过及失败清理 | 7 |
 | `src/services/projectService.amplify.test.ts` | Amplify 共享峰值、选区写时复制、跨片段元数据、削波许可与失败回滚 | 7 |
 | `src/services/projectService.changeTempo.test.ts` | Change Tempo 多轨一次提交、部分选区 PCM、间隙缩放、已有拉伸归一化、0% 跳过与失败回滚 | 6 |
 | `src/services/projectService.distortion.test.ts` | Distortion 精确 PCM、跨片段 DC 状态、多轨单次提交、拉伸元数据与失败回滚 | 6 |
@@ -314,6 +321,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.wahWah.test.tsx` | Wah Wah 菜单、双声道真实试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.normalize.test.tsx` | Normalize 菜单、精确试听、多轨单次历史、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.filterCurve.test.tsx` | Filter Curve EQ 菜单、预设与曲线编辑、精确 FIR 试听、多轨单次历史、失败无历史与无选区禁用 | 4 |
+| `src/pages/AudioEditorPage/AudioEditorPage.graphicEq.test.tsx` | Graphic EQ 菜单、31 滑杆、Invert／Reset／双击归零、精确 FIR 试听、多轨单次历史、失败无历史与无选区禁用 | 4 |
 | `src/pages/AudioEditorPage/AudioEditorPage.amplify.test.tsx` | Amplify 菜单、共享峰值试听、多轨单次历史、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.changeTempo.test.tsx` | Change Tempo 真实菜单、BPM 初值、精确试听、多轨单次历史、可见选区、真实撤销及失败无历史 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.distortion.test.tsx` | Distortion 真实菜单、双声道精确试听、多轨单次历史、真实撤销、失败无写入与无选区禁用 | 3 |
@@ -325,7 +333,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.noiseReduction.test.tsx` | Noise Reduction 两步 Profile、双声道精确试听、多轨单次历史、失败无历史与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.truncateSilence.test.tsx` | Truncate Silence 真实菜单、联动双声道 PCM 试听、多轨单次历史、失败／无变更无历史与无选区禁用 | 4 |
 
-当前完整前端回归共 **123 个测试文件、985 项测试**；本次实际完整运行全部通过且无跳过；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
+当前完整前端回归共 **127 个测试文件、1007 项测试**；本次实际完整运行全部通过且无跳过；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
 
 运行测试：
 
