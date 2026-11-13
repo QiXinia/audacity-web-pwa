@@ -205,6 +205,10 @@ import {
   type CompressorSettings,
 } from '@/lib/compressorEffect';
 import {
+  DEFAULT_LEGACY_COMPRESSOR_SETTINGS,
+  type LegacyCompressorSettings,
+} from '@/lib/legacyCompressorEffect';
+import {
   processLimiterChannels,
   type LimiterSettings,
 } from '@/lib/limiterEffect';
@@ -3087,6 +3091,38 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleApplyLegacyCompressor(legacySettings: LegacyCompressorSettings = DEFAULT_LEGACY_COMPRESSOR_SETTINGS) {
+    if (!project || !quantizedGeneratorSelection) return;
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    if (targets.length === 0) {
+      toast.info('选区内没有可处理的音频');
+      return;
+    }
+    const before = {
+      ...(JSON.parse(JSON.stringify(project)) as IProject),
+      selection: activeSelection,
+    };
+    const changed = await projectService.legacyCompressorSelectionOnTracks(
+      project.id,
+      activeSelection,
+      legacySettings,
+      targets,
+    );
+    const updated = await projectService.getProject(project.id);
+    if (!updated) throw new Error('应用 Legacy Compressor 后无法重新读取工程');
+    setProject(updated);
+    setSelection(updated.selection);
+    pushHistoryCmd({
+      id: generateId(),
+      label: 'Legacy Compressor 旧版压缩器',
+      execute: () => updated,
+      undo: () => before,
+    }, before);
+    updateHistoryState();
+    toast.success(`已对 ${changed} 个片段应用 Legacy Compressor`);
+  }
+
   async function handleLimiterPreview(settings: LimiterSettings): Promise<LimiterPreview> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -5042,6 +5078,12 @@ export default function AudioEditorPage() {
                 disabled={!quantizedGeneratorSelection}
               >
                 Compressor 压缩器…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => void handleApplyLegacyCompressor()}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Legacy Compressor 旧版压缩器
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setLimiterDialogOpen(true)}
