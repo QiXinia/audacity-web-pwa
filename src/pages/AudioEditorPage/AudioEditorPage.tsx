@@ -209,6 +209,10 @@ import {
   type LegacyCompressorSettings,
 } from '@/lib/legacyCompressorEffect';
 import {
+  DEFAULT_NOISE_GATE_SETTINGS,
+  type NoiseGateSettings,
+} from '@/lib/noiseGateEffect';
+import {
   processLimiterChannels,
   type LimiterSettings,
 } from '@/lib/limiterEffect';
@@ -3124,6 +3128,38 @@ export default function AudioEditorPage() {
     toast.success(`已对 ${changed} 个片段应用 Legacy Compressor`);
   }
 
+  async function handleApplyNoiseGate(gateSettings: NoiseGateSettings = DEFAULT_NOISE_GATE_SETTINGS) {
+    if (!project || !quantizedGeneratorSelection) return;
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    if (targets.length === 0) {
+      toast.info('选区内没有可处理的音频');
+      return;
+    }
+    const before = {
+      ...(JSON.parse(JSON.stringify(project)) as IProject),
+      selection: activeSelection,
+    };
+    const changed = await projectService.noiseGateSelectionOnTracks(
+      project.id,
+      activeSelection,
+      gateSettings,
+      targets,
+    );
+    const updated = await projectService.getProject(project.id);
+    if (!updated) throw new Error('应用 Noise Gate 后无法重新读取工程');
+    setProject(updated);
+    setSelection(updated.selection);
+    pushHistoryCmd({
+      id: generateId(),
+      label: 'Noise Gate 噪声门',
+      execute: () => updated,
+      undo: () => before,
+    }, before);
+    updateHistoryState();
+    toast.success(`已对 ${changed} 个片段应用 Noise Gate`);
+  }
+
   async function handleLimiterPreview(settings: LimiterSettings): Promise<LimiterPreview> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -5085,6 +5121,12 @@ export default function AudioEditorPage() {
                 disabled={!quantizedGeneratorSelection}
               >
                 Legacy Compressor 旧版压缩器
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => void handleApplyNoiseGate()}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Noise Gate 噪声门
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setLimiterDialogOpen(true)}
