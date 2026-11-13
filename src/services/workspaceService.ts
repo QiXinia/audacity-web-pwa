@@ -5,6 +5,7 @@ import { normalizeVerticalZoom } from '@/lib/verticalZoom';
 export interface WorkspaceLayout {
   showTrackPanel: boolean;
   showMixer: boolean;
+  showClipping: boolean;
   viewMode: ViewMode;
   horizontalZoom: number;
   verticalZoom: number;
@@ -32,6 +33,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
     layout: {
       showTrackPanel: true,
       showMixer: false,
+      showClipping: false,
       viewMode: 'waveform',
       horizontalZoom: 100,
       verticalZoom: 1,
@@ -44,6 +46,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
     layout: {
       showTrackPanel: true,
       showMixer: false,
+      showClipping: false,
       viewMode: 'both',
       horizontalZoom: 100,
       verticalZoom: 1,
@@ -56,6 +59,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
     layout: {
       showTrackPanel: true,
       showMixer: true,
+      showClipping: false,
       viewMode: 'both',
       horizontalZoom: 100,
       verticalZoom: 1.25,
@@ -78,6 +82,7 @@ function normalizeLayout(value: Partial<WorkspaceLayout> | undefined, fallback: 
   return {
     showTrackPanel: typeof value?.showTrackPanel === 'boolean' ? value.showTrackPanel : fallback.showTrackPanel,
     showMixer: typeof value?.showMixer === 'boolean' ? value.showMixer : fallback.showMixer,
+    showClipping: typeof value?.showClipping === 'boolean' ? value.showClipping : fallback.showClipping,
     viewMode: modes.includes(value?.viewMode as ViewMode) ? value!.viewMode as ViewMode : fallback.viewMode,
     horizontalZoom: Number.isFinite(value?.horizontalZoom)
       ? normalizeHorizontalZoom(Number(value!.horizontalZoom), fallback.horizontalZoom)

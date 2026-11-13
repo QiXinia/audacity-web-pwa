@@ -1,5 +1,6 @@
 import type { IClip } from '@/types/project';
 import { getClipStretchRatio } from '@/lib/clipEditing';
+import { findClippedSampleRanges } from '@/lib/clippingDetection';
 
 /** Draw one linearly scaled waveform, matching Audacity's vertical display bounds. */
 export function drawWaveform(
@@ -12,6 +13,7 @@ export function drawWaveform(
   sampleRate: number,
   verticalZoom: number,
   alpha: number,
+  showClipping = false,
 ) {
   const ratio = getClipStretchRatio(clip);
   const sourceStart = Math.max(0, clip.offset * sampleRate);
@@ -57,6 +59,17 @@ export function drawWaveform(
   ctx.strokeStyle = color;
   ctx.lineWidth = 0.5;
   ctx.stroke();
+
+  if (showClipping) {
+    const clippedRanges = findClippedSampleRanges(data, Math.floor(sourceStart), Math.ceil(sourceEnd));
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#d93a34';
+    for (const range of clippedRanges) {
+      const startX = Math.floor(((range.startSample - sourceStart) / samplesPerPixel));
+      const endX = Math.ceil(((range.endSample - sourceStart) / samplesPerPixel));
+      ctx.fillRect(startX, 0, Math.max(1, endX - startX), height);
+    }
+  }
 
   ctx.globalAlpha = 1;
 }

@@ -384,6 +384,7 @@ export default function AudioEditorPage() {
     ?? workspaceStore.presets[0];
   const [showTrackPanel, setShowTrackPanel] = useState(initialWorkspace.layout.showTrackPanel);
   const [showMixer, setShowMixer] = useState(initialWorkspace.layout.showMixer);
+  const [showClipping, setShowClipping] = useState(initialWorkspace.layout.showClipping);
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
   const [generatorDurations, setGeneratorDurations] = useState<Record<GeneratorKind, number>>(() => ({
@@ -496,10 +497,11 @@ export default function AudioEditorPage() {
   const workspaceLayout = useMemo<WorkspaceLayout>(() => ({
     showTrackPanel,
     showMixer,
+    showClipping,
     viewMode,
     horizontalZoom,
     verticalZoom,
-  }), [showTrackPanel, showMixer, viewMode, horizontalZoom, verticalZoom]);
+  }), [showTrackPanel, showMixer, showClipping, viewMode, horizontalZoom, verticalZoom]);
 
   // Workspace customizations are local and automatically restored on reopen.
   useEffect(() => {
@@ -644,6 +646,7 @@ export default function AudioEditorPage() {
         setSnapMode(proj.viewState.snapMode ?? 'clips');
         setShowTrackPanel(workspace.layout.showTrackPanel);
         setShowMixer(workspace.layout.showMixer);
+        setShowClipping(workspace.layout.showClipping);
         setScrollX(proj.viewState.scrollX);
         setSelection(proj.selection);
         const restoredLoop = normalizeLoopRegion(proj.loopRegion);
@@ -1171,6 +1174,7 @@ export default function AudioEditorPage() {
   function applyWorkspaceLayout(layout: WorkspaceLayout) {
     setShowTrackPanel(layout.showTrackPanel);
     setShowMixer(layout.showMixer);
+    setShowClipping(layout.showClipping);
     setViewMode(layout.viewMode);
     setHorizontalZoom(normalizeHorizontalZoom(layout.horizontalZoom));
     setVerticalZoom(normalizeVerticalZoom(layout.verticalZoom));
@@ -4978,6 +4982,9 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setViewMode('waveform')}>波形</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('spectrum')}>频谱</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('both')}>波形与频谱</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShowClipping((visible) => !visible)}>
+                {showClipping ? '隐藏' : '显示'}波形削波
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>水平缩放 {Math.round(horizontalZoom)}%</DropdownMenuLabel>
               <DropdownMenuItem
@@ -5846,6 +5853,7 @@ export default function AudioEditorPage() {
                 viewMode={viewMode}
                 scrollX={scrollX}
                 verticalZoom={verticalZoom}
+                showClipping={showClipping}
                 isSelected={selectedTrackId === track.id}
                 selectedClips={selectedClips}
                 onSelectClip={(clipId, mode) => selectClip(track.id, clipId, mode)}
@@ -6873,6 +6881,7 @@ function TrackTimeline({
   viewMode,
   scrollX,
   verticalZoom,
+  showClipping,
   isSelected,
   selectedClips,
   onSelectClip,
@@ -6894,6 +6903,7 @@ function TrackTimeline({
   viewMode: ViewMode;
   scrollX: number;
   verticalZoom: number;
+  showClipping: boolean;
   isSelected: boolean;
   selectedClips: ClipKey[];
   onSelectClip: (clipId: string, mode: ClipSelectionMode) => void;
@@ -6964,6 +6974,7 @@ function TrackTimeline({
           pxPerSec={pxPerSec}
           trackHeight={trackHeight}
           verticalZoom={verticalZoom}
+          showClipping={showClipping}
           viewMode={viewMode}
           isSelected={selectedClips.some((key) => key.trackId === track.id && key.clipId === clip.id)}
           hasMultipleSelections={selectedClips.length > 1}
@@ -6989,6 +7000,7 @@ function ClipItem({
   pxPerSec,
   trackHeight,
   verticalZoom,
+  showClipping,
   viewMode,
   isSelected,
   hasMultipleSelections,
@@ -7007,6 +7019,7 @@ function ClipItem({
   pxPerSec: number;
   trackHeight: number;
   verticalZoom: number;
+  showClipping: boolean;
   viewMode: ViewMode;
   isSelected: boolean;
   hasMultipleSelections: boolean;
@@ -7066,7 +7079,7 @@ function ClipItem({
 
     // Draw waveform or spectrum based on view mode
     if (viewMode === 'waveform' || viewMode === 'both') {
-      drawWaveform(ctx, audioData, width, height, '#20252a', clip, sampleRate, verticalZoom, viewMode === 'both' ? 0.8 : 1);
+      drawWaveform(ctx, audioData, width, height, '#20252a', clip, sampleRate, verticalZoom, viewMode === 'both' ? 0.8 : 1, showClipping);
     }
 
     if (viewMode === 'spectrum' || viewMode === 'both') {
@@ -7084,7 +7097,7 @@ function ClipItem({
         viewMode === 'both' ? 0.5 : 1,
       );
     }
-  }, [audioData, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, trackColor, trackHeight, sampleRate, verticalZoom]);
+  }, [audioData, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, trackColor, trackHeight, sampleRate, verticalZoom, showClipping]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;

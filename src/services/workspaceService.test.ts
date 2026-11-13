@@ -14,6 +14,7 @@ import {
 const layout: WorkspaceLayout = {
   showTrackPanel: false,
   showMixer: true,
+  showClipping: true,
   viewMode: 'spectrum',
   horizontalZoom: 240,
   verticalZoom: 2,
