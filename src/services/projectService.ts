@@ -1461,6 +1461,112 @@ class ProjectService {
     return changedClips;
   }
 
+  /** Split complete stereo tracks into independent left/right mono tracks. */
+  async splitStereoToMonoTracks(
+    projectId: string,
+    targets: readonly EchoTrackAudio[],
+  ): Promise<number> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('没有可拆分的立体声轨道');
+
+    const seenTracks = new Set<string>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, ITrack[]>();
+    let createdTracks = 0;
+
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const sourceTrack = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!sourceTrack) throw new Error(`目标轨道不可用：${target.trackId}`);
+
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+
+      if (sourceTrack.clips.length !== ordered.length || sourceTrack.clips.some((clip) => !seenClips.has(clip.id))) {
+        throw new Error(`轨道 ${sourceTrack.id} 的片段覆盖不完整`);
+      }
+
+      const leftClips: IClip[] = [];
+      const rightClips: IClip[] = [];
+      for (const { input, clip } of ordered) {
+        const channels = input.sampleData;
+        if (channels.length !== 2) throw new Error(`轨道 ${sourceTrack.id} 包含无法拆分的 ${channels.length} 声道片段`);
+        const [leftData, rightData] = channels;
+        if (!leftData || !rightData || leftData.length !== rightData.length) {
+          throw new Error('左右声道长度必须一致');
+        }
+
+        const leftBufferId = generateId();
+        const rightBufferId = generateId();
+        const originalDuration = leftData.length / project.sampleRate;
+        const baseClip = {
+          startTime: clip.startTime,
+          offset: input.sourceOffset,
+          duration: clip.duration,
+          originalDuration,
+          stretchRatio: 1,
+          gain: clip.gain,
+          fadeIn: clip.fadeIn,
+          fadeOut: clip.fadeOut,
+        };
+        leftClips.push({ ...baseClip, id: generateId(), audioBufferId: leftBufferId, name: `${clip.name ?? 'Clip'} L` });
+        rightClips.push({ ...baseClip, id: generateId(), audioBufferId: rightBufferId, name: `${clip.name ?? 'Clip'} R` });
+        pendingBuffers.push(
+          { id: leftBufferId, sampleRate: project.sampleRate, sampleData: [new Float32Array(leftData)] },
+          { id: rightBufferId, sampleRate: project.sampleRate, sampleData: [new Float32Array(rightData)] },
+        );
+      }
+
+      const colorOffset = project.tracks.length + createdTracks;
+      const leftTrack: ITrack = {
+        id: generateId(),
+        name: `${sourceTrack.name} L`,
+        type: 'audio',
+        gain: sourceTrack.gain,
+        pan: -1,
+        muted: false,
+        solo: false,
+        armed: false,
+        color: getTrackColor(colorOffset),
+        clips: leftClips,
+        effects: [],
+      };
+      const rightTrack: ITrack = {
+        id: generateId(),
+        name: `${sourceTrack.name} R`,
+        type: 'audio',
+        gain: sourceTrack.gain,
+        pan: 1,
+        muted: false,
+        solo: false,
+        armed: false,
+        color: getTrackColor(colorOffset + 1),
+        clips: rightClips,
+        effects: [],
+      };
+      replacements.set(sourceTrack.id, [leftTrack, rightTrack]);
+      createdTracks += 2;
+    }
+
+    const nextTracks = project.tracks.flatMap((track) => replacements.get(track.id) ?? track);
+    const updatedProject: IProject = {
+      ...project,
+      tracks: nextTracks,
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return createdTracks;
+  }
+
   /** Apply pitch-preserving Change Tempo and warp the selected timeline atomically. */
   async changeTempoSelectionOnTracks(
     projectId: string,

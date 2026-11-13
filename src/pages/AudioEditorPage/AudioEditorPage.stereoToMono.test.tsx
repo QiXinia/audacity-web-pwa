@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   warning: vi.fn(),
   error: vi.fn(),
   stereoToMono: vi.fn(),
+  splitStereo: vi.fn(),
   loadChannels: vi.fn(),
 }));
 let mockProject: IProject;
@@ -58,6 +59,7 @@ vi.mock('@/services/projectService', () => ({
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
     stereoToMonoOnTracks: mocks.stereoToMono,
+    splitStereoToMonoTracks: mocks.splitStereo,
   },
 }));
 vi.mock('@/services/historyService', () => ({
@@ -110,6 +112,7 @@ describe('AudioEditorPage Stereo To Mono', () => {
     mockProject = makeProject();
     mocks.loadChannels.mockResolvedValue([new Float32Array(10).fill(0.2), new Float32Array(10).fill(0.6)]);
     mocks.stereoToMono.mockResolvedValue(1);
+    mocks.splitStereo.mockResolvedValue(2);
   });
 
   it('applies the track menu operation once and records one undo entry', async () => {
@@ -121,5 +124,16 @@ describe('AudioEditorPage Stereo To Mono', () => {
     await waitFor(() => expect(mocks.stereoToMono).toHaveBeenCalledTimes(1));
     expect(mocks.push).toHaveBeenCalledTimes(1);
     expect(mocks.push.mock.calls[0][0].label).toBe('Stereo To Mono');
+  });
+
+  it('splits stereo into separate mono tracks and records one undo entry', async () => {
+    render(<AudioEditorPage />);
+    expect(await screen.findByText('Stereo integration')).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
+    fireEvent.click(await screen.findByText('Split Stereo To Mono 立体声拆分为单声道'));
+
+    await waitFor(() => expect(mocks.splitStereo).toHaveBeenCalledTimes(1));
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push.mock.calls[0][0].label).toBe('Split Stereo To Mono');
   });
 });
