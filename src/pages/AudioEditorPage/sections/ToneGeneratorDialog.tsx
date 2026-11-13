@@ -35,7 +35,7 @@ import {
   type GeneratorPresetStore,
   type TonePresetSettings,
 } from '@/lib/generatorPresets';
-import { generateTone, type ToneRequest, type ToneWaveform } from '@/lib/toneGenerator';
+import { generateToneChannels, type ToneChannelCount, type ToneRequest, type ToneWaveform } from '@/lib/toneGenerator';
 import GeneratorPresetsBar from './GeneratorPresetsBar';
 import { useGeneratorPreview } from './useGeneratorPreview';
 
@@ -71,6 +71,7 @@ export default function ToneGeneratorDialog({
   const [frequency, setFrequency] = useState(String(initialPreset.settings.frequency));
   const [amplitude, setAmplitude] = useState(String(initialPreset.settings.amplitude));
   const [duration, setDuration] = useState('30');
+  const [channelCount, setChannelCount] = useState<ToneChannelCount>(1);
   const [presetError, setPresetError] = useState<string | null>(null);
   const [presetNotice, setPresetNotice] = useState<string | null>(null);
   const { isPreviewing, previewError, startPreview, stopPreview } = useGeneratorPreview();
@@ -103,16 +104,18 @@ export default function ToneGeneratorDialog({
       frequency: Number(frequency),
       amplitude: Number(amplitude),
       duration: Number(duration),
+      channelCount,
     });
   }
 
   function preview() {
-    void startPreview(() => generateTone({
+    void startPreview(() => generateToneChannels({
       waveform,
       frequency: Number(frequency),
       amplitude: Number(amplitude),
       duration: Number(duration),
       sampleRate,
+      channelCount,
     }), sampleRate);
   }
 
@@ -246,7 +249,7 @@ export default function ToneGeneratorDialog({
         <DialogHeader>
           <DialogTitle>生成音调</DialogTitle>
           <DialogDescription>
-            按 Audacity Tone 的恒定频率与振幅生成真实单声道音频片段。
+            按 Audacity Tone 的恒定频率与振幅生成真实单声道或立体声音频片段。
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
@@ -306,6 +309,21 @@ export default function ToneGeneratorDialog({
                 required
               />
             </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="tone-channels">声道</Label>
+            <Select
+              value={String(channelCount)}
+              onValueChange={(value) => setChannelCount(Number(value) as ToneChannelCount)}
+            >
+              <SelectTrigger id="tone-channels" aria-label="音调声道">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1">单声道</SelectItem>
+                <SelectItem value="2">立体声</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-2">
             <Label htmlFor="tone-duration">时长（秒）</Label>

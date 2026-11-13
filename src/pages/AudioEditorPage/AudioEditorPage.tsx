@@ -102,7 +102,7 @@ import {
 } from '@/services/clipboardService';
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
-import { generateTone, type ToneRequest } from '@/lib/toneGenerator';
+import { generateToneChannels, type ToneRequest } from '@/lib/toneGenerator';
 import { generateChirp, type ChirpRequest } from '@/lib/chirpGenerator';
 import { generateDtmf, type DtmfRequest } from '@/lib/dtmfGenerator';
 import { generatePluck, type PluckRequest } from '@/lib/pluckGenerator';
@@ -1176,16 +1176,17 @@ export default function AudioEditorPage() {
       const duration = activeSelection
         ? activeSelection.end - activeSelection.start
         : settings.duration;
-      const channels = generateTone({
+      const channels = generateToneChannels({
         waveform: settings.waveform,
         frequency: settings.frequency,
         amplitude: settings.amplitude,
         duration,
         sampleRate: project.sampleRate,
+        channelCount: settings.channelCount,
       });
       const clips = await projectService.addGeneratedAudioToTracks(
         project.id,
-        trackIds.map((trackId) => ({ trackId, sampleData: [channels] })),
+        trackIds.map((trackId) => ({ trackId, sampleData: channels })),
         project.sampleRate,
         activeSelection?.start ?? cursorPosition,
         `音调 ${settings.frequency} Hz`,

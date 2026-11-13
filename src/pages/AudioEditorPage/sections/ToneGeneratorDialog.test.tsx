@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import ToneGeneratorDialog from '@/pages/AudioEditorPage/sections/ToneGeneratorDialog';
 import { GeneratorPreviewPlayer } from '@/lib/generatorPreview';
-import { generateTone } from '@/lib/toneGenerator';
+import { generateToneChannels } from '@/lib/toneGenerator';
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -64,7 +64,18 @@ describe('ToneGeneratorDialog', () => {
       frequency: 220,
       amplitude: 0.25,
       duration: 1.5,
+      channelCount: 1,
     });
+  });
+
+  it('submits stereo channel selection', async () => {
+    const view = renderDialog();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+    fireEvent.click(view.getByLabelText('音调声道'));
+    fireEvent.click(await view.findByRole('option', { name: '立体声' }));
+    fireEvent.click(view.getByRole('button', { name: '生成音调' }));
+
+    expect(view.props.onGenerate).toHaveBeenCalledWith(expect.objectContaining({ channelCount: 2 }));
   });
 
   it('locks a sample-quantized selection duration and preserves both endpoints', async () => {
@@ -106,7 +117,7 @@ describe('ToneGeneratorDialog', () => {
 
   it('previews the exact tone without submitting and cleans up on stop and completion', async () => {
     let finishPreview!: () => void;
-    const play = vi.spyOn(GeneratorPreviewPlayer.prototype, 'play')
+    const play = vi.spyOn(GeneratorPreviewPlayer.prototype, 'playChannels')
       .mockImplementation(async (_samples, _sampleRate, onEnded) => { finishPreview = onEnded; });
     const stop = vi.spyOn(GeneratorPreviewPlayer.prototype, 'stop');
     const view = renderDialog({ sampleRate: 100 });
@@ -116,11 +127,11 @@ describe('ToneGeneratorDialog', () => {
 
     fireEvent.click(view.getByRole('button', { name: '试听' }));
     await waitFor(() => expect(play).toHaveBeenCalledOnce());
-    const [samples, sampleRate] = play.mock.calls[0];
+    const [channels, sampleRate] = play.mock.calls[0];
     expect(sampleRate).toBe(100);
-    expect(Array.from(samples)).toEqual(Array.from(generateTone({
-      waveform: 'sine', frequency: 10, amplitude: 0.25, duration: 0.03, sampleRate: 100,
-    })));
+    expect(channels).toEqual(generateToneChannels({
+      waveform: 'sine', frequency: 10, amplitude: 0.25, duration: 0.03, sampleRate: 100, channelCount: 1,
+    }));
     expect(view.props.onGenerate).not.toHaveBeenCalled();
     expect(view.getByRole('button', { name: '停止试听' })).toHaveAttribute('aria-pressed', 'true');
 

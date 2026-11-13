@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateTone, type ToneWaveform } from '@/lib/toneGenerator';
+import { generateTone, generateToneChannels, type ToneWaveform } from '@/lib/toneGenerator';
 
 function samples(waveform: ToneWaveform, sampleRate = 8): number[] {
   return Array.from(generateTone({
@@ -8,13 +8,14 @@ function samples(waveform: ToneWaveform, sampleRate = 8): number[] {
     amplitude: 1,
     duration: 1,
     sampleRate,
+    channelCount: 1,
   }));
 }
 
 describe('Audacity-compatible tone generation', () => {
   it('generates a deterministic sine with the requested sample count and amplitude', () => {
-    const first = generateTone({ waveform: 'sine', frequency: 440, amplitude: 0.8, duration: 0.01, sampleRate: 44100 });
-    const second = generateTone({ waveform: 'sine', frequency: 440, amplitude: 0.8, duration: 0.01, sampleRate: 44100 });
+    const first = generateTone({ waveform: 'sine', frequency: 440, amplitude: 0.8, duration: 0.01, sampleRate: 44100, channelCount: 1 });
+    const second = generateTone({ waveform: 'sine', frequency: 440, amplitude: 0.8, duration: 0.01, sampleRate: 44100, channelCount: 1 });
 
     expect(first).toHaveLength(441);
     expect(first).toEqual(second);
@@ -39,6 +40,7 @@ describe('Audacity-compatible tone generation', () => {
       amplitude: 0.5,
       duration: 0.001,
       sampleRate: 8000,
+      channelCount: 1,
     });
 
     expect(result).toHaveLength(8);
@@ -49,12 +51,40 @@ describe('Audacity-compatible tone generation', () => {
   });
 
   it('rejects invalid frequency, amplitude, duration and sample rate', () => {
-    const valid = { waveform: 'sine' as const, frequency: 440, amplitude: 0.8, duration: 1, sampleRate: 44100 };
+    const valid = { waveform: 'sine' as const, frequency: 440, amplitude: 0.8, duration: 1, sampleRate: 44100, channelCount: 1 as const };
     expect(() => generateTone({ ...valid, frequency: 22050.01 })).toThrow(/Nyquist/);
     expect(() => generateTone({ ...valid, frequency: 0 })).toThrow(/Frequency/);
     expect(() => generateTone({ ...valid, amplitude: 1.01 })).toThrow(/Amplitude/);
     expect(() => generateTone({ ...valid, amplitude: -0.01 })).toThrow(/Amplitude/);
     expect(() => generateTone({ ...valid, duration: 0 })).toThrow(/Duration/);
     expect(() => generateTone({ ...valid, sampleRate: 0 })).toThrow(/Sample rate/);
+  });
+
+  it('generates two equal-length independent stereo channels deterministically', () => {
+    const channels = generateToneChannels({
+      waveform: 'sine',
+      frequency: 440,
+      amplitude: 0.8,
+      duration: 0.01,
+      sampleRate: 44100,
+      channelCount: 2,
+    });
+
+    expect(channels).toHaveLength(2);
+    expect(channels[0]).toHaveLength(441);
+    expect(channels[1]).toHaveLength(441);
+    expect(channels[0]).toEqual(channels[1]);
+    expect(channels[0]).not.toBe(channels[1]);
+  });
+
+  it('rejects an unsupported channel count', () => {
+    expect(() => generateToneChannels({
+      waveform: 'sine',
+      frequency: 440,
+      amplitude: 0.8,
+      duration: 0.01,
+      sampleRate: 44100,
+      channelCount: 3 as never,
+    })).toThrow(/channel count/);
   });
 });

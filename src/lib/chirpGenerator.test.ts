@@ -60,6 +60,7 @@ describe('Audacity-compatible Chirp generation', () => {
         amplitude: 0.5,
         duration: valid.duration,
         sampleRate: valid.sampleRate,
+        channelCount: 1,
       });
       expect(chirp).toEqual(tone);
     },

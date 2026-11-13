@@ -1,4 +1,5 @@
 export type ToneWaveform = 'sine' | 'square' | 'sawtooth' | 'squareNoAlias' | 'triangle';
+export type ToneChannelCount = 1 | 2;
 
 export interface ToneSettings {
   waveform: ToneWaveform;
@@ -6,27 +7,35 @@ export interface ToneSettings {
   amplitude: number;
   duration: number;
   sampleRate: number;
+  channelCount: ToneChannelCount;
 }
 
-export type ToneRequest = Pick<ToneSettings, 'waveform' | 'frequency' | 'amplitude' | 'duration'>;
+export type ToneRequest = Pick<
+  ToneSettings,
+  'waveform' | 'frequency' | 'amplitude' | 'duration' | 'channelCount'
+>;
 
 function fraction(value: number): number {
   return value - Math.floor(value);
 }
 
 /**
- * Generate one mono channel using Audacity's ToneGenBase waveform equations.
- * Frequency and amplitude are constant for Tone (as opposed to Chirp).
+ * Generate one or two deterministic channels using Audacity's ToneGenBase
+ * waveform equations. Frequency and amplitude are constant for Tone.
  */
-export function generateTone({
+export function generateToneChannels({
   waveform,
   frequency,
   amplitude,
   duration,
   sampleRate,
-}: ToneSettings): Float32Array {
+  channelCount,
+}: ToneSettings): Float32Array[] {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
     throw new RangeError('Sample rate must be greater than zero');
+  }
+  if (channelCount !== 1 && channelCount !== 2) {
+    throw new RangeError('Tone channel count must be 1 or 2');
   }
   if (!Number.isFinite(frequency) || frequency < 1 || frequency > sampleRate / 2) {
     throw new RangeError('Frequency must be between 1 Hz and the Nyquist frequency');
@@ -86,5 +95,9 @@ export function generateTone({
     positionInCycles += frequency;
   }
 
-  return output;
+  return Array.from({ length: channelCount }, () => output.slice());
+}
+
+export function generateTone(settings: ToneSettings): Float32Array {
+  return generateToneChannels(settings)[0]!;
 }
