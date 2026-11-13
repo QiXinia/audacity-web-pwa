@@ -2474,7 +2474,10 @@ export default function AudioEditorPage() {
         toast.info('选区内没有可处理的音频');
         return;
       }
-      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
       const changed = await projectService.classicFilterSelectionOnTracks(
         project.id,
         activeSelection,
@@ -2484,12 +2487,13 @@ export default function AudioEditorPage() {
       const updated = await projectService.getProject(project.id);
       if (!updated) throw new Error('应用 Classic Filters 后无法重新读取工程');
       setProject(updated);
+      setSelection(updated.selection);
       pushHistoryCmd({
         id: generateId(),
         label: 'Classic Filters',
         execute: () => updated,
         undo: () => before,
-      });
+      }, before);
       updateHistoryState();
       setClassicFilterDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Classic Filters`);
