@@ -80,6 +80,15 @@ import {
   type TremoloSettings,
 } from '@/lib/tremoloEffect';
 import {
+  MAX_AUTO_DUCK_TOTAL_SAMPLES,
+  applyAutoDuckPlanToChannels,
+  createAutoDuckPlan,
+  getAutoDuckTimelinePlacement,
+  renderAutoDuckSelectionChannels,
+  validateAutoDuckSettings,
+  type AutoDuckSettings,
+} from '@/lib/autoDuckEffect';
+import {
   createBassTrebleState,
   isBassTrebleBypassed,
   processBassTrebleChannels,
@@ -185,6 +194,8 @@ export type PhaserClipAudio = EchoClipAudio;
 export type PhaserTrackAudio = EchoTrackAudio;
 export type TremoloClipAudio = EchoClipAudio;
 export type TremoloTrackAudio = EchoTrackAudio;
+export type AutoDuckClipAudio = EchoClipAudio;
+export type AutoDuckTrackAudio = EchoTrackAudio;
 export type BassTrebleClipAudio = EchoClipAudio;
 export type BassTrebleTrackAudio = EchoTrackAudio;
 export type ReverbClipAudio = EchoClipAudio;
@@ -1738,6 +1749,125 @@ class ProjectService {
     const updatedProject: IProject = {
       ...project,
       // Persist the exact processed range so redo and a later reload restore it.
+      selection,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
+  }
+
+  /** Apply Audacity 4.0.2 Auto Duck from one explicit control track to all other targets. */
+  async autoDuckSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: AutoDuckSettings,
+    targets: readonly AutoDuckTrackAudio[],
+    controlTrackId: string,
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('Auto Duck 选区必须是有限的正时长区间');
+    }
+    validateAutoDuckSettings(settings);
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (!controlTrackId) throw new Error('请选择 Auto Duck 控制轨');
+    if (targets.length < 2) throw new Error('Auto Duck 至少需要一条目标轨和一条控制轨');
+
+    const seenTracks = new Set<string>();
+    const resolvedTargets = targets.map((target) => {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (ordered.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+      const channelCount = ordered[0]?.input.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error(`轨道 ${target.trackId} 没有音频声道`);
+      for (const { input } of ordered) {
+        if (input.sampleData.length !== channelCount) {
+          throw new Error(`轨道 ${target.trackId} 的选区声道数不一致`);
+        }
+      }
+      return { target, track, ordered };
+    });
+    const control = resolvedTargets.find(({ target }) => target.trackId === controlTrackId);
+    if (!control) throw new Error('Auto Duck 控制轨不在选区音频中');
+    const controlChannels = renderAutoDuckSelectionChannels(
+      control.ordered.map(({ input, clip }) => ({
+        startTime: clip.startTime,
+        duration: clip.duration,
+        sourceOffset: input.sourceOffset,
+        sampleData: input.sampleData,
+      })),
+      selection,
+      project.sampleRate,
+    );
+    const plan = createAutoDuckPlan(controlChannels[0], settings, project.sampleRate);
+    if (plan.length === 0) return 0;
+
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    let changedClips = 0;
+    let selectedSamples = 0;
+    for (const resolved of resolvedTargets) {
+      if (resolved.target.trackId === controlTrackId) continue;
+      const replacements = new Map<string, IClip>();
+      for (const { input, clip } of resolved.ordered) {
+        const channelLength = input.sampleData[0]?.length ?? 0;
+        const placement = getAutoDuckTimelinePlacement(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!placement) throw new Error(`片段“${clip.name ?? clip.id}”不在 Auto Duck 选区内`);
+        const selectedChannels = input.sampleData.map((channel) => (
+          channel.slice(placement.startSample, placement.endSample)
+        ));
+        selectedSamples += (selectedChannels[0]?.length ?? 0) * selectedChannels.length;
+        if (selectedSamples > MAX_AUTO_DUCK_TOTAL_SAMPLES) {
+          throw new RangeError('Auto Duck 目标选区超过 2000 万采样上限，请缩短选区或减少轨道');
+        }
+        const ducked = applyAutoDuckPlanToChannels(
+          selectedChannels,
+          plan,
+          settings,
+          project.sampleRate,
+          placement.timelineSample,
+        );
+        const processed = input.sampleData.map((channel, channelIndex) => {
+          const next = new Float32Array(channel);
+          next.set(ducked[channelIndex], placement.startSample);
+          return next;
+        });
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData: processed });
+        replacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+        changedClips += 1;
+      }
+      nextTracks.set(resolved.track.id, {
+        ...resolved.track,
+        clips: resolved.track.clips.map((clip) => replacements.get(clip.id) ?? clip),
+      });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
       selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };

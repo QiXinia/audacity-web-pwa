@@ -174,6 +174,13 @@ import {
   type TremoloSettings,
 } from '@/lib/tremoloEffect';
 import {
+  applyAutoDuckPlanToChannels,
+  createAutoDuckPlan,
+  getAutoDuckTimelinePlacement,
+  renderAutoDuckSelectionChannels,
+  type AutoDuckSettings,
+} from '@/lib/autoDuckEffect';
+import {
   createBassTrebleState,
   processBassTrebleChannels,
   type BassTrebleSettings,
@@ -301,6 +308,7 @@ import { PaulstretchDialog } from './sections/PaulstretchDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import PhaserEffectDialog from './sections/PhaserEffectDialog';
 import TremoloEffectDialog from './sections/TremoloEffectDialog';
+import AutoDuckEffectDialog from './sections/AutoDuckEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -384,6 +392,8 @@ export default function AudioEditorPage() {
   const [isApplyingPhaser, setIsApplyingPhaser] = useState(false);
   const [tremoloDialogOpen, setTremoloDialogOpen] = useState(false);
   const [isApplyingTremolo, setIsApplyingTremolo] = useState(false);
+  const [autoDuckDialogOpen, setAutoDuckDialogOpen] = useState(false);
+  const [isApplyingAutoDuck, setIsApplyingAutoDuck] = useState(false);
   const [bassTrebleDialogOpen, setBassTrebleDialogOpen] = useState(false);
   const [isApplyingBassTreble, setIsApplyingBassTreble] = useState(false);
   const [reverbDialogOpen, setReverbDialogOpen] = useState(false);
@@ -426,6 +436,12 @@ export default function AudioEditorPage() {
   const generatorSelectionDuration = quantizedGeneratorSelection
     ? quantizedGeneratorSelection.end - quantizedGeneratorSelection.start
     : null;
+  const autoDuckTrackOptions = project && quantizedGeneratorSelection
+    ? project.tracks.filter((track) => track.clips.some((clip) => (
+      quantizedGeneratorSelection.end > clip.startTime
+      && quantizedGeneratorSelection.start < clip.startTime + clip.duration
+    ))).map((track) => ({ id: track.id, name: track.name }))
+    : [];
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2476,6 +2492,120 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Tremolo 失败：${error.message}` : '应用 Tremolo 失败');
     } finally {
       setIsApplyingTremolo(false);
+    }
+  }
+
+  async function handleAutoDuckPreview(
+    settings: AutoDuckSettings,
+    controlTrackId: string,
+  ): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const control = targets.find((target) => target.trackId === controlTrackId);
+    const target = targets.find((candidate) => candidate.trackId !== controlTrackId);
+    if (!control) throw new Error('Auto Duck 控制轨不在选区音频中');
+    if (!target) throw new Error('选区内没有可试听的非控制轨音频');
+    const controlTrack = project.tracks.find((track) => track.id === control.trackId);
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!controlTrack || !sourceTrack) throw new Error('Auto Duck 试听轨道不可用');
+    const controlChannels = renderAutoDuckSelectionChannels(
+      control.clips.map((input) => {
+        const clip = controlTrack.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error('Auto Duck 控制片段不可用');
+        return {
+          startTime: clip.startTime,
+          duration: clip.duration,
+          sourceOffset: input.sourceOffset,
+          sampleData: input.sampleData,
+        };
+      }),
+      activeSelection,
+      project.sampleRate,
+    );
+    const plan = createAutoDuckPlan(controlChannels[0], settings, project.sampleRate);
+    const segments: Float32Array[][] = [];
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('Auto Duck 试听片段不可用');
+      const placement = getAutoDuckTimelinePlacement(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!placement) continue;
+      const selectedChannels = input.sampleData.map((channel) => (
+        channel.slice(placement.startSample, placement.endSample)
+      ));
+      segments.push(applyAutoDuckPlanToChannels(
+        selectedChannels,
+        plan,
+        settings,
+        project.sampleRate,
+        placement.timelineSample,
+      ));
+    }
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyAutoDuck(settings: AutoDuckSettings, controlTrackId: string) {
+    if (!project || !quantizedGeneratorSelection || isApplyingAutoDuck) return;
+    setIsApplyingAutoDuck(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length < 2) {
+        toast.info('Auto Duck 需要选区内至少两条含音频轨道');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.autoDuckSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+        controlTrackId,
+      );
+      if (changed === 0) {
+        toast.info('控制轨未超过阈值，未修改任何音频');
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Auto Duck 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Auto Duck',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setAutoDuckDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Auto Duck，控制轨未修改`);
+    } catch (error) {
+      logger.error('应用 Auto Duck 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Auto Duck 失败：${error.message}` : '应用 Auto Duck 失败');
+    } finally {
+      setIsApplyingAutoDuck(false);
     }
   }
 
@@ -4725,6 +4855,12 @@ export default function AudioEditorPage() {
               >
                 Tremolo…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setAutoDuckDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || autoDuckTrackOptions.length < 2}
+              >
+                Auto Duck…
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>动态</DropdownMenuLabel>
               <DropdownMenuItem
@@ -5720,6 +5856,18 @@ export default function AudioEditorPage() {
           isApplying={isApplyingTremolo}
           onPreview={handleTremoloPreview}
           onApply={handleApplyTremolo}
+        />
+
+        <AutoDuckEffectDialog
+          open={autoDuckDialogOpen}
+          onOpenChange={setAutoDuckDialogOpen}
+          tracks={autoDuckTrackOptions}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingAutoDuck}
+          onPreview={handleAutoDuckPreview}
+          onApply={handleApplyAutoDuck}
         />
 
         {/* Export Dialog */}
