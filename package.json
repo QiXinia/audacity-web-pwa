@@ -17,6 +17,7 @@
     "test:filter-curve:oracle": "bash scripts/verify-filter-curve-oracle.sh",
     "test:graphic-eq:oracle": "bash scripts/verify-graphic-eq-oracle.sh",
     "test:phaser:oracle": "bash scripts/verify-phaser-oracle.sh",
+    "test:classic-filter:oracle": "bash scripts/verify-classic-filter-oracle.sh",
     "test:watch": "vitest",
     "precommit": "npm run lint",
     "prepare": "node scripts/setup-git-hooks.mjs"

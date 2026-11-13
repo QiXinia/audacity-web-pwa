@@ -169,6 +169,11 @@ import {
   type PhaserSettings,
 } from '@/lib/phaserEffect';
 import {
+  createClassicFilterState,
+  processClassicFilterChannels,
+  type ClassicFilterSettings,
+} from '@/lib/classicFilterEffect';
+import {
   createTremoloState,
   processTremoloChannels,
   type TremoloSettings,
@@ -307,6 +312,7 @@ import { ChangePitchDialog } from './sections/ChangePitchDialog';
 import { PaulstretchDialog } from './sections/PaulstretchDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import PhaserEffectDialog from './sections/PhaserEffectDialog';
+import ClassicFilterEffectDialog from './sections/ClassicFilterEffectDialog';
 import TremoloEffectDialog from './sections/TremoloEffectDialog';
 import AutoDuckEffectDialog from './sections/AutoDuckEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
@@ -390,6 +396,8 @@ export default function AudioEditorPage() {
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
   const [phaserDialogOpen, setPhaserDialogOpen] = useState(false);
   const [isApplyingPhaser, setIsApplyingPhaser] = useState(false);
+  const [classicFilterDialogOpen, setClassicFilterDialogOpen] = useState(false);
+  const [isApplyingClassicFilter, setIsApplyingClassicFilter] = useState(false);
   const [tremoloDialogOpen, setTremoloDialogOpen] = useState(false);
   const [isApplyingTremolo, setIsApplyingTremolo] = useState(false);
   const [autoDuckDialogOpen, setAutoDuckDialogOpen] = useState(false);
@@ -2407,6 +2415,89 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Phaser 失败：${error.message}` : '应用 Phaser 失败');
     } finally {
       setIsApplyingPhaser(false);
+    }
+  }
+
+  async function handleClassicFilterPreview(settings: ClassicFilterSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const states = target.clips[0]?.sampleData.map(() => (
+      createClassicFilterState(settings, project.sampleRate)
+    )) ?? [];
+    const segments: Float32Array[][] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selectedChannels = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      segments.push(processClassicFilterChannels(selectedChannels, settings, project.sampleRate, states));
+    }
+
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyClassicFilter(settings: ClassicFilterSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingClassicFilter) return;
+    setIsApplyingClassicFilter(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.classicFilterSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Classic Filters 后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Classic Filters',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setClassicFilterDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Classic Filters`);
+    } catch (error) {
+      logger.error('应用 Classic Filters 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Classic Filters 失败：${error.message}` : '应用 Classic Filters 失败');
+    } finally {
+      setIsApplyingClassicFilter(false);
     }
   }
 
@@ -4850,6 +4941,13 @@ export default function AudioEditorPage() {
                 Phaser…
               </DropdownMenuItem>
               <DropdownMenuItem
+                data-testid="effect-classic-filters"
+                onClick={() => setClassicFilterDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Classic Filters…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setTremoloDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
               >
@@ -5845,6 +5943,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingPhaser}
           onPreview={handlePhaserPreview}
           onApply={handleApplyPhaser}
+        />
+
+        <ClassicFilterEffectDialog
+          open={classicFilterDialogOpen}
+          onOpenChange={setClassicFilterDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingClassicFilter}
+          onPreview={handleClassicFilterPreview}
+          onApply={handleApplyClassicFilter}
         />
 
         <TremoloEffectDialog
