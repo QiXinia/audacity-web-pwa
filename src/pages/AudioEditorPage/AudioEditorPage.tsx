@@ -1932,6 +1932,39 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleDuplicateSelection() {
+    if (!project || !quantizedGeneratorSelection) return;
+    const activeSelection = quantizedGeneratorSelection;
+    try {
+      const copied = await copySelection(project, activeSelection.start, activeSelection.end);
+      if (!copied || copied.tracks.length === 0) {
+        toast.info('选区内没有可复制的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const inserted = await projectService.duplicateSelectionToTracks(
+        project.id,
+        activeSelection,
+        copied.tracks.map((track) => ({ trackId: track.trackId, sampleData: track.channels })),
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('复制后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection ?? activeSelection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Duplicate 复制',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      toast.success(`已在 ${inserted.length} 条新轨道复制选区`);
+    } catch (error) {
+      logger.error('Duplicate 选区失败:', String(error));
+      toast.error(error instanceof Error ? `Duplicate 失败：${error.message}` : 'Duplicate 失败');
+    }
+  }
+
   async function collectEffectTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
     if (!project) return [];
     const targets: EchoTrackAudio[] = [];
@@ -5185,7 +5218,13 @@ export default function AudioEditorPage() {
                 onClick={() => setRepeatDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
               >
-                重复…
+                Repeat 重复…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleDuplicateSelection}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Duplicate 复制为新轨道
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>处理</DropdownMenuLabel>

@@ -38,7 +38,8 @@ vi.mock('@/services/projectService', () => ({
     getPreferences: vi.fn().mockReturnValue({ language: 'zh-CN', theme: 'dark', defaultSampleRate: 44100 }),
     listProjects: vi.fn().mockResolvedValue([]), addTrack: vi.fn(), deleteTrack: vi.fn(),
     deleteProject: vi.fn(), permanentlyDeleteProject: vi.fn(), addRecordingToTrack: vi.fn(),
-    addGeneratedAudioToTracks: vi.fn(), silenceSelectionOnTracks: vi.fn(), repeatSelectionOnTracks: vi.fn(),
+    addGeneratedAudioToTracks: vi.fn(), silenceSelectionOnTracks: vi.fn(),
+    repeatSelectionOnTracks: vi.fn(), duplicateSelectionToTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -145,8 +146,8 @@ describe('AudioEditorPage Repeat command integration', () => {
     const effectMenu = screen.getByRole('button', { name: '效果' });
     fireEvent.pointerDown(effectMenu);
     fireEvent.click(effectMenu);
-    fireEvent.pointerDown(await screen.findByText('重复…'));
-    fireEvent.click(screen.getByText('重复…'));
+    fireEvent.pointerDown(await screen.findByText('Repeat 重复…'));
+    fireEvent.click(screen.getByText('Repeat 重复…'));
     fireEvent.change(await screen.findByLabelText('新增重复次数'), { target: { value: '2' } });
     fireEvent.click(screen.getByRole('button', { name: '应用重复' }));
 
@@ -166,5 +167,56 @@ describe('AudioEditorPage Repeat command integration', () => {
     expect(screen.getAllByRole('button', { name: /^Clip source-track-/ })).toHaveLength(2);
     expect(historyManager.undo).toHaveBeenCalledWith(updated);
     expect(projectService.saveProject).toHaveBeenCalledWith(project);
+  });
+
+  it('duplicates the selection onto a new track and registers one undoable command', async () => {
+    const project = makeProject();
+    const duplicatedClip: IClip = {
+      ...project.tracks[0].clips[0],
+      id: 'duplicated-clip',
+      audioBufferId: 'duplicated-buffer',
+      name: 'Duplicate',
+    };
+    const updated: IProject = {
+      ...project,
+      tracks: [
+        ...project.tracks,
+        {
+          id: 'duplicate-track',
+          name: '主音轨 副本',
+          type: 'audio',
+          gain: 0,
+          pan: 0,
+          muted: false,
+          solo: false,
+          armed: false,
+          color: '#888',
+          clips: [duplicatedClip],
+          effects: [],
+        },
+      ],
+    };
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([Float32Array.from({ length: 10 }, (_, index) => index / 10)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(Float32Array.from({ length: 10 }, (_, index) => index / 10));
+    vi.mocked(projectService.duplicateSelectionToTracks).mockResolvedValue([duplicatedClip]);
+    renderEditor();
+    await waitFor(() => expect(screen.getByText('主音轨')).toBeInTheDocument());
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.pointerDown(await screen.findByText('Duplicate 复制为新轨道'));
+    fireEvent.click(screen.getByText('Duplicate 复制为新轨道'));
+
+    await waitFor(() => expect(projectService.duplicateSelectionToTracks).toHaveBeenCalledWith(
+      project.id,
+      { start: 0, end: 0.01 },
+      expect.any(Array),
+    ));
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Duplicate 复制');
+    expect(audioEngine.processClipChannels).toHaveBeenCalledTimes(2);
   });
 });

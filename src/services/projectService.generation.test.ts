@@ -370,3 +370,64 @@ describe('ProjectService Repeat selection transaction', () => {
     expect(project.tracks[0].clips).toHaveLength(1);
   });
 });
+
+describe('ProjectService Duplicate selection transaction', () => {
+  it('adds one new track per selected source without changing existing clips', async () => {
+    const project = makeProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const samples = Float32Array.from({ length: 10 }, (_, index) => index / 10);
+
+    const inserted = await projectService.duplicateSelectionToTracks(
+      project.id,
+      { start: 1, end: 2 },
+      [{ trackId: 'track', sampleData: [samples] }],
+    );
+
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({ startTime: 1, duration: 1, offset: 0, name: 'Duplicate' });
+    expect(save).toHaveBeenCalledTimes(1);
+    const saved = save.mock.calls[0][0];
+    expect(saved.tracks).toHaveLength(2);
+    expect(saved.tracks[0]).toBe(project.tracks[0]);
+    expect(saved.tracks[1].clips).toEqual(inserted);
+    expect(saved.selection).toEqual({ start: 1, end: 2 });
+    expect(vi.mocked(audioDb.audioBuffers.put)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(audioEngine.cacheBuffer)).toHaveBeenCalledTimes(1);
+    samples[0] = 99;
+    expect(new Float32Array(vi.mocked(audioDb.audioBuffers.put).mock.calls[0][0].channelData[0])[0]).not.toBe(99);
+  });
+
+  it('rejects duplicate tracks, missing tracks, invalid ranges and mismatched lengths before writes', async () => {
+    const project = makeProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+
+    await expect(projectService.duplicateSelectionToTracks(
+      project.id, { start: 1, end: 1 }, [{ trackId: 'track', sampleData: [new Float32Array(0)] }],
+    )).rejects.toThrow('正时长');
+    await expect(projectService.duplicateSelectionToTracks(
+      project.id, { start: 1, end: 2 }, [],
+    )).rejects.toThrow('没有可复制');
+    await expect(projectService.duplicateSelectionToTracks(
+      project.id, { start: 1, end: 2 },
+      [
+        { trackId: 'track', sampleData: [new Float32Array(10)] },
+        { trackId: 'track', sampleData: [new Float32Array(10)] },
+      ],
+    )).rejects.toThrow('重复指定');
+    await expect(projectService.duplicateSelectionToTracks(
+      project.id, { start: 1, end: 2 },
+      [{ trackId: 'missing', sampleData: [new Float32Array(10)] }],
+    )).rejects.toThrow('不可用');
+    await expect(projectService.duplicateSelectionToTracks(
+      project.id, { start: 1, end: 2 },
+      [{ trackId: 'track', sampleData: [new Float32Array(5)] }],
+    )).rejects.toThrow('等长');
+
+    expect(vi.mocked(audioDb.audioBuffers.put)).not.toHaveBeenCalled();
+    expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(project.tracks).toHaveLength(1);
+  });
+});

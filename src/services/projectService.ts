@@ -972,6 +972,84 @@ class ProjectService {
     return insertedClips;
   }
 
+  /** Copy each selected range directly onto a new track with one atomic commit. */
+  async duplicateSelectionToTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    targets: readonly GeneratedTrackAudio[],
+  ): Promise<IClip[]> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) throw new RangeError('复制选区必须是有限的正时长区间');
+    if (targets.length === 0) throw new Error('选区内没有可复制的音频');
+
+    const duration = selection.end - selection.start;
+    const expectedLength = Math.round(duration * project.sampleRate);
+    const seen = new Set<string>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const insertedClips: IClip[] = [];
+    const duplicatedTracks: ITrack[] = [];
+
+    for (const target of targets) {
+      if (seen.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seen.add(target.trackId);
+      const sourceTrack = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!sourceTrack) throw new Error(`目标轨道不可用：${target.trackId}`);
+
+      const sampleData = target.sampleData.map((channel) => new Float32Array(channel));
+      if (
+        sampleData.length === 0
+        || expectedLength < 1
+        || sampleData.some((channel) => channel.length !== expectedLength)
+      ) throw new RangeError('每条轨道的复制音频必须包含与选区等长的非空声道');
+
+      const bufferId = generateId();
+      const clip: IClip = {
+        id: generateId(),
+        audioBufferId: bufferId,
+        startTime: selection.start,
+        offset: 0,
+        duration,
+        originalDuration: duration,
+        stretchRatio: 1,
+        gain: 0,
+        fadeIn: 0,
+        fadeOut: 0,
+        name: 'Duplicate',
+      };
+      duplicatedTracks.push({
+        id: generateId(),
+        name: `${sourceTrack.name} 副本`,
+        type: 'audio',
+        gain: sourceTrack.gain,
+        pan: sourceTrack.pan,
+        muted: false,
+        solo: false,
+        armed: false,
+        color: getTrackColor(project.tracks.length + duplicatedTracks.length),
+        clips: [clip],
+        effects: [],
+      });
+      insertedClips.push(clip);
+      pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      selection: { start: selection.start, end: selection.end },
+      tracks: [...project.tracks, ...duplicatedTracks],
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return insertedClips;
+  }
+
   /** Apply Audacity Echo to every supplied track with one atomic project commit. */
   async echoSelectionOnTracks(
     projectId: string,
