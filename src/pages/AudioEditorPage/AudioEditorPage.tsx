@@ -169,6 +169,11 @@ import {
   type PhaserSettings,
 } from '@/lib/phaserEffect';
 import {
+  createTremoloState,
+  processTremoloChannels,
+  type TremoloSettings,
+} from '@/lib/tremoloEffect';
+import {
   createBassTrebleState,
   processBassTrebleChannels,
   type BassTrebleSettings,
@@ -295,6 +300,7 @@ import { ChangePitchDialog } from './sections/ChangePitchDialog';
 import { PaulstretchDialog } from './sections/PaulstretchDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import PhaserEffectDialog from './sections/PhaserEffectDialog';
+import TremoloEffectDialog from './sections/TremoloEffectDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -376,6 +382,8 @@ export default function AudioEditorPage() {
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
   const [phaserDialogOpen, setPhaserDialogOpen] = useState(false);
   const [isApplyingPhaser, setIsApplyingPhaser] = useState(false);
+  const [tremoloDialogOpen, setTremoloDialogOpen] = useState(false);
+  const [isApplyingTremolo, setIsApplyingTremolo] = useState(false);
   const [bassTrebleDialogOpen, setBassTrebleDialogOpen] = useState(false);
   const [isApplyingBassTreble, setIsApplyingBassTreble] = useState(false);
   const [reverbDialogOpen, setReverbDialogOpen] = useState(false);
@@ -2383,6 +2391,91 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Phaser 失败：${error.message}` : '应用 Phaser 失败');
     } finally {
       setIsApplyingPhaser(false);
+    }
+  }
+
+  async function handleTremoloPreview(settings: TremoloSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const state = createTremoloState();
+    const segments: Float32Array[][] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selectedChannels = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      segments.push(processTremoloChannels(selectedChannels, settings, project.sampleRate, state));
+    }
+
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyTremolo(settings: TremoloSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingTremolo) return;
+    setIsApplyingTremolo(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.tremoloSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Tremolo 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Tremolo',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setTremoloDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Tremolo`);
+    } catch (error) {
+      logger.error('应用 Tremolo 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Tremolo 失败：${error.message}` : '应用 Tremolo 失败');
+    } finally {
+      setIsApplyingTremolo(false);
     }
   }
 
@@ -4626,6 +4719,12 @@ export default function AudioEditorPage() {
               >
                 Phaser…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setTremoloDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Tremolo…
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>动态</DropdownMenuLabel>
               <DropdownMenuItem
@@ -5610,6 +5709,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingPhaser}
           onPreview={handlePhaserPreview}
           onApply={handleApplyPhaser}
+        />
+
+        <TremoloEffectDialog
+          open={tremoloDialogOpen}
+          onOpenChange={setTremoloDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingTremolo}
+          onPreview={handleTremoloPreview}
+          onApply={handleApplyTremolo}
         />
 
         {/* Export Dialog */}
