@@ -392,6 +392,7 @@ export default function AudioEditorPage() {
   const [isRepeating, setIsRepeating] = useState(false);
   const [echoDialogOpen, setEchoDialogOpen] = useState(false);
   const [isApplyingEcho, setIsApplyingEcho] = useState(false);
+  const [isApplyingInvert, setIsApplyingInvert] = useState(false);
   const [wahWahDialogOpen, setWahWahDialogOpen] = useState(false);
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
   const [phaserDialogOpen, setPhaserDialogOpen] = useState(false);
@@ -4352,6 +4353,35 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleApplyInvert() {
+    if (!project || !quantizedGeneratorSelection || isApplyingInvert) return;
+    setIsApplyingInvert(true);
+    try {
+      const before = structuredClone(project);
+      const targets = await collectEffectTargets(quantizedGeneratorSelection);
+      const changed = await projectService.invertSelectionOnTracks(
+        project.id,
+        quantizedGeneratorSelection,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('极性反转后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Invert 极性反转',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      toast.success(`已对 ${changed} 个片段应用极性反转`);
+    } catch (error) {
+      logger.error('应用极性反转失败:', String(error));
+      toast.error(error instanceof Error ? `应用极性反转失败：${error.message}` : '应用极性反转失败');
+    } finally {
+      setIsApplyingInvert(false);
+    }
+  }
+
   async function applyReverse() {
     if (!project || !selection) return;
     const before = JSON.parse(JSON.stringify(project)) as IProject;
@@ -5073,8 +5103,15 @@ export default function AudioEditorPage() {
               >
                 Loudness Normalization 响度标准化…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleApplyInvert}
+                disabled={!quantizedGeneratorSelection || isApplyingInvert}
+                title="按 Audacity Invert 将所选采样逐点取反，不改变时间顺序"
+              >
+                Invert 极性反转
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={applyReverse} disabled={!selection}>
-                反转
+                Reverse 时间反转
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
