@@ -244,6 +244,11 @@ import {
   type PaulstretchSettings,
 } from '@/lib/paulstretchEffect';
 import {
+  DEFAULT_CROSSFADE_SETTINGS,
+  processCrossfadeChannels,
+  type CrossfadeSettings,
+} from '@/lib/crossfadeTracksEffect';
+import {
   loadGeneratorDuration,
   saveGeneratorDuration,
   type GeneratorKind,
@@ -323,6 +328,7 @@ import PhaserEffectDialog from './sections/PhaserEffectDialog';
 import ClassicFilterEffectDialog from './sections/ClassicFilterEffectDialog';
 import TremoloEffectDialog from './sections/TremoloEffectDialog';
 import AutoDuckEffectDialog from './sections/AutoDuckEffectDialog';
+import CrossfadeTracksDialog from './sections/CrossfadeTracksDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -447,6 +453,8 @@ export default function AudioEditorPage() {
   const [isApplyingChangePitch, setIsApplyingChangePitch] = useState(false);
   const [paulstretchDialogOpen, setPaulstretchDialogOpen] = useState(false);
   const [isApplyingPaulstretch, setIsApplyingPaulstretch] = useState(false);
+  const [crossfadeDialogOpen, setCrossfadeDialogOpen] = useState(false);
+  const [isApplyingCrossfade, setIsApplyingCrossfade] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -1962,6 +1970,54 @@ export default function AudioEditorPage() {
     } catch (error) {
       logger.error('Duplicate 选区失败:', String(error));
       toast.error(error instanceof Error ? `Duplicate 失败：${error.message}` : 'Duplicate 失败');
+    }
+  }
+
+  async function handleCrossfadePreview(settings: CrossfadeSettings) {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const targets = await collectEffectTargets(quantizedGeneratorSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const firstClip = target.clips[0];
+    if (!firstClip) throw new Error('试听片段不可用');
+    return processCrossfadeChannels(firstClip.sampleData, 'out', settings);
+  }
+
+  async function handleCrossfade(settings: CrossfadeSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    const activeSelection = quantizedGeneratorSelection;
+    setIsApplyingCrossfade(true);
+    try {
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length < 2) {
+        toast.info('Crossfade Tracks 至少需要两条选区内轨道');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.crossfadeSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('Crossfade 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection ?? activeSelection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Crossfade Tracks 交叉淡化',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setCrossfadeDialogOpen(false);
+      toast.success(`已在 ${changed} 个片段应用交叉淡化`);
+    } catch (error) {
+      logger.error('Crossfade 失败:', String(error));
+      toast.error(error instanceof Error ? `Crossfade 失败：${error.message}` : 'Crossfade 失败');
+    } finally {
+      setIsApplyingCrossfade(false);
     }
   }
 
@@ -5176,6 +5232,12 @@ export default function AudioEditorPage() {
                 Echo 回声…
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => setCrossfadeDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Crossfade Tracks 交叉淡化…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setReverbDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
               >
@@ -5919,6 +5981,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingEcho}
           onPreview={handleEchoPreview}
           onApply={handleApplyEcho}
+        />
+
+        <CrossfadeTracksDialog
+          open={crossfadeDialogOpen}
+          onOpenChange={setCrossfadeDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingCrossfade}
+          onPreview={handleCrossfadePreview}
+          onApply={handleCrossfade}
         />
 
         <BassTrebleDialog

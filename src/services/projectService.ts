@@ -187,6 +187,13 @@ import {
   validatePaulstretchSettings,
   type PaulstretchSettings,
 } from '@/lib/paulstretchEffect';
+import {
+  processCrossfadeChannels,
+  resolveCrossfadeFade,
+  validateCrossfadeSettings,
+  type CrossfadeFade,
+  type CrossfadeSettings,
+} from '@/lib/crossfadeTracksEffect';
 
 type EffectType = IEffect['type'];
 
@@ -1048,6 +1055,150 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return insertedClips;
+  }
+
+  /** Apply Audacity Crossfade Tracks to overlapping selected tracks with one atomic commit. */
+  async crossfadeSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    crossfadeSettings: CrossfadeSettings,
+    targets: readonly EchoTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('Crossfade 选区必须是有限的正时长区间');
+    }
+    validateCrossfadeSettings(crossfadeSettings);
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length < 2) throw new Error('Crossfade Tracks 至少需要两条选区内轨道');
+
+    const seenTracks = new Set<string>();
+    const prepared: {
+      track: ITrack;
+      ordered: {
+        input: EchoClipAudio;
+        clip: IClip;
+        range: { startSample: number; endSample: number };
+      }[];
+      selectedChannels: Float32Array[];
+      fade: CrossfadeFade;
+    }[] = [];
+
+    for (const [trackIndex, target] of targets.entries()) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const mapped = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (mapped.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+      const expectedClipIds = track.clips.filter((clip) => (
+        clip.startTime + clip.duration > selection.start && clip.startTime < selection.end
+      )).map((clip) => clip.id);
+      if (
+        expectedClipIds.length !== mapped.length
+        || expectedClipIds.some((clipId) => !seenClips.has(clipId))
+      ) throw new Error(`轨道 ${target.trackId} 的选区片段覆盖不完整`);
+
+      const channelCount = mapped[0]?.input.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error(`轨道 ${target.trackId} 没有音频声道`);
+      let totalSelectedSamples = 0;
+      const ordered = mapped.map(({ input, clip }) => {
+        if (input.sampleData.length !== channelCount) {
+          throw new Error(`轨道 ${target.trackId} 的选区声道数不一致`);
+        }
+        const channelLength = input.sampleData[0]?.length ?? 0;
+        if (input.sampleData.some((channel) => channel.length !== channelLength)) {
+          throw new Error(`轨道“${clip.name ?? clip.id}”的声道长度不一致`);
+        }
+        const range = getClipSampleRange(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!range) throw new Error(`片段“${clip.name ?? clip.id}”不在 Crossfade 选区内`);
+        totalSelectedSamples += range.endSample - range.startSample;
+        return { input, clip, range };
+      });
+      const selectedChannels = Array.from(
+        { length: channelCount },
+        () => new Float32Array(totalSelectedSamples),
+      );
+      let cursor = 0;
+      for (const { input, range } of ordered) {
+        const selectedLength = range.endSample - range.startSample;
+        for (let channel = 0; channel < channelCount; channel += 1) {
+          selectedChannels[channel].set(
+            input.sampleData[channel].subarray(range.startSample, range.endSample),
+            cursor,
+          );
+        }
+        cursor += selectedLength;
+      }
+
+      const firstClip = ordered[0]?.clip;
+      const lastClip = ordered[ordered.length - 1]?.clip;
+      const startDistance = selection.start - (firstClip?.startTime ?? selection.start);
+      const endDistance = (lastClip
+        ? lastClip.startTime + lastClip.duration
+        : selection.end) - selection.end;
+      const fade = resolveCrossfadeFade(
+        trackIndex,
+        crossfadeSettings.direction,
+        startDistance,
+        endDistance,
+      );
+      prepared.push({ track, ordered, selectedChannels, fade });
+    }
+
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    let changedClips = 0;
+    for (const { track, ordered, selectedChannels, fade } of prepared) {
+      const processed = processCrossfadeChannels(selectedChannels, fade, crossfadeSettings);
+      const replacements = new Map<string, IClip>();
+      let cursor = 0;
+      for (const { input, clip, range } of ordered) {
+        const selectedLength = range.endSample - range.startSample;
+        const sampleData = input.sampleData.map((source, channel) => {
+          const next = new Float32Array(source);
+          next.set(processed[channel].subarray(cursor, cursor + selectedLength), range.startSample);
+          return next;
+        });
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData });
+        replacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+        changedClips += 1;
+        cursor += selectedLength;
+      }
+      nextTracks.set(track.id, {
+        ...track,
+        clips: track.clips.map((clip) => replacements.get(clip.id) ?? clip),
+      });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      selection,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
   }
 
   /** Apply Audacity Echo to every supplied track with one atomic project commit. */

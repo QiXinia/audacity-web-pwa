@@ -40,6 +40,7 @@ vi.mock('@/services/projectService', () => ({
     deleteProject: vi.fn(), permanentlyDeleteProject: vi.fn(), addRecordingToTrack: vi.fn(),
     addGeneratedAudioToTracks: vi.fn(), silenceSelectionOnTracks: vi.fn(),
     repeatSelectionOnTracks: vi.fn(), duplicateSelectionToTracks: vi.fn(),
+    crossfadeSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -218,5 +219,37 @@ describe('AudioEditorPage Repeat command integration', () => {
     expect(historyManager.push).toHaveBeenCalledTimes(1);
     expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Duplicate 复制');
     expect(audioEngine.processClipChannels).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens Crossfade Tracks and applies the default crossfade to both tracks', async () => {
+    const project = makeProject();
+    const updated: IProject = { ...project, selection: { start: 0, end: 0.01 } };
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([Float32Array.from({ length: 10 }, (_, index) => index / 10)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(Float32Array.from({ length: 10 }, (_, index) => index / 10));
+    vi.mocked(projectService.crossfadeSelectionOnTracks).mockResolvedValue(2);
+    renderEditor();
+    await waitFor(() => expect(screen.getByText('主音轨')).toBeInTheDocument());
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Crossfade Tracks 交叉淡化…'));
+    expect(await screen.findByRole('dialog', { name: 'Crossfade Tracks 交叉淡化' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Crossfade' }));
+
+    await waitFor(() => expect(projectService.crossfadeSelectionOnTracks).toHaveBeenCalledWith(
+      project.id,
+      { start: 0, end: 0.01 },
+      expect.objectContaining({
+        type: 'gain',
+        customCurve: 0,
+        direction: 'automatic',
+      }),
+      expect.any(Array),
+    ));
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Crossfade Tracks 交叉淡化');
   });
 });
