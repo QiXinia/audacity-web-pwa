@@ -162,6 +162,7 @@ import {
   getEchoPlan,
   processEchoSelection,
 } from '@/lib/echoEffect';
+import { processDelayChannels, type DelaySettings } from '@/lib/delayEffect';
 import { processWahWahChannels, type WahWahSettings } from '@/lib/wahWahEffect';
 import {
   createPhaserState,
@@ -306,6 +307,7 @@ import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import EchoEffectDialog from './sections/EchoEffectDialog';
+import DelayEffectDialog from './sections/DelayEffectDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
 import DistortionDialog from './sections/DistortionDialog';
@@ -406,6 +408,8 @@ export default function AudioEditorPage() {
   const [isRepeating, setIsRepeating] = useState(false);
   const [echoDialogOpen, setEchoDialogOpen] = useState(false);
   const [isApplyingEcho, setIsApplyingEcho] = useState(false);
+  const [delayDialogOpen, setDelayDialogOpen] = useState(false);
+  const [isApplyingDelay, setIsApplyingDelay] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
   const [wahWahDialogOpen, setWahWahDialogOpen] = useState(false);
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
@@ -2194,6 +2198,79 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用回声失败：${error.message}` : '应用回声失败');
     } finally {
       setIsApplyingEcho(false);
+    }
+  }
+
+  async function handleDelayPreview(delaySettings: DelaySettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const ordered = [...target.clips].sort((left, right) => left.sourceOffset - right.sourceOffset);
+    const channelCount = ordered[0]?.sampleData.length ?? 0;
+    const ranges = ordered.map((input) => {
+      const clip = project.tracks
+        .find((track) => track.id === target.trackId)
+        ?.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0].length,
+      );
+      if (!range) throw new Error('试听片段不在选区内');
+      return { input, range };
+    });
+    const totalLength = ranges.reduce((total, item) => total + item.range.endSample - item.range.startSample, 0);
+    const selected = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let cursor = 0;
+    for (const item of ranges) {
+      const length = item.range.endSample - item.range.startSample;
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        selected[channel].set(item.input.sampleData[channel].subarray(item.range.startSample, item.range.endSample), cursor);
+      }
+      cursor += length;
+    }
+    return processDelayChannels(selected, delaySettings, project.sampleRate);
+  }
+
+  async function handleApplyDelay(delaySettings: DelaySettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingDelay(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.delaySelectionOnTracks(
+        project.id,
+        activeSelection,
+        delaySettings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Delay 后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Delay 延迟',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setDelayDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Delay`);
+    } catch (error) {
+      logger.error('应用 Delay 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Delay 失败：${error.message}` : '应用 Delay 失败');
+    } finally {
+      setIsApplyingDelay(false);
     }
   }
 
@@ -5274,6 +5351,12 @@ export default function AudioEditorPage() {
                 Echo 回声…
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => setDelayDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Delay 延迟…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setCrossfadeDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
               >
@@ -6023,6 +6106,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingEcho}
           onPreview={handleEchoPreview}
           onApply={handleApplyEcho}
+        />
+
+        <DelayEffectDialog
+          open={delayDialogOpen}
+          onOpenChange={setDelayDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingDelay}
+          onPreview={handleDelayPreview}
+          onApply={handleApplyDelay}
         />
 
         <CrossfadeTracksDialog

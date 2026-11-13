@@ -40,7 +40,7 @@ vi.mock('@/services/projectService', () => ({
     deleteProject: vi.fn(), permanentlyDeleteProject: vi.fn(), addRecordingToTrack: vi.fn(),
     addGeneratedAudioToTracks: vi.fn(), silenceSelectionOnTracks: vi.fn(),
     repeatSelectionOnTracks: vi.fn(), duplicateSelectionToTracks: vi.fn(),
-    crossfadeSelectionOnTracks: vi.fn(),
+    crossfadeSelectionOnTracks: vi.fn(), delaySelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -251,5 +251,33 @@ describe('AudioEditorPage Repeat command integration', () => {
     ));
     expect(historyManager.push).toHaveBeenCalledTimes(1);
     expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Crossfade Tracks 交叉淡化');
+  });
+
+  it('opens Delay and applies the default settings with one undo entry', async () => {
+    const project = makeProject();
+    const updated: IProject = { ...project };
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([Float32Array.from({ length: 10 }, (_, index) => index / 10)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(Float32Array.from({ length: 10 }, (_, index) => index / 10));
+    vi.mocked(projectService.delaySelectionOnTracks).mockResolvedValue(2);
+    renderEditor();
+    await waitFor(() => expect(screen.getByText('主音轨')).toBeInTheDocument());
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Delay 延迟…'));
+    expect(await screen.findByRole('dialog', { name: 'Delay 延迟' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Delay' }));
+
+    await waitFor(() => expect(projectService.delaySelectionOnTracks).toHaveBeenCalledWith(
+      project.id,
+      { start: 0, end: 0.01 },
+      expect.objectContaining({ delayType: 'regular', echoCount: 5 }),
+      expect.any(Array),
+    ));
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Delay 延迟');
   });
 });
