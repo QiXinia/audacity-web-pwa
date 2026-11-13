@@ -88,7 +88,7 @@ describe('ProjectService Delay', () => {
     expect(changed).toBe(1);
     expect(audioDb.audioBuffers.put).toHaveBeenCalledTimes(1);
     expect(save).toHaveBeenCalledTimes(1);
-    const cached = audioEngine.cacheBuffer.mock.calls[0][1][0];
+    const cached = vi.mocked(audioEngine.cacheBuffer).mock.calls[0][1][0];
     expect(cached.length).toBe(15);
     expect(cached[5]).toBeCloseTo(10 ** -0.3, 6);
     const savedProject = save.mock.calls[0][0];

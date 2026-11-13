@@ -41,6 +41,7 @@ vi.mock('@/services/projectService', () => ({
     addGeneratedAudioToTracks: vi.fn(), silenceSelectionOnTracks: vi.fn(),
     repeatSelectionOnTracks: vi.fn(), duplicateSelectionToTracks: vi.fn(),
     crossfadeSelectionOnTracks: vi.fn(), delaySelectionOnTracks: vi.fn(),
+    adjustableFadeSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -279,5 +280,33 @@ describe('AudioEditorPage Repeat command integration', () => {
     ));
     expect(historyManager.push).toHaveBeenCalledTimes(1);
     expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Delay 延迟');
+  });
+
+  it('opens Adjustable Fade and applies the default fade with one undo entry', async () => {
+    const project = makeProject();
+    const updated: IProject = { ...project };
+    vi.mocked(projectService.openProject).mockResolvedValue(project);
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([Float32Array.from({ length: 10 }, (_, index) => index / 10)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(Float32Array.from({ length: 10 }, (_, index) => index / 10));
+    vi.mocked(projectService.adjustableFadeSelectionOnTracks).mockResolvedValue(2);
+    renderEditor();
+    await waitFor(() => expect(screen.getByText('主音轨')).toBeInTheDocument());
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Adjustable Fade 可调淡化…'));
+    expect(await screen.findByRole('dialog', { name: 'Adjustable Fade 可调淡化' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Adjustable Fade' }));
+
+    await waitFor(() => expect(projectService.adjustableFadeSelectionOnTracks).toHaveBeenCalledWith(
+      project.id,
+      { start: 0, end: 0.01 },
+      expect.objectContaining({ fadeType: 'up', preset: 'none', endGain: 100 }),
+      expect.any(Array),
+    ));
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Adjustable Fade 可调淡化');
   });
 });
