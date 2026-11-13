@@ -1032,6 +1032,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -1643,6 +1644,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -1735,6 +1737,8 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      // Persist the exact processed range so redo and a later reload restore it.
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -1830,6 +1834,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -1926,6 +1931,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -2024,6 +2030,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -2120,6 +2127,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -2262,6 +2270,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -3059,6 +3068,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => {
         const trackReplacements = replacements.get(track.id);
         if (!trackReplacements) return track;
@@ -3169,6 +3179,7 @@ class ProjectService {
 
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -3296,6 +3307,7 @@ class ProjectService {
     if (changedClips === 0) return 0;
     const updatedProject: IProject = {
       ...project,
+      selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -3353,7 +3365,10 @@ class ProjectService {
       changedClips += 1;
     }
 
-    if (changedClips > 0) await this.saveProject(project);
+    if (changedClips > 0) {
+      project.selection = selection;
+      await this.saveProject(project);
+    }
     return changedClips;
   }
 

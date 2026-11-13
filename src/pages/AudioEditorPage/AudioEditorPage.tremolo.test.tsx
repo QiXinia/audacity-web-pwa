@@ -173,6 +173,10 @@ describe('AudioEditorPage Tremolo effect', () => {
     expect(mocks.saveProject).not.toHaveBeenCalled();
     const restored = mocks.push.mock.calls[0][0].undo() as IProject;
     expect(restored.tracks[0].clips[0].audioBufferId).toBe('buffer-one');
+    expect(restored.selection).toEqual({ start: 0, end: 0.01 });
+    const reapplied = mocks.push.mock.calls[0][0].execute() as IProject;
+    expect(reapplied.tracks[0].clips[0].audioBufferId).toBe('tremolo-one');
+    expect(reapplied.selection).toEqual({ start: 0, end: 0.01 });
     expect(mocks.saveProject).not.toHaveBeenCalled();
   });
 

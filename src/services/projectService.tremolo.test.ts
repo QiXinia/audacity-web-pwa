@@ -112,6 +112,20 @@ describe('ProjectService Tremolo transactions', () => {
     expect(audioEngine.cacheBuffer).toHaveBeenCalledTimes(2);
   });
 
+  it('persists the exact processed selection for redo and reload', async () => {
+    const project = makeProject();
+    project.selection = null;
+    setCurrentProject(project);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const selection = { start: 0.2, end: 0.8 };
+
+    await projectService.tremoloSelectionOnTracks(
+      project.id, selection, settings, [target('track-a', 'a')],
+    );
+
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ selection }));
+  });
+
   it('shares one LFO across selected clips and stereo channels', async () => {
     const project = makeProject();
     project.tracks = [track('track-a', [clip('a', 0, 1), clip('a2', 1, 1)])];

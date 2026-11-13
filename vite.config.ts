@@ -106,6 +106,8 @@ export default defineConfig({
   ],
   test: {
     environment: 'jsdom',
+    // Keep per-file isolation without fork startup timeouts; each worker reuses jsdom.
+    pool: 'vmThreads',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
