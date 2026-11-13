@@ -147,6 +147,7 @@ import {
   processEchoSelection,
 } from '@/lib/echoEffect';
 import { processInvertSelection } from '@/lib/invertEffect';
+import { mixStereoToMono } from '@/lib/stereoToMonoEffect';
 import {
   changeTempoRatio,
   durationAfterChangeTempo,
@@ -1149,6 +1150,72 @@ class ProjectService {
     const updatedProject: IProject = {
       ...project,
       selection,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
+  }
+
+  /** Convert complete stereo tracks to mono in one atomic project commit. */
+  async stereoToMonoOnTracks(
+    projectId: string,
+    targets: readonly EchoTrackAudio[],
+  ): Promise<number> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('没有可转换的立体声轨道');
+
+    const seenTracks = new Set<string>();
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    let changedClips = 0;
+
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (track.clips.length !== ordered.length || track.clips.some((clip) => !seenClips.has(clip.id))) {
+        throw new Error(`轨道 ${track.id} 的片段覆盖不完整`);
+      }
+
+      const replacements = new Map<string, IClip>();
+      for (const { input, clip } of ordered) {
+        if (input.sampleData.length === 1) continue;
+        if (input.sampleData.length !== 2) throw new Error(`轨道 ${track.id} 包含无法转换的 ${input.sampleData.length} 声道片段`);
+        const mono = mixStereoToMono(input.sampleData);
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData: mono });
+        replacements.set(clip.id, {
+          ...clip,
+          audioBufferId: bufferId,
+          offset: 0,
+          originalDuration: mono[0].length / project.sampleRate,
+          stretchRatio: 1,
+        });
+        changedClips += 1;
+      }
+      if (replacements.size > 0) {
+        nextTracks.set(track.id, {
+          ...track,
+          clips: track.clips.map((clip) => replacements.get(clip.id) ?? clip),
+        });
+      }
+    }
+
+    if (pendingBuffers.length === 0) throw new Error('选区内没有立体声片段');
+    const updatedProject: IProject = {
+      ...project,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);

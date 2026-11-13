@@ -836,6 +836,47 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function convertStereoTracksToMono() {
+    if (!project) return;
+    const before = project;
+    try {
+      const targets: EchoTrackAudio[] = [];
+      for (const track of project.tracks) {
+        const clips = [];
+        let hasStereo = false;
+        for (const clip of track.clips) {
+          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!effective) throw new Error(`无法读取片段“${clip.name ?? clip.id}”`);
+          if (effective.channels.length === 2) hasStereo = true;
+          clips.push({
+            clipId: clip.id,
+            sampleData: effective.channels,
+            sourceOffset: effective.sourceOffset,
+          });
+        }
+        if (hasStereo) targets.push({ trackId: track.id, clips });
+      }
+      if (targets.length === 0) {
+        toast.warning('当前没有立体声轨道');
+        return;
+      }
+      await projectService.stereoToMonoOnTracks(project.id, targets);
+      const updated = await projectService.getProject(project.id);
+      if (updated) {
+        setProject(updated);
+        pushHistoryCmd({
+          id: generateId(),
+          label: 'Stereo To Mono',
+          execute: () => updated,
+          undo: () => before,
+        });
+      }
+    } catch (error) {
+      logger.error('Stereo To Mono failed', error);
+      toast.error(error instanceof Error ? error.message : '立体声转单声道失败');
+    }
+  }
+
   async function updateTrack(trackId: string, updates: Partial<ITrack>) {
     if (!project) return;
     await projectService.updateTrack(project.id, trackId, updates);
@@ -4630,6 +4671,7 @@ export default function AudioEditorPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuItem onClick={addTrack}>添加单声道轨道</DropdownMenuItem>
+              <DropdownMenuItem onClick={convertStereoTracksToMono}>Stereo To Mono 立体声转单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={handleRecord}>
                 {recordingState === 'recording' ? '停止录音' : '开始录音'}
               </DropdownMenuItem>

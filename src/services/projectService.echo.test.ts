@@ -287,3 +287,65 @@ describe('ProjectService Invert transactions', () => {
     expect(save).not.toHaveBeenCalled();
   });
 });
+
+describe('ProjectService Stereo To Mono transactions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setCurrentProject(makeProject());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    (projectService as unknown as { currentProject: IProject | null }).currentProject = null;
+  });
+
+  it('mixes stereo clips to mono with one commit while leaving mono clips intact', async () => {
+    const project = makeProject();
+    project.tracks = [
+      track('stereo', [clip('s', 0, 1)]),
+      track('mono', [clip('m', 0, 1)]),
+    ];
+    setCurrentProject(project);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const targets = [
+      {
+        trackId: 'stereo',
+        clips: [{
+          clipId: 's',
+          sourceOffset: 0,
+          sampleData: [Float32Array.from([0.2, 0.4]), Float32Array.from([0.6, -0.2])],
+        }],
+      },
+      {
+        trackId: 'mono',
+        clips: [{ clipId: 'm', sourceOffset: 0, sampleData: [Float32Array.from([0.3, 0.7])] }],
+      },
+    ];
+
+    const changed = await projectService.stereoToMonoOnTracks(project.id, targets);
+
+    expect(changed).toBe(1);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(audioDb.audioBuffers.put).toHaveBeenCalledTimes(1);
+    const values = pcm(writes()[0]);
+    expect(values).toHaveLength(2);
+    expect(values[0]).toBeCloseTo(0.4);
+    expect(values[1]).toBeCloseTo(0.1);
+    expect(save.mock.calls[0][0].tracks[1].clips[0].audioBufferId).toBe('buffer-m');
+    expect(save.mock.calls[0][0].tracks[0].clips[0]).toMatchObject({ offset: 0, stretchRatio: 1 });
+  });
+
+  it('fails closed when clip coverage is incomplete', async () => {
+    const project = makeProject();
+    project.tracks = [track('track-a', [clip('a', 0, 0.5), clip('b', 0.5, 0.5)])];
+    setCurrentProject(project);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    await expect(projectService.stereoToMonoOnTracks(
+      'project-echo',
+      [target('track-a', 'a', 2)],
+    )).rejects.toThrow('片段覆盖不完整');
+
+    expect(audioDb.audioBuffers.put).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+});
