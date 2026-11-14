@@ -185,6 +185,10 @@ import {
   type TremoloSettings,
 } from '@/lib/tremoloEffect';
 import {
+  processVocoderChannels,
+  type VocoderSettings,
+} from '@/lib/vocoderEffect';
+import {
   applyAutoDuckPlanToChannels,
   createAutoDuckPlan,
   getAutoDuckTimelinePlacement,
@@ -335,6 +339,7 @@ import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import PhaserEffectDialog from './sections/PhaserEffectDialog';
 import ClassicFilterEffectDialog from './sections/ClassicFilterEffectDialog';
 import TremoloEffectDialog from './sections/TremoloEffectDialog';
+import VocoderDialog from './sections/VocoderDialog';
 import AutoDuckEffectDialog from './sections/AutoDuckEffectDialog';
 import CrossfadeTracksDialog from './sections/CrossfadeTracksDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
@@ -428,6 +433,8 @@ export default function AudioEditorPage() {
   const [isApplyingClassicFilter, setIsApplyingClassicFilter] = useState(false);
   const [tremoloDialogOpen, setTremoloDialogOpen] = useState(false);
   const [isApplyingTremolo, setIsApplyingTremolo] = useState(false);
+  const [vocoderDialogOpen, setVocoderDialogOpen] = useState(false);
+  const [isApplyingVocoder, setIsApplyingVocoder] = useState(false);
   const [autoDuckDialogOpen, setAutoDuckDialogOpen] = useState(false);
   const [isApplyingAutoDuck, setIsApplyingAutoDuck] = useState(false);
   const [bassTrebleDialogOpen, setBassTrebleDialogOpen] = useState(false);
@@ -2937,6 +2944,81 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleVocoderPreview(settings: VocoderSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const segments: Float32Array[][] = [];
+    for (const input of target.clips) {
+      const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+      const clip = sourceTrack?.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) throw new Error('试听区间无效');
+      const selectedChannels = input.sampleData.map((channel) => channel.slice(range.startSample, range.endSample));
+      segments.push(processVocoderChannels(selectedChannels, settings, project.sampleRate));
+    }
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const preview = Array.from({ length: segments[0]?.length ?? 0 }, () => new Float32Array(totalLength));
+    let offset = 0;
+    for (const segment of segments) {
+      for (let channelIndex = 0; channelIndex < segment.length; channelIndex += 1) {
+        preview[channelIndex].set(segment[channelIndex], offset);
+      }
+      offset += segment[0]?.length ?? 0;
+    }
+    return preview;
+  }
+
+  async function handleApplyVocoder(settings: VocoderSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingVocoder) return;
+    setIsApplyingVocoder(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.vocoderSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Vocoder 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Vocoder',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setVocoderDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Vocoder`);
+    } catch (error) {
+      logger.error('应用 Vocoder 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Vocoder 失败：${error.message}` : '应用 Vocoder 失败');
+    } finally {
+      setIsApplyingVocoder(false);
+    }
+  }
+
   async function handleAutoDuckPreview(
     settings: AutoDuckSettings,
     controlTrackId: string,
@@ -5409,6 +5491,12 @@ export default function AudioEditorPage() {
                 Tremolo…
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => setVocoderDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Vocoder…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setAutoDuckDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection || autoDuckTrackOptions.length < 2}
               >
@@ -6491,6 +6579,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingTremolo}
           onPreview={handleTremoloPreview}
           onApply={handleApplyTremolo}
+        />
+
+        <VocoderDialog
+          open={vocoderDialogOpen}
+          onOpenChange={setVocoderDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingVocoder}
+          onPreview={handleVocoderPreview}
+          onApply={handleApplyVocoder}
         />
 
         <AutoDuckEffectDialog

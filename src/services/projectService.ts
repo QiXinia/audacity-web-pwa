@@ -86,6 +86,11 @@ import {
   type TremoloSettings,
 } from '@/lib/tremoloEffect';
 import {
+  processVocoderChannels,
+  validateVocoderSettings,
+  type VocoderSettings,
+} from '@/lib/vocoderEffect';
+import {
   MAX_AUTO_DUCK_TOTAL_SAMPLES,
   applyAutoDuckPlanToChannels,
   createAutoDuckPlan,
@@ -226,6 +231,8 @@ export type ClassicFilterClipAudio = EchoClipAudio;
 export type ClassicFilterTrackAudio = EchoTrackAudio;
 export type TremoloClipAudio = EchoClipAudio;
 export type TremoloTrackAudio = EchoTrackAudio;
+export type VocoderClipAudio = EchoClipAudio;
+export type VocoderTrackAudio = EchoTrackAudio;
 export type AutoDuckClipAudio = EchoClipAudio;
 export type AutoDuckTrackAudio = EchoTrackAudio;
 export type BassTrebleClipAudio = EchoClipAudio;
@@ -2508,6 +2515,117 @@ class ProjectService {
     const updatedProject: IProject = {
       ...project,
       // Persist the exact processed range so redo and a later reload restore it.
+      selection,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
+  }
+
+  /** Apply Audacity 4.0.2 Nyquist Vocoder with continuous per-track filter state. */
+  async vocoderSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    settings: VocoderSettings,
+    targets: readonly VocoderTrackAudio[],
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('Vocoder 选区必须是有限的正时长区间');
+    }
+    validateVocoderSettings(settings);
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('选区内没有可处理的音频');
+
+    const seenTracks = new Set<string>();
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    let changedClips = 0;
+
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (ordered.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+
+      const ranges = ordered.map(({ input, clip }) => {
+        const range = getClipSampleRange(
+          clip,
+          selection,
+          input.sourceOffset,
+          project.sampleRate,
+          input.sampleData[0]?.length ?? 0,
+        );
+        if (!range) throw new Error(`片段“${clip.name ?? clip.id}”不在 Vocoder 选区内`);
+        return range;
+      });
+      const channelCount = ordered[0]?.input.sampleData.length ?? 0;
+      if (channelCount === 0) throw new Error(`轨道 ${target.trackId} 没有音频声道`);
+      const totalLength = ranges.reduce((total, range) => total + (range.endSample - range.startSample), 0);
+      const continuousChannels = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+      let writeOffset = 0;
+      for (let itemIndex = 0; itemIndex < ordered.length; itemIndex += 1) {
+        const range = ranges[itemIndex];
+        const input = ordered[itemIndex]?.input;
+        if (!input || input.sampleData.length !== channelCount) {
+          throw new Error(`轨道 ${target.trackId} 的选区声道数不一致`);
+        }
+        const segmentLength = range.endSample - range.startSample;
+        for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+          continuousChannels[channelIndex].set(
+            input.sampleData[channelIndex].slice(range.startSample, range.endSample),
+            writeOffset,
+          );
+        }
+        writeOffset += segmentLength;
+      }
+
+      const processedChannels = processVocoderChannels(continuousChannels, settings, project.sampleRate);
+      const replacements = new Map<string, IClip>();
+      let readOffset = 0;
+      for (let itemIndex = 0; itemIndex < ordered.length; itemIndex += 1) {
+        const { input, clip } = ordered[itemIndex];
+        const range = ranges[itemIndex];
+        const segmentLength = range.endSample - range.startSample;
+        const processed = input.sampleData.map((channel) => new Float32Array(channel));
+        for (let channelIndex = 0; channelIndex < processedChannels.length; channelIndex += 1) {
+          processed[channelIndex] = new Float32Array(input.sampleData[channelIndex]);
+          processed[channelIndex].set(
+            processedChannels[channelIndex].slice(readOffset, readOffset + segmentLength),
+            range.startSample,
+          );
+        }
+        processed.length = processedChannels.length;
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData: processed });
+        replacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+        changedClips += 1;
+        readOffset += segmentLength;
+      }
+      nextTracks.set(track.id, {
+        ...track,
+        clips: track.clips.map((clip) => replacements.get(clip.id) ?? clip),
+      });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
       selection,
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
