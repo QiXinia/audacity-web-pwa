@@ -261,6 +261,11 @@ import {
   type ChangePitchSettings,
 } from '@/lib/changePitchEffect';
 import {
+  processSlidingStretchChannels,
+  slidingStretchSubrangeSettings,
+  type SlidingStretchSettings,
+} from '@/lib/slidingStretchEffect';
+import {
   processPaulstretchChannels,
   type PaulstretchSettings,
 } from '@/lib/paulstretchEffect';
@@ -350,6 +355,7 @@ import { GraphicEqDialog } from './sections/GraphicEqDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
 import { ChangeSpeedDialog } from './sections/ChangeSpeedDialog';
 import { ChangePitchDialog } from './sections/ChangePitchDialog';
+import { SlidingStretchDialog } from './sections/SlidingStretchDialog';
 import { PaulstretchDialog } from './sections/PaulstretchDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import PhaserEffectDialog from './sections/PhaserEffectDialog';
@@ -496,6 +502,8 @@ export default function AudioEditorPage() {
   const [isApplyingChangeSpeed, setIsApplyingChangeSpeed] = useState(false);
   const [changePitchDialogOpen, setChangePitchDialogOpen] = useState(false);
   const [isApplyingChangePitch, setIsApplyingChangePitch] = useState(false);
+  const [slidingStretchDialogOpen, setSlidingStretchDialogOpen] = useState(false);
+  const [isApplyingSlidingStretch, setIsApplyingSlidingStretch] = useState(false);
   const [paulstretchDialogOpen, setPaulstretchDialogOpen] = useState(false);
   const [isApplyingPaulstretch, setIsApplyingPaulstretch] = useState(false);
   const [crossfadeDialogOpen, setCrossfadeDialogOpen] = useState(false);
@@ -5149,6 +5157,96 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleSlidingStretchPreview(settings: SlidingStretchSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const selectionDuration = activeSelection.end - activeSelection.start;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const segments: Float32Array[][] = [];
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selected = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      const overlapStart = Math.max(clip.startTime, activeSelection.start);
+      const overlapEnd = Math.min(clip.startTime + clip.duration, activeSelection.end);
+      const clipSettings = slidingStretchSubrangeSettings(
+        settings,
+        (overlapStart - activeSelection.start) / selectionDuration,
+        (overlapEnd - activeSelection.start) / selectionDuration,
+      );
+      segments.push(processSlidingStretchChannels(selected, clipSettings, project.sampleRate));
+    }
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplySlidingStretch(settings: SlidingStretchSettings) {
+    if (!project || !quantizedGeneratorSelection || isApplyingSlidingStretch) return;
+    setIsApplyingSlidingStretch(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.slidingStretchSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Sliding Stretch 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Sliding Stretch',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setSlidingStretchDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Sliding Stretch（连续变速/变调）`);
+    } catch (error) {
+      logger.error('应用 Sliding Stretch 失败:', String(error));
+      toast.error(error instanceof Error ? `Sliding Stretch 失败：${error.message}` : 'Sliding Stretch 失败');
+    } finally {
+      setIsApplyingSlidingStretch(false);
+    }
+  }
+
   async function handlePaulstretchPreview(settings: PaulstretchSettings): Promise<Float32Array[]> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -6025,6 +6123,12 @@ export default function AudioEditorPage() {
                 disabled={!quantizedGeneratorSelection}
               >
                 Change Tempo（保持音高）…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setSlidingStretchDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Sliding Stretch（连续变速/变调）…
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setPaulstretchDialogOpen(true)}
@@ -7044,6 +7148,19 @@ export default function AudioEditorPage() {
           isApplying={isApplyingChangeTempo}
           onPreview={handleChangeTempoPreview}
           onApply={handleApplyChangeTempo}
+        />
+
+        <SlidingStretchDialog
+          open={slidingStretchDialogOpen}
+          onOpenChange={setSlidingStretchDialogOpen}
+          selectionDuration={quantizedGeneratorSelection
+            ? quantizedGeneratorSelection.end - quantizedGeneratorSelection.start
+            : 0}
+          sampleRate={project.sampleRate}
+          hasSelection={Boolean(quantizedGeneratorSelection)}
+          isApplying={isApplyingSlidingStretch}
+          onPreview={handleSlidingStretchPreview}
+          onApply={handleApplySlidingStretch}
         />
 
         <PaulstretchDialog
