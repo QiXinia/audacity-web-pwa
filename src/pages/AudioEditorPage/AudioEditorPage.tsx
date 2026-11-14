@@ -2636,6 +2636,7 @@ export default function AudioEditorPage() {
       const updated = await projectService.getProject(project.id);
       if (!updated) throw new Error('应用 Spectral tools 后无法重新读取工程');
       const labels: Record<SpectralEditKind, string> = {
+        'delete-selection': 'Spectral Edit Delete selection',
         'delete-center': 'Spectral Edit Delete center frequency',
         'amplify-center': 'Spectral Edit Amplify center frequency',
         'amplify-selection': 'Spectral Edit Amplify selection',
@@ -5812,6 +5813,14 @@ export default function AudioEditorPage() {
                 Shelf Filter 搁架滤波…
               </DropdownMenuItem>
               <DropdownMenuLabel>Spectral tools</DropdownMenuLabel>
+              <DropdownMenuItem
+                data-testid="effect-spectral-delete-selection"
+                onClick={() => setSpectralEditKind('delete-selection')}
+                disabled={!quantizedGeneratorSelection || isApplyingSpectralEdit}
+                title="Audacity 4 spectral-delete：Blackman 窗口化 sinc FIR 删除频率选区"
+              >
+                Delete selection…
+              </DropdownMenuItem>
               <DropdownMenuItem
                 data-testid="effect-spectral-delete-center"
                 onClick={() => setSpectralEditKind('delete-center')}

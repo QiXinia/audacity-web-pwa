@@ -34,6 +34,11 @@ interface SpectralEditDialogProps {
 }
 
 const COPY: Record<SpectralEditKind, { title: string; description: string; action: string }> = {
+  'delete-selection': {
+    title: 'Spectral Edit: Delete selection',
+    description: 'Audacity 4 spectral-delete：使用 Blackman 窗口化 sinc FIR，分别低通保留低频、高通保留高频，从而删除频率选区。',
+    action: '删除频率选区',
+  },
   'delete-center': {
     title: 'Spectral Edit: Delete center frequency',
     description: 'Audacity 4 SpectralEditMulti：notch2 删除频率选区中心；单边界时使用 lowpass2 或 highpass2。',
@@ -74,11 +79,11 @@ export default function SpectralEditDialog({
     kind,
     lowHz: parseBound(lowText),
     highHz: parseBound(highText),
-    gainDb: kind === 'delete-center' ? 0 : Number(gainText),
+    gainDb: kind === 'delete-selection' || kind === 'delete-center' ? 0 : Number(gainText),
   }) : null, [gainText, highText, kind, lowText]);
   const selection = settings ? describeSpectralSelection(settings) : null;
   const validationError = useMemo(() => {
-    if (!settings || (settings.kind !== 'delete-center' && !gainText.trim())) return settings ? '请填写增益' : '';
+    if (!settings || (settings.kind !== 'delete-selection' && settings.kind !== 'delete-center' && !gainText.trim())) return settings ? '请填写增益' : '';
     try {
       validateSpectralEditSettings(settings, sampleRate);
       return '';
@@ -140,7 +145,7 @@ export default function SpectralEditDialog({
                 <p>选区：{formatTime(selectionStart)}–{formatTime(selectionEnd)}</p>
                 <p>Center: {selection?.centerHz?.toFixed(3) ?? '—'} Hz　Bandwidth: {selection?.bandwidth?.toFixed(6) ?? '—'}　Nyquist: {sampleRate / 2} Hz</p>
               </div>
-              {kind !== 'delete-center' && (
+              {kind !== 'delete-selection' && kind !== 'delete-center' && (
                 <div className="space-y-2">
                   <Label htmlFor="spectral-gain">Gain (dB, -24…24)</Label>
                   <Input id="spectral-gain" data-testid="spectral-gain-input" type="number" min="-24" max="24" step="0.1" value={gainText} disabled={isApplying} onChange={(event) => setGainText(event.target.value)} required />

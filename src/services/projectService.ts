@@ -2001,7 +2001,7 @@ class ProjectService {
     return changedClips;
   }
 
-  /** Apply an Audacity 4 biquad Spectral tool across selected clips. */
+  /** Apply an Audacity 4 FIR or biquad Spectral tool across selected clips. */
   async spectralEditSelectionOnTracks(
     projectId: string,
     selection: GeneratorSelection,

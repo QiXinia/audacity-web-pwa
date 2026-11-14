@@ -1,10 +1,10 @@
-// Audacity 4.0.0 SpectralEditMulti.ny, SpectralEditShelves.ny,
-// SpectralEditParametricEQ.ny and nyquist-runtime/dspprims.lsp.
+// Audacity 4.0.0 spectral-delete.ny, SpectralEditMulti.ny,
+// SpectralEditShelves.ny, SpectralEditParametricEQ.ny and dspprims.lsp.
 // Source revision: 20f2d58974013473d1eb040d6f91c160a2138319.
 // The frequency-selection semantics follow SpectralSelectionBar.cpp:
 // centre=sqrt(low*high), width=ln(high/low), and EQ width=width/2.
 
-export type SpectralEditKind = 'delete-center' | 'amplify-center' | 'amplify-selection';
+export type SpectralEditKind = 'delete-selection' | 'delete-center' | 'amplify-center' | 'amplify-selection';
 
 export interface SpectralEditSettings {
   kind: SpectralEditKind;
@@ -31,9 +31,24 @@ interface BiquadCoefficients {
   a2: number;
 }
 
+interface FirFilter {
+  kernel: Float64Array;
+  halfk: number;
+  fftSize: number;
+  blockSize: number;
+  spectrumReal: Float64Array;
+  spectrumImaginary: Float64Array;
+}
+
+interface FirDeletePlan {
+  lowpass: FirFilter | null;
+  highpass: FirFilter | null;
+}
+
 interface WetPlan {
   filters: BiquadCoefficients[];
   scale: number;
+  firDelete?: FirDeletePlan;
 }
 
 export interface SpectralSelectionDescription {
@@ -67,14 +82,14 @@ export function describeSpectralSelection(
 }
 
 export function isSpectralEditBypassed(settings: SpectralEditSettings): boolean {
-  return settings.kind !== 'delete-center' && settings.gainDb === 0;
+  return settings.kind !== 'delete-selection' && settings.kind !== 'delete-center' && settings.gainDb === 0;
 }
 
 export function validateSpectralEditSettings(
   settings: SpectralEditSettings,
   sampleRate?: number,
 ): void {
-  if (!['delete-center', 'amplify-center', 'amplify-selection'].includes(settings.kind)) {
+  if (!['delete-selection', 'delete-center', 'amplify-center', 'amplify-selection'].includes(settings.kind)) {
     throw new RangeError('Spectral tools 效果类型无效');
   }
   assertBound(settings.lowHz, '低频边界');
@@ -93,6 +108,9 @@ export function validateSpectralEditSettings(
   }
   if (sampleRate !== undefined) {
     assertSampleRate(sampleRate);
+    if (settings.kind === 'delete-selection' && sampleRate < 100) {
+      throw new RangeError('Delete selection 不支持低于 100 Hz 的采样率');
+    }
     if (settings.kind === 'amplify-center' && settings.highHz! > sampleRate / 2) {
       throw new RangeError(`高频边界不能超过当前 Nyquist 频率（${sampleRate / 2} Hz）`);
     }
@@ -203,10 +221,145 @@ function parametricEqCoefficients(
   );
 }
 
+function roundEven(value: number): number {
+  const floor = Math.floor(value);
+  const fraction = value - floor;
+  if (fraction > 0.5) return floor + 1;
+  if (fraction < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+function createFirKernel(frequencyHz: number, sampleRate: number, highpass: boolean): Pick<FirFilter, 'kernel' | 'halfk'> {
+  const bandwidthRatio = frequencyHz * 0.01 / sampleRate;
+  const halfk = roundEven(2 / bandwidthRatio);
+  const size = halfk * 2;
+  if (!Number.isSafeInteger(size) || size <= 0 || size > 200_002) {
+    throw new RangeError('Delete selection 无法创建有效长度的 sinc 滤波器');
+  }
+  const fc = frequencyHz / sampleRate;
+  const kernel = new Float64Array(size + 1);
+  let norm = 0;
+  for (let index = 0; index <= halfk; index += 1) {
+    const mirror = size - index;
+    const x = index - halfk;
+    const sinc = x === 0 ? 2 * Math.PI * fc : Math.sin(2 * Math.PI * fc * x) / x;
+    const blackman = 0.42
+      - 0.5 * Math.cos(2 * Math.PI * index / size)
+      + 0.08 * Math.cos(4 * Math.PI * index / size);
+    const value = sinc * blackman;
+    norm += value;
+    kernel[index] = value;
+    kernel[mirror] = value;
+  }
+  norm = 2 * norm - kernel[halfk];
+  if (!Number.isFinite(norm) || norm === 0) throw new RangeError('Delete selection sinc 归一化失败');
+  // Upstream uses (dotimes (i size ...)) for normalization and high-pass
+  // inversion, so index=size intentionally retains its original value.
+  for (let index = 0; index < size; index += 1) kernel[index] /= norm;
+  if (highpass) {
+    for (let index = 0; index < size; index += 1) kernel[index] *= -1;
+    kernel[halfk] += 1;
+  }
+  return { kernel, halfk };
+}
+
+function nextPowerOfTwo(value: number): number {
+  let result = 1;
+  while (result < value) result *= 2;
+  return result;
+}
+
+/** In-place deterministic radix-2 FFT; inverse mode includes 1/N scaling. */
+function fft(real: Float64Array, imaginary: Float64Array, inverse: boolean): void {
+  const length = real.length;
+  for (let source = 1, target = 0; source < length; source += 1) {
+    let bit = length >> 1;
+    while (target & bit) {
+      target ^= bit;
+      bit >>= 1;
+    }
+    target ^= bit;
+    if (source < target) {
+      [real[source], real[target]] = [real[target], real[source]];
+      [imaginary[source], imaginary[target]] = [imaginary[target], imaginary[source]];
+    }
+  }
+  for (let block = 2; block <= length; block *= 2) {
+    const angle = (inverse ? 2 : -2) * Math.PI / block;
+    const stepReal = Math.cos(angle);
+    const stepImaginary = Math.sin(angle);
+    for (let start = 0; start < length; start += block) {
+      let twiddleReal = 1;
+      let twiddleImaginary = 0;
+      const half = block / 2;
+      for (let offset = 0; offset < half; offset += 1) {
+        const even = start + offset;
+        const odd = even + half;
+        const oddReal = real[odd] * twiddleReal - imaginary[odd] * twiddleImaginary;
+        const oddImaginary = real[odd] * twiddleImaginary + imaginary[odd] * twiddleReal;
+        real[odd] = real[even] - oddReal;
+        imaginary[odd] = imaginary[even] - oddImaginary;
+        real[even] += oddReal;
+        imaginary[even] += oddImaginary;
+        const nextReal = twiddleReal * stepReal - twiddleImaginary * stepImaginary;
+        twiddleImaginary = twiddleReal * stepImaginary + twiddleImaginary * stepReal;
+        twiddleReal = nextReal;
+      }
+    }
+  }
+  if (inverse) {
+    for (let index = 0; index < length; index += 1) {
+      real[index] /= length;
+      imaginary[index] /= length;
+    }
+  }
+}
+
+function createFirFilter(frequencyHz: number, sampleRate: number, highpass: boolean): FirFilter {
+  const { kernel, halfk } = createFirKernel(frequencyHz, sampleRate, highpass);
+  const fftSize = nextPowerOfTwo(Math.max(2048, kernel.length * 2));
+  const spectrumReal = new Float64Array(fftSize);
+  const spectrumImaginary = new Float64Array(fftSize);
+  spectrumReal.set(kernel);
+  fft(spectrumReal, spectrumImaginary, false);
+  return {
+    kernel,
+    halfk,
+    fftSize,
+    blockSize: fftSize - kernel.length + 1,
+    spectrumReal,
+    spectrumImaginary,
+  };
+}
+
+function createFirDeletePlan(settings: SpectralEditSettings, sampleRate: number): FirDeletePlan | null {
+  const fmin = 0.002 * sampleRate;
+  const fmax = 0.498 * sampleRate;
+  const { centerHz } = describeSpectralSelection(settings);
+  let low = settings.lowHz;
+  let high = settings.highHz;
+  if (low === null || low < fmin || low > fmax) low = null;
+  if (high === null || high >= fmax) high = null;
+  else high = Math.max(high, fmin);
+  if (low !== null && high !== null && centerHz !== null && high - low < centerHz * 0.02) {
+    low = centerHz * 0.99;
+    high = centerHz * 1.01;
+  }
+  if (low === null && high === null) return null;
+  return {
+    lowpass: low === null ? null : createFirFilter(low, sampleRate, false),
+    highpass: high === null ? null : createFirFilter(high, sampleRate, true),
+  };
+}
+
 function createWetPlan(settings: SpectralEditSettings, sampleRate: number): WetPlan | null {
   validateSpectralEditSettings(settings, sampleRate);
   if (isSpectralEditBypassed(settings)) return null;
   const { lowHz, highHz } = settings;
+  if (settings.kind === 'delete-selection') {
+    const firDelete = createFirDeletePlan(settings, sampleRate);
+    return firDelete ? { filters: [], scale: 1, firDelete } : null;
+  }
   if (settings.kind === 'delete-center') {
     if (lowHz !== null && highHz !== null) {
       const { centerHz, bandwidth } = describeSpectralSelection(settings);
@@ -271,7 +424,64 @@ function processBiquad(input: Float32Array, coefficients: BiquadCoefficients): F
   return output;
 }
 
+export const SPECTRAL_DELETE_DIRECT_CONVOLUTION_LIMIT = 200_000;
+
+function convolveCenteredDirect(input: Float32Array, filter: FirFilter): Float64Array {
+  const output = new Float64Array(input.length);
+  const { kernel, halfk } = filter;
+  for (let index = 0; index < input.length; index += 1) {
+    const centre = index + halfk;
+    const first = Math.max(0, centre - input.length + 1);
+    const last = Math.min(kernel.length - 1, centre);
+    let sum = 0;
+    for (let tap = first; tap <= last; tap += 1) sum += input[centre - tap] * kernel[tap];
+    output[index] = sum;
+  }
+  return output;
+}
+
+/** Overlap-add FFT convolution, retaining upstream's centred extraction. */
+function convolveCentered(input: Float32Array, filter: FirFilter): Float64Array {
+  if (input.length * filter.kernel.length <= SPECTRAL_DELETE_DIRECT_CONVOLUTION_LIMIT) {
+    return convolveCenteredDirect(input, filter);
+  }
+  const output = new Float64Array(input.length);
+  const real = new Float64Array(filter.fftSize);
+  const imaginary = new Float64Array(filter.fftSize);
+  for (let start = 0; start < input.length; start += filter.blockSize) {
+    const length = Math.min(filter.blockSize, input.length - start);
+    real.fill(0);
+    imaginary.fill(0);
+    for (let index = 0; index < length; index += 1) real[index] = input[start + index];
+    fft(real, imaginary, false);
+    for (let bin = 0; bin < filter.fftSize; bin += 1) {
+      const valueReal = real[bin] * filter.spectrumReal[bin] - imaginary[bin] * filter.spectrumImaginary[bin];
+      const valueImaginary = real[bin] * filter.spectrumImaginary[bin] + imaginary[bin] * filter.spectrumReal[bin];
+      real[bin] = valueReal;
+      imaginary[bin] = valueImaginary;
+    }
+    fft(real, imaginary, true);
+    const convolutionLength = length + filter.kernel.length - 1;
+    for (let index = 0; index < convolutionLength; index += 1) {
+      const outputIndex = start + index - filter.halfk;
+      if (outputIndex >= 0 && outputIndex < input.length) output[outputIndex] += real[index];
+    }
+  }
+  return output;
+}
+
+function processFirDelete(input: Float32Array, plan: FirDeletePlan): Float32Array {
+  const low = plan.lowpass ? convolveCentered(input, plan.lowpass) : null;
+  const high = plan.highpass ? convolveCentered(input, plan.highpass) : null;
+  const output = new Float32Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    output[index] = (low?.[index] ?? 0) + (high?.[index] ?? 0);
+  }
+  return output;
+}
+
 function processWet(input: Float32Array, plan: WetPlan): Float32Array {
+  if (plan.firDelete) return processFirDelete(input, plan.firDelete);
   let output = input;
   for (const filter of plan.filters) output = processBiquad(output, filter);
   if (plan.scale !== 1) {
@@ -350,6 +560,17 @@ function magnitude(filter: BiquadCoefficients, omega: number): number {
   return numerator / denominator;
 }
 
+function firResponse(filter: FirFilter, omega: number): { real: number; imaginary: number } {
+  let real = 0;
+  let imaginary = 0;
+  for (let tap = 0; tap < filter.kernel.length; tap += 1) {
+    const angle = omega * (tap - filter.halfk);
+    real += filter.kernel[tap] * Math.cos(angle);
+    imaginary -= filter.kernel[tap] * Math.sin(angle);
+  }
+  return { real, imaginary };
+}
+
 export function spectralEditMagnitudeAtFrequency(
   settings: SpectralEditSettings,
   sampleRate: number,
@@ -361,5 +582,10 @@ export function spectralEditMagnitudeAtFrequency(
   const plan = createWetPlan(settings, sampleRate);
   if (!plan) return 1;
   const omega = 2 * PI * frequencyHz / sampleRate;
+  if (plan.firDelete) {
+    const low = plan.firDelete.lowpass ? firResponse(plan.firDelete.lowpass, omega) : { real: 0, imaginary: 0 };
+    const high = plan.firDelete.highpass ? firResponse(plan.firDelete.highpass, omega) : { real: 0, imaginary: 0 };
+    return Math.hypot(low.real + high.real, low.imaginary + high.imaginary);
+  }
   return plan.filters.reduce((response, filter) => response * magnitude(filter, omega), plan.scale);
 }

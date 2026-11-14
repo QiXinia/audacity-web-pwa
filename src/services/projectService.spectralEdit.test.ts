@@ -111,6 +111,34 @@ describe('ProjectService Spectral tools', () => {
     ]);
   });
 
+  it('applies FIR Delete selection through the same atomic clip-write path', async () => {
+    const project = makeProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const inputs = [0, 1].map(() => Float32Array.from({ length: 10 }, (_, index) => (index + 1) / 1000));
+    const targets = [{
+      trackId: 'track-1',
+      clips: inputs.map((sampleData, index) => ({ clipId: `clip-${index + 1}`, sourceOffset: 0, sampleData: [sampleData] })),
+    }];
+    const firSettings: SpectralEditSettings = {
+      kind: 'delete-selection', lowHz: null, highHz: 497, gainDb: 0,
+    };
+    const expected = processSpectralEditChannels(
+      [Float32Array.from([...inputs[0], ...inputs[1]])], firSettings, project.sampleRate,
+    )[0];
+
+    const changed = await projectService.spectralEditSelectionOnTracks(
+      project.id, { start: 0, end: 0.02 }, firSettings, targets,
+    );
+
+    expect(changed).toBe(2);
+    expect(audioDb.audioBuffers.put).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(1);
+    const cached = vi.mocked(audioEngine.cacheBuffer).mock.calls.map((call) => call[1][0]);
+    expect(cached[0]).toEqual(expected.slice(0, 10));
+    expect(cached[1]).toEqual(expected.slice(10));
+  });
+
   it('rejects zero gain, empty targets and invalid selections before any write', async () => {
     const project = makeProject();
     (projectService as unknown as { currentProject: IProject }).currentProject = project;
