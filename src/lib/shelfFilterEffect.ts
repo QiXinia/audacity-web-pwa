@@ -175,6 +175,13 @@ export function processShelfFilterChannels(
   if (length * channels.length > MAX_SHELF_FILTER_TOTAL_SAMPLES) {
     throw new RangeError(`Shelf Filter 总处理量不能超过 ${MAX_SHELF_FILTER_TOTAL_SAMPLES} 个采样`);
   }
+  for (const channel of channels) {
+    for (let index = 0; index < channel.length; index += 1) {
+      if (!Number.isFinite(channel[index])) {
+        throw new RangeError(`Shelf Filter 输入在第 ${index} 个采样包含非有限数值`);
+      }
+    }
+  }
 
   // Upstream force-srate(2 * rate) branch for frequencies close to Nyquist.
   if (settings.frequencyHz > sampleRate / 2.1) {

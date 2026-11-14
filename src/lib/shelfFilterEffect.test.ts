@@ -99,4 +99,12 @@ describe('Shelf Filter DSP', () => {
     const wrongState = createShelfFilterState({ ...settings, gainDb: 3 }, 48_000);
     expect(() => processShelfFilter(Float32Array.from([1]), settings, 48_000, wrongState)).toThrow('不匹配');
   });
+
+  it('fail-closes non-finite input even on the zero-gain fast path', () => {
+    expect(() => processShelfFilterChannels(
+      [Float32Array.from([0, Number.NaN, 0])],
+      { type: 'low', frequencyHz: 1000, gainDb: 0 },
+      48_000,
+    )).toThrow('非有限');
+  });
 });
