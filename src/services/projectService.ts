@@ -164,6 +164,12 @@ import {
 import { processDelayChannels, type DelaySettings } from '@/lib/delayEffect';
 import { processClipFixChannels, type ClipFixSettings } from '@/lib/clipFixEffect';
 import {
+  createNotchFilterState,
+  processNotchFilterChannels,
+  validateNotchFilterSettings,
+  type NotchFilterSettings,
+} from '@/lib/notchFilterEffect';
+import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
 } from '@/lib/adjustableFadeEffect';
@@ -245,6 +251,8 @@ export type RepairClipAudio = EchoClipAudio;
 export type RepairTrackAudio = EchoTrackAudio;
 export type ClipFixClipAudio = EchoClipAudio;
 export type ClipFixTrackAudio = EchoTrackAudio;
+export type NotchFilterClipAudio = EchoClipAudio;
+export type NotchFilterTrackAudio = EchoTrackAudio;
 export type ClickRemovalClipAudio = EchoClipAudio;
 export type ClickRemovalTrackAudio = EchoTrackAudio;
 export type NoiseReductionClipAudio = EchoClipAudio;
@@ -1511,6 +1519,127 @@ class ProjectService {
       }
 
       const processed = processClipFixChannels(selectedChannels, clipFixSettings);
+      const replacements = new Map<string, IClip>();
+      let processedCursor = 0;
+      for (const entry of mapped) {
+        const segmentLength = entry.range.endSample - entry.range.startSample;
+        const sampleData = entry.input.sampleData.map((source) => {
+          const next = new Float32Array(source.length);
+          next.set(source, 0);
+          return next;
+        });
+        for (let channel = 0; channel < channelCount; channel += 1) {
+          sampleData[channel].set(
+            processed[channel].subarray(processedCursor, processedCursor + segmentLength),
+            entry.range.startSample,
+          );
+        }
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: project.sampleRate, sampleData });
+        replacements.set(entry.clip.id, {
+          ...entry.clip,
+          audioBufferId: bufferId,
+          offset: entry.input.sourceOffset,
+        });
+        processedCursor += segmentLength;
+        changedClips += 1;
+      }
+      nextTracks.set(track.id, {
+        ...track,
+        clips: track.clips.map((clip) => replacements.get(clip.id) ?? clip),
+      });
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      selection,
+      tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return changedClips;
+  }
+
+  /** Apply Audacity Notch Filter to selected clips without changing timeline length. */
+  async notchFilterSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    notchSettings: NotchFilterSettings,
+    targets: readonly NotchFilterTrackAudio[],
+  ): Promise<number> {
+    validateNotchFilterSettings(notchSettings);
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('Notch Filter 选区必须是有限的正时长区间');
+    }
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    validateNotchFilterSettings(notchSettings, project.sampleRate);
+    if (targets.length === 0) throw new Error('选区内没有可处理的音频');
+
+    const seenTracks = new Set<string>();
+    const nextTracks = new Map<string, ITrack>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    let changedClips = 0;
+
+    for (const target of targets) {
+      if (seenTracks.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      seenTracks.add(target.trackId);
+      const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+      if (!track) throw new Error(`目标轨道不可用：${target.trackId}`);
+      const seenClips = new Set<string>();
+      const ordered = target.clips.map((input) => {
+        if (seenClips.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        seenClips.add(input.clipId);
+        const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+        if (!clip) throw new Error(`目标片段不可用：${input.clipId}`);
+        return { input, clip };
+      }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+      if (ordered.length === 0) throw new Error(`轨道 ${target.trackId} 没有可处理的选区音频`);
+
+      const channelCount = ordered[0].input.sampleData.length;
+      let selectedLength = 0;
+      const mapped = ordered.map((entry) => {
+        const channelLength = entry.input.sampleData[0].length;
+        const range = getClipSampleRange(
+          entry.clip,
+          selection,
+          entry.input.sourceOffset,
+          project.sampleRate,
+          channelLength,
+        );
+        if (!range) throw new Error(`片段“${entry.clip.name ?? entry.clip.id}”不在 Notch Filter 选区内`);
+        selectedLength += range.endSample - range.startSample;
+        return { ...entry, range };
+      });
+      const selectedChannels = Array.from(
+        { length: channelCount },
+        () => new Float32Array(selectedLength),
+      );
+      let cursor = 0;
+      for (const entry of mapped) {
+        const segmentLength = entry.range.endSample - entry.range.startSample;
+        for (let channel = 0; channel < channelCount; channel += 1) {
+          selectedChannels[channel].set(
+            entry.input.sampleData[channel].subarray(entry.range.startSample, entry.range.endSample),
+            cursor,
+          );
+        }
+        cursor += segmentLength;
+      }
+
+      const filterStates = Array.from(
+        { length: channelCount },
+        () => createNotchFilterState(notchSettings, project.sampleRate),
+      );
+      const processed = processNotchFilterChannels(
+        selectedChannels, notchSettings, project.sampleRate, filterStates,
+      );
       const replacements = new Map<string, IClip>();
       let processedCursor = 0;
       for (const entry of mapped) {
