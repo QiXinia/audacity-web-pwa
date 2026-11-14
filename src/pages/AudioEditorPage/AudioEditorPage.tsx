@@ -483,6 +483,7 @@ export default function AudioEditorPage() {
   const [isApplyingPaulstretch, setIsApplyingPaulstretch] = useState(false);
   const [crossfadeDialogOpen, setCrossfadeDialogOpen] = useState(false);
   const [isApplyingCrossfade, setIsApplyingCrossfade] = useState(false);
+  const [isApplyingCrossfadeClips, setIsApplyingCrossfadeClips] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -2090,6 +2091,47 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `Crossfade 失败：${error.message}` : 'Crossfade 失败');
     } finally {
       setIsApplyingCrossfade(false);
+    }
+  }
+
+  async function handleCrossfadeClips() {
+    if (!project || !quantizedGeneratorSelection) return;
+    const activeSelection = quantizedGeneratorSelection;
+    setIsApplyingCrossfadeClips(true);
+    try {
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length !== 1) {
+        toast.info('Crossfade Clips 只能应用于一条轨道');
+        return;
+      }
+      const target = targets[0];
+      if (!target || target.clips.length < 1 || target.clips.length > 2) {
+        toast.info('Crossfade Clips 选区必须包含一个或两个片段');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.crossfadeClipsSelection(
+        project.id,
+        activeSelection,
+        target,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('Crossfade Clips 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection ?? activeSelection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Crossfade Clips 片段交叉淡化',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      toast.success(`已合并并交叉淡化 ${changed} 个选区`);
+    } catch (error) {
+      logger.error('Crossfade Clips 失败:', String(error));
+      toast.error(error instanceof Error ? `Crossfade Clips 失败：${error.message}` : 'Crossfade Clips 失败');
+    } finally {
+      setIsApplyingCrossfadeClips(false);
     }
   }
 
@@ -5708,6 +5750,12 @@ export default function AudioEditorPage() {
                 disabled={!quantizedGeneratorSelection}
               >
                 Crossfade Tracks 交叉淡化…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleCrossfadeClips}
+                disabled={!quantizedGeneratorSelection || isApplyingCrossfadeClips}
+              >
+                Crossfade Clips 片段交叉淡化
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setReverbDialogOpen(true)}

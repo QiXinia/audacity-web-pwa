@@ -211,6 +211,7 @@ import {
   type CrossfadeFade,
   type CrossfadeSettings,
 } from '@/lib/crossfadeTracksEffect';
+import { processCrossfadeClipChannels } from '@/lib/crossfadeClipsEffect';
 
 type EffectType = IEffect['type'];
 
@@ -1226,6 +1227,194 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return changedClips;
+  }
+
+  /** Apply Audacity Crossfade Clips within one track and merge the selected region. */
+  async crossfadeClipsSelection(
+    projectId: string,
+    selection: GeneratorSelection,
+    target: EchoTrackAudio,
+  ): Promise<number> {
+    if (
+      !Number.isFinite(selection.start)
+      || !Number.isFinite(selection.end)
+      || selection.start < 0
+      || selection.end <= selection.start
+    ) {
+      throw new RangeError('Crossfade Clips 选区必须是有限的正时长区间');
+    }
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+
+    const track = project.tracks.find((candidate) => candidate.id === target.trackId);
+    if (!track) throw new Error('Crossfade Clips 只能应用于一条有效轨道');
+    if (target.clips.length < 1 || target.clips.length > 2) {
+      throw new Error('Crossfade Clips 选区必须包含一个或两个片段');
+    }
+
+    const selectedTracks = new Set(
+      project.tracks
+        .filter((candidate) => candidate.clips.some((clip) => (
+          clip.startTime + clip.duration > selection.start
+          && clip.startTime < selection.end
+        )))
+        .map((candidate) => candidate.id),
+    );
+    if (selectedTracks.size !== 1 || !selectedTracks.has(track.id)) {
+      throw new Error('Crossfade Clips 只能应用于一条轨道');
+    }
+
+    const seenClipIds = new Set<string>();
+    const mapped = target.clips.map((input) => {
+      if (seenClipIds.has(input.clipId)) throw new Error('片段被重复指定');
+      seenClipIds.add(input.clipId);
+      const clip = track.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('目标片段不可用');
+      return { input, clip };
+    }).sort((left, right) => left.clip.startTime - right.clip.startTime);
+
+    const expectedClipIds = track.clips
+      .filter((clip) => (
+        clip.startTime + clip.duration > selection.start
+        && clip.startTime < selection.end
+      ))
+      .map((clip) => clip.id);
+    if (
+      expectedClipIds.length !== mapped.length
+      || expectedClipIds.some((clipId) => !seenClipIds.has(clipId))
+    ) {
+      throw new Error('Crossfade Clips 选区片段覆盖不完整');
+    }
+
+    const totalSamples = Math.round((selection.end - selection.start) * project.sampleRate);
+    if (totalSamples <= 0) throw new RangeError('Crossfade Clips 选区不能为空');
+    const timelineChannels: Float32Array[] = [];
+    let channelCount = 0;
+
+    for (const { input, clip } of mapped) {
+      if (channelCount === 0) {
+        channelCount = input.sampleData.length;
+        if (channelCount === 0) throw new Error('片段没有音频声道');
+        for (let channel = 0; channel < channelCount; channel += 1) {
+          timelineChannels.push(new Float32Array(totalSamples));
+        }
+      } else if (input.sampleData.length !== channelCount) {
+        throw new Error('Crossfade Clips 声道数不一致');
+      }
+
+      const range = getClipSampleRange(
+        clip,
+        selection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) throw new Error('片段不在 Crossfade Clips 选区内');
+      const overlapStart = Math.max(clip.startTime, selection.start);
+      const destinationStart = Math.round((overlapStart - selection.start) * project.sampleRate);
+      const selectedLength = range.endSample - range.startSample;
+      if (destinationStart < 0 || destinationStart + selectedLength > totalSamples) {
+        throw new Error('Crossfade Clips 时间线映射无效');
+      }
+
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        if (input.sampleData[channel].length !== input.sampleData[0]?.length) {
+          throw new Error('Crossfade Clips 声道长度不一致');
+        }
+        timelineChannels[channel].set(
+          input.sampleData[channel].subarray(range.startSample, range.endSample),
+          destinationStart,
+        );
+      }
+    }
+
+    let outEndSample: number;
+    let inStartSample: number;
+    if (mapped.length === 1) {
+      outEndSample = Math.floor(totalSamples / 2);
+      inStartSample = outEndSample;
+      if (outEndSample <= 0 || inStartSample >= totalSamples) {
+        throw new RangeError('Crossfade Clips 选区过短');
+      }
+    } else {
+      const first = mapped[0];
+      const second = mapped[1];
+      if (!first || !second) throw new Error('Crossfade Clips 片段不可用');
+      const firstEnd = first.clip.startTime + first.clip.duration;
+      if (firstEnd > second.clip.startTime) throw new Error('Crossfade Clips 片段顺序无效');
+      if (first.clip.startTime >= selection.start || firstEnd <= selection.start) {
+        throw new Error('Crossfade Clips 选区不能以空白开始');
+      }
+      if (second.clip.startTime >= selection.end || second.clip.startTime < selection.start) {
+        throw new Error('Crossfade Clips 选区不能以空白结束');
+      }
+      outEndSample = Math.round((firstEnd - selection.start) * project.sampleRate);
+      inStartSample = Math.round((second.clip.startTime - selection.start) * project.sampleRate);
+    }
+
+    const processed = processCrossfadeClipChannels(
+      timelineChannels,
+      { outEndSample, inStartSample, totalSamples },
+      project.sampleRate,
+    );
+    const bufferId = generateId();
+    const pendingBuffers: PendingAudioBuffer[] = [{
+      id: bufferId,
+      sampleRate: project.sampleRate,
+      sampleData: processed,
+    }];
+
+    const remnantClips: IClip[] = [];
+    for (const clip of track.clips) {
+      const clipEnd = clip.startTime + clip.duration;
+      if (clip.startTime < selection.start) {
+        remnantClips.push({
+          ...clip,
+          duration: selection.start - clip.startTime,
+          fadeOut: 0,
+        });
+      }
+      if (clipEnd > selection.end) {
+        const ratio = getClipStretchRatio(clip);
+        remnantClips.push({
+          ...clip,
+          id: generateId(),
+          startTime: selection.end,
+          offset: clip.offset + (selection.end - clip.startTime) * ratio,
+          duration: clipEnd - selection.end,
+          fadeIn: 0,
+        });
+      }
+    }
+
+    const mergedClip: IClip = {
+      id: generateId(),
+      audioBufferId: bufferId,
+      startTime: selection.start,
+      offset: 0,
+      duration: totalSamples / project.sampleRate,
+      originalDuration: totalSamples / project.sampleRate,
+      gain: 1,
+      fadeIn: 0,
+      fadeOut: 0,
+      name: 'Crossfade Clips',
+    };
+
+    const nextTrack: ITrack = {
+      ...track,
+      clips: [...remnantClips, mergedClip].sort((left, right) => left.startTime - right.startTime),
+    };
+    const updatedProject: IProject = {
+      ...project,
+      selection,
+      tracks: project.tracks.map((candidate) => (
+        candidate.id === track.id ? nextTrack : candidate
+      )),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return 1;
   }
 
   /** Apply Audacity Echo to every supplied track with one atomic project commit. */
