@@ -166,6 +166,7 @@ import {
 import { processDelayChannels, type DelaySettings } from '@/lib/delayEffect';
 import { processClipFixChannels, type ClipFixSettings } from '@/lib/clipFixEffect';
 import { processNotchFilterChannels, type NotchFilterSettings } from '@/lib/notchFilterEffect';
+import { processShelfFilterChannels, type ShelfFilterSettings } from '@/lib/shelfFilterEffect';
 import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
@@ -321,6 +322,7 @@ import EchoEffectDialog from './sections/EchoEffectDialog';
 import DelayEffectDialog from './sections/DelayEffectDialog';
 import ClipFixDialog from './sections/ClipFixDialog';
 import NotchFilterDialog from './sections/NotchFilterDialog';
+import ShelfFilterDialog from './sections/ShelfFilterDialog';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
@@ -430,6 +432,8 @@ export default function AudioEditorPage() {
   const [isApplyingClipFix, setIsApplyingClipFix] = useState(false);
   const [notchFilterDialogOpen, setNotchFilterDialogOpen] = useState(false);
   const [isApplyingNotchFilter, setIsApplyingNotchFilter] = useState(false);
+  const [shelfFilterDialogOpen, setShelfFilterDialogOpen] = useState(false);
+  const [isApplyingShelfFilter, setIsApplyingShelfFilter] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -2557,6 +2561,49 @@ export default function AudioEditorPage() {
       cursor += length;
     }
     return selected;
+  }
+
+  async function handleShelfFilterPreview(settings: ShelfFilterSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const selected = await collectPreviewChannels(quantizedGeneratorSelection);
+    return processShelfFilterChannels(selected, settings, project.sampleRate);
+  }
+
+  async function handleApplyShelfFilter(settings: ShelfFilterSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingShelfFilter(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.shelfFilterSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Shelf Filter 后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Shelf Filter 搁架滤波',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setShelfFilterDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Shelf Filter`);
+    } catch (error) {
+      logger.error('应用 Shelf Filter 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Shelf Filter 失败：${error.message}` : '应用 Shelf Filter 失败');
+    } finally {
+      setIsApplyingShelfFilter(false);
+    }
   }
 
   async function handleAdjustableFadePreview(fadeSettings: AdjustableFadeSettings): Promise<Float32Array[]> {
@@ -5705,6 +5752,14 @@ export default function AudioEditorPage() {
                 Notch Filter 陷波滤波…
               </DropdownMenuItem>
               <DropdownMenuItem
+                data-testid="effect-shelf-filter"
+                onClick={() => setShelfFilterDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || isApplyingShelfFilter}
+                title="使用 Audacity slope=1 低架或高架滤波器处理选区"
+              >
+                Shelf Filter 搁架滤波…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setWahWahDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
               >
@@ -6584,6 +6639,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingNotchFilter}
           onPreview={handleNotchFilterPreview}
           onApply={handleApplyNotchFilter}
+        />
+
+        <ShelfFilterDialog
+          open={shelfFilterDialogOpen}
+          onOpenChange={setShelfFilterDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingShelfFilter}
+          onPreview={handleShelfFilterPreview}
+          onApply={handleApplyShelfFilter}
         />
 
         <AdjustableFadeDialog
