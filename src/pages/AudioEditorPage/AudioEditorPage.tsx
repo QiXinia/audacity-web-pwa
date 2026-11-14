@@ -167,6 +167,7 @@ import { processDelayChannels, type DelaySettings } from '@/lib/delayEffect';
 import { processClipFixChannels, type ClipFixSettings } from '@/lib/clipFixEffect';
 import { processNotchFilterChannels, type NotchFilterSettings } from '@/lib/notchFilterEffect';
 import { processShelfFilterChannels, type ShelfFilterSettings } from '@/lib/shelfFilterEffect';
+import { processSpectralEditChannels, type SpectralEditKind, type SpectralEditSettings } from '@/lib/spectralEditEffect';
 import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
@@ -323,6 +324,7 @@ import DelayEffectDialog from './sections/DelayEffectDialog';
 import ClipFixDialog from './sections/ClipFixDialog';
 import NotchFilterDialog from './sections/NotchFilterDialog';
 import ShelfFilterDialog from './sections/ShelfFilterDialog';
+import SpectralEditDialog from './sections/SpectralEditDialog';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
@@ -434,6 +436,8 @@ export default function AudioEditorPage() {
   const [isApplyingNotchFilter, setIsApplyingNotchFilter] = useState(false);
   const [shelfFilterDialogOpen, setShelfFilterDialogOpen] = useState(false);
   const [isApplyingShelfFilter, setIsApplyingShelfFilter] = useState(false);
+  const [spectralEditKind, setSpectralEditKind] = useState<SpectralEditKind | null>(null);
+  const [isApplyingSpectralEdit, setIsApplyingSpectralEdit] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -2603,6 +2607,54 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Shelf Filter 失败：${error.message}` : '应用 Shelf Filter 失败');
     } finally {
       setIsApplyingShelfFilter(false);
+    }
+  }
+
+  async function handleSpectralEditPreview(settings: SpectralEditSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const selected = await collectPreviewChannels(quantizedGeneratorSelection);
+    return processSpectralEditChannels(selected, settings, project.sampleRate);
+  }
+
+  async function handleApplySpectralEdit(settings: SpectralEditSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingSpectralEdit(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.spectralEditSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Spectral tools 后无法重新读取工程');
+      const labels: Record<SpectralEditKind, string> = {
+        'delete-center': 'Spectral Edit Delete center frequency',
+        'amplify-center': 'Spectral Edit Amplify center frequency',
+        'amplify-selection': 'Spectral Edit Amplify selection',
+      };
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: labels[settings.kind],
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setSpectralEditKind(null);
+      toast.success(`已对 ${changed} 个片段应用 ${labels[settings.kind]}`);
+    } catch (error) {
+      logger.error('应用 Spectral tools 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Spectral tools 失败：${error.message}` : '应用 Spectral tools 失败');
+    } finally {
+      setIsApplyingSpectralEdit(false);
     }
   }
 
@@ -5759,6 +5811,31 @@ export default function AudioEditorPage() {
               >
                 Shelf Filter 搁架滤波…
               </DropdownMenuItem>
+              <DropdownMenuLabel>Spectral tools</DropdownMenuLabel>
+              <DropdownMenuItem
+                data-testid="effect-spectral-delete-center"
+                onClick={() => setSpectralEditKind('delete-center')}
+                disabled={!quantizedGeneratorSelection || isApplyingSpectralEdit}
+                title="Audacity 4 SpectralEditMulti：删除中心频率"
+              >
+                Delete selection center frequency…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="effect-spectral-amplify-center"
+                onClick={() => setSpectralEditKind('amplify-center')}
+                disabled={!quantizedGeneratorSelection || isApplyingSpectralEdit}
+                title="Audacity 4 SpectralEditParametricEQ：增益中心频率"
+              >
+                Amplify selection center frequency…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="effect-spectral-amplify-selection"
+                onClick={() => setSpectralEditKind('amplify-selection')}
+                disabled={!quantizedGeneratorSelection || isApplyingSpectralEdit}
+                title="Audacity 4 SpectralEditShelves：增益频率选区"
+              >
+                Amplify selection…
+              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setWahWahDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
@@ -6650,6 +6727,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingShelfFilter}
           onPreview={handleShelfFilterPreview}
           onApply={handleApplyShelfFilter}
+        />
+
+        <SpectralEditDialog
+          kind={spectralEditKind}
+          onOpenChange={(open) => { if (!open) setSpectralEditKind(null); }}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingSpectralEdit}
+          onPreview={handleSpectralEditPreview}
+          onApply={handleApplySpectralEdit}
         />
 
         <AdjustableFadeDialog
