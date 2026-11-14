@@ -162,6 +162,7 @@ async function openDeleteSelection() {
 describe('AudioEditorPage spectral rectangle selection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
     mockProject = makeProject();
     mocks.loadChannels.mockResolvedValue([new Float32Array(8000).fill(0.1)]);
     mocks.saveProject.mockImplementation(async (updated: IProject) => { mockProject = updated; });
@@ -240,5 +241,70 @@ describe('AudioEditorPage spectral rectangle selection', () => {
     await openDeleteSelection();
     expect((screen.getByTestId('spectral-low-input') as HTMLInputElement).value).toBe('20');
     expect((screen.getByTestId('spectral-high-input') as HTMLInputElement).value).toBe('60');
+  });
+
+  it('edits geometric center and log bandwidth into the canvas, persistence and Spectral Edit', async () => {
+    mockProject.selection = { start: 1, end: 3 };
+    mockProject.spectralSelection = { lowHz: 20, highHz: 60 };
+    await showSpectrum();
+
+    expect(screen.getByTestId('spectral-selection-bar')).toBeInTheDocument();
+    expect(Number((screen.getByLabelText('几何中心频率（Hz）') as HTMLInputElement).value))
+      .toBeCloseTo(Math.sqrt(1200));
+    expect(Number((screen.getByLabelText('对数带宽 ln(high/low)') as HTMLInputElement).value))
+      .toBeCloseTo(Math.log(3));
+
+    fireEvent.change(screen.getByLabelText('几何中心频率（Hz）'), { target: { value: '40' } });
+    fireEvent.change(screen.getByLabelText('对数带宽 ln(high/low)'), { target: { value: String(Math.log(4)) } });
+    fireEvent.click(screen.getByRole('button', { name: '应用频率边界' }));
+
+    await waitFor(() => expect(screen.getByTestId('spectral-selection-bar-values').textContent)
+      .toContain('20.000–80.000 Hz'));
+    const rectangle = screen.getByTestId('spectral-selection-rectangle');
+    expect(parseFloat(rectangle.style.top)).toBeCloseTo(15.2);
+    expect(parseFloat(rectangle.style.height)).toBeCloseTo(45.6);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalled());
+    const saved = mocks.saveProject.mock.calls.at(-1)?.[0] as IProject;
+    expect(saved.spectralSelection?.lowHz).toBeCloseTo(20);
+    expect(saved.spectralSelection?.highHz).toBeCloseTo(80);
+
+    await openDeleteSelection();
+    expect(Number((screen.getByTestId('spectral-low-input') as HTMLInputElement).value)).toBeCloseTo(20);
+    expect(Number((screen.getByTestId('spectral-high-input') as HTMLInputElement).value)).toBeCloseTo(80);
+  });
+
+  it('edits low and high bounds and rejects values beyond the displayed range', async () => {
+    mockProject.selection = { start: 1, end: 3 };
+    mockProject.spectralSelection = { lowHz: 20, highHz: 60 };
+    await showSpectrum();
+
+    fireEvent.click(screen.getByLabelText('频率编辑模式'));
+    fireEvent.click(await screen.findByRole('option', { name: '低频与高频' }));
+    fireEvent.change(screen.getByLabelText('低频（Hz）'), { target: { value: '30' } });
+    fireEvent.change(screen.getByLabelText('高频（Hz）'), { target: { value: '90' } });
+    fireEvent.click(screen.getByRole('button', { name: '应用频率边界' }));
+    await waitFor(() => expect(screen.getByTestId('spectral-selection-bar-values').textContent)
+      .toContain('30.000–90.000 Hz'));
+
+    fireEvent.change(screen.getByLabelText('高频（Hz）'), { target: { value: '200' } });
+    fireEvent.click(screen.getByRole('button', { name: '应用频率边界' }));
+    expect(screen.getByRole('alert').textContent).toContain('100 Hz');
+    expect(screen.getByTestId('spectral-selection-bar-values').textContent).toContain('30.000–90.000 Hz');
+
+    fireEvent.change(screen.getByLabelText('低频（Hz）'), { target: { value: '0' } });
+    fireEvent.change(screen.getByLabelText('高频（Hz）'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: '应用频率边界' }));
+    await waitFor(() => expect(screen.getByTestId('spectral-selection-bar-values').textContent)
+      .toContain('0.000–100.000 Hz'));
+    const rectangle = screen.getByTestId('spectral-selection-rectangle');
+    expect(parseFloat(rectangle.style.top)).toBeCloseTo(0);
+    expect(parseFloat(rectangle.style.height)).toBeCloseTo(76);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalled());
+    const saved = mocks.saveProject.mock.calls.at(-1)?.[0] as IProject;
+    expect(saved.spectralSelection).toEqual({ lowHz: 0, highHz: 100 });
   });
 });

@@ -332,6 +332,7 @@ import ClipFixDialog from './sections/ClipFixDialog';
 import NotchFilterDialog from './sections/NotchFilterDialog';
 import ShelfFilterDialog from './sections/ShelfFilterDialog';
 import SpectralEditDialog from './sections/SpectralEditDialog';
+import SpectralSelectionBar from './sections/SpectralSelectionBar';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
@@ -6585,6 +6586,19 @@ export default function AudioEditorPage() {
             )}
           </div>
         </div>
+
+        {selection && spectralSelection && (
+          <SpectralSelectionBar
+            selection={spectralSelection}
+            sampleRate={project.sampleRate}
+            onChange={(next) => handleSpectralSelectionChange(
+              selection.start,
+              selection.end,
+              next.lowHz,
+              next.highHz,
+            )}
+          />
+        )}
 
         {/* Technical status bar */}
         <div className="flex h-6 shrink-0 items-center justify-between gap-3 overflow-x-auto border-t border-[#434a50] bg-[#252b31] px-3 text-[10px] text-[#aab0b6]">

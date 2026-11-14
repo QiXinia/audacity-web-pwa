@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createFrequencySelectionFromBounds,
+  createFrequencySelectionFromCenterBandwidth,
   frequencyToSpectrumY,
+  getFrequencySelectionCenterHz,
+  getFrequencySelectionLogBandwidth,
   getSpectrumDisplayMaxHz,
   normalizeFrequencySelection,
   parseFrequencySelection,
@@ -48,5 +52,40 @@ describe('spectral frequency selection', () => {
     expect(spectrumYToFrequency(100, 76, 1000)).toBe(0);
     expect(frequencyToSpectrumY(-1, 76, 1000)).toBe(76);
     expect(frequencyToSpectrumY(101, 76, 1000)).toBe(0);
+  });
+
+  it('derives the Audacity geometric center and natural-log bandwidth', () => {
+    const selection = { lowHz: 25, highHz: 400 };
+    expect(getFrequencySelectionCenterHz(selection)).toBe(100);
+    expect(getFrequencySelectionLogBandwidth(selection)).toBeCloseTo(Math.log(16));
+    expect(getFrequencySelectionCenterHz({ lowHz: 0, highHz: 100 })).toBeNull();
+    expect(getFrequencySelectionLogBandwidth({ lowHz: 0, highHz: 100 })).toBeNull();
+  });
+
+  it('round-trips center and logarithmic bandwidth at the display boundary', () => {
+    const next = createFrequencySelectionFromCenterBandwidth(100, Math.log(4), 2000);
+    expect(next?.lowHz).toBeCloseTo(50);
+    expect(next?.highHz).toBeCloseTo(200);
+    expect(getFrequencySelectionCenterHz(next!)).toBeCloseTo(100);
+    expect(getFrequencySelectionLogBandwidth(next!)).toBeCloseTo(Math.log(4));
+  });
+
+  it('rejects invalid bounds instead of silently clamping toolbar input', () => {
+    expect(createFrequencySelectionFromBounds(0, 100, 1000)).toEqual({ lowHz: 0, highHz: 100 });
+    expect(createFrequencySelectionFromBounds(-1, 50, 1000)).toBeNull();
+    expect(createFrequencySelectionFromBounds(60, 40, 1000)).toBeNull();
+    expect(createFrequencySelectionFromBounds(20, 20, 1000)).toBeNull();
+    expect(createFrequencySelectionFromBounds(20, 200, 1000)).toBeNull();
+    expect(createFrequencySelectionFromBounds(20, Number.NaN, 1000)).toBeNull();
+    expect(createFrequencySelectionFromBounds(20, 50, 0)).toBeNull();
+  });
+
+  it('rejects zero-width, non-finite and out-of-display-range center edits', () => {
+    expect(createFrequencySelectionFromCenterBandwidth(0, 1, 1000)).toBeNull();
+    expect(createFrequencySelectionFromCenterBandwidth(50, 0, 1000)).toBeNull();
+    expect(createFrequencySelectionFromCenterBandwidth(50, -1, 1000)).toBeNull();
+    expect(createFrequencySelectionFromCenterBandwidth(50, Number.NaN, 1000)).toBeNull();
+    expect(createFrequencySelectionFromCenterBandwidth(100, Math.log(9), 1000)).toBeNull();
+    expect(createFrequencySelectionFromCenterBandwidth(50, Number.MAX_VALUE, 1000)).toBeNull();
   });
 });

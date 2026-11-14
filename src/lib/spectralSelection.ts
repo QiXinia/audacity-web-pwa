@@ -28,6 +28,43 @@ export function normalizeFrequencySelection(
   return highHz > lowHz ? { lowHz, highHz } : null;
 }
 
+export function getFrequencySelectionCenterHz(
+  selection: FrequencySelection,
+): number | null {
+  if (!(selection.lowHz > 0) || !(selection.highHz > selection.lowHz)) return null;
+  return Math.sqrt(selection.lowHz * selection.highHz);
+}
+
+export function getFrequencySelectionLogBandwidth(
+  selection: FrequencySelection,
+): number | null {
+  if (!(selection.lowHz > 0) || !(selection.highHz > selection.lowHz)) return null;
+  return Math.log(selection.highHz / selection.lowHz);
+}
+
+export function createFrequencySelectionFromBounds(
+  lowHz: number,
+  highHz: number,
+  sampleRate: number,
+): FrequencySelection | null {
+  const maxHz = getSpectrumDisplayMaxHz(sampleRate);
+  if (!Number.isFinite(lowHz) || !Number.isFinite(highHz) || maxHz <= 0) return null;
+  if (lowHz < 0 || highHz <= lowHz || highHz > maxHz) return null;
+  return { lowHz, highHz };
+}
+
+export function createFrequencySelectionFromCenterBandwidth(
+  centerHz: number,
+  logBandwidth: number,
+  sampleRate: number,
+): FrequencySelection | null {
+  if (!Number.isFinite(centerHz) || !Number.isFinite(logBandwidth)) return null;
+  if (centerHz <= 0 || logBandwidth <= 0) return null;
+  const ratio = Math.exp(logBandwidth / 2);
+  if (!Number.isFinite(ratio) || ratio <= 1) return null;
+  return createFrequencySelectionFromBounds(centerHz / ratio, centerHz * ratio, sampleRate);
+}
+
 export function parseFrequencySelection(
   data: string | null | undefined,
   sampleRate: number,
