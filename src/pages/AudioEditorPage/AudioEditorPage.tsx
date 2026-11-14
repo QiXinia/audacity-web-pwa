@@ -164,6 +164,7 @@ import {
   processEchoSelection,
 } from '@/lib/echoEffect';
 import { processDelayChannels, type DelaySettings } from '@/lib/delayEffect';
+import { processClipFixChannels, type ClipFixSettings } from '@/lib/clipFixEffect';
 import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
@@ -317,6 +318,7 @@ import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import EchoEffectDialog from './sections/EchoEffectDialog';
 import DelayEffectDialog from './sections/DelayEffectDialog';
+import ClipFixDialog from './sections/ClipFixDialog';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
@@ -422,6 +424,8 @@ export default function AudioEditorPage() {
   const [isApplyingEcho, setIsApplyingEcho] = useState(false);
   const [delayDialogOpen, setDelayDialogOpen] = useState(false);
   const [isApplyingDelay, setIsApplyingDelay] = useState(false);
+  const [clipFixDialogOpen, setClipFixDialogOpen] = useState(false);
+  const [isApplyingClipFix, setIsApplyingClipFix] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -2290,6 +2294,79 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Delay 失败：${error.message}` : '应用 Delay 失败');
     } finally {
       setIsApplyingDelay(false);
+    }
+  }
+
+  async function handleClipFixPreview(clipFixSettings: ClipFixSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const ordered = [...target.clips].sort((left, right) => left.sourceOffset - right.sourceOffset);
+    const channelCount = ordered[0]?.sampleData.length ?? 0;
+    const ranges = ordered.map((input) => {
+      const clip = project.tracks
+        .find((track) => track.id === target.trackId)
+        ?.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0].length,
+      );
+      if (!range) throw new Error('试听片段不在选区内');
+      return { input, range };
+    });
+    const totalLength = ranges.reduce((total, item) => total + item.range.endSample - item.range.startSample, 0);
+    const selected = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let cursor = 0;
+    for (const item of ranges) {
+      const length = item.range.endSample - item.range.startSample;
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        selected[channel].set(item.input.sampleData[channel].subarray(item.range.startSample, item.range.endSample), cursor);
+      }
+      cursor += length;
+    }
+    return processClipFixChannels(selected, clipFixSettings);
+  }
+
+  async function handleApplyClipFix(clipFixSettings: ClipFixSettings) {
+    if (!project || !quantizedGeneratorSelection) return;
+    setIsApplyingClipFix(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.clipFixSelectionOnTracks(
+        project.id,
+        activeSelection,
+        clipFixSettings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('应用 Clip Fix 后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Clip Fix 削波修复',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      setClipFixDialogOpen(false);
+      toast.success(`已对 ${changed} 个片段应用 Clip Fix`);
+    } catch (error) {
+      logger.error('应用 Clip Fix 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Clip Fix 失败：${error.message}` : '应用 Clip Fix 失败');
+    } finally {
+      setIsApplyingClipFix(false);
     }
   }
 
@@ -5630,6 +5707,13 @@ export default function AudioEditorPage() {
                 修复（Repair）
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => setClipFixDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || isApplyingClipFix}
+                title="检测削波区域并用三次曲线重建峰值"
+              >
+                Clip Fix 削波修复…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setNormalizeDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
               >
@@ -6304,6 +6388,17 @@ export default function AudioEditorPage() {
           isApplying={isApplyingDelay}
           onPreview={handleDelayPreview}
           onApply={handleApplyDelay}
+        />
+
+        <ClipFixDialog
+          open={clipFixDialogOpen}
+          onOpenChange={setClipFixDialogOpen}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingClipFix}
+          onPreview={handleClipFixPreview}
+          onApply={handleApplyClipFix}
         />
 
         <AdjustableFadeDialog
