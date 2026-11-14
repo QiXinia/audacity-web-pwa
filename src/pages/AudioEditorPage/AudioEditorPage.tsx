@@ -484,6 +484,7 @@ export default function AudioEditorPage() {
   const [crossfadeDialogOpen, setCrossfadeDialogOpen] = useState(false);
   const [isApplyingCrossfade, setIsApplyingCrossfade] = useState(false);
   const [isApplyingCrossfadeClips, setIsApplyingCrossfadeClips] = useState(false);
+  const [isApplyingStudioFadeOut, setIsApplyingStudioFadeOut] = useState(false);
   const quantizedGeneratorSelection = project
     ? quantizeSelectionToSamples(selection, project.sampleRate)
     : null;
@@ -2132,6 +2133,41 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `Crossfade Clips 失败：${error.message}` : 'Crossfade Clips 失败');
     } finally {
       setIsApplyingCrossfadeClips(false);
+    }
+  }
+
+  async function handleStudioFadeOut() {
+    if (!project || !quantizedGeneratorSelection) return;
+    const activeSelection = quantizedGeneratorSelection;
+    setIsApplyingStudioFadeOut(true);
+    try {
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const changed = await projectService.studioFadeOutSelectionOnTracks(
+        project.id,
+        activeSelection,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('Studio Fade Out 后无法重新读取工程');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Studio Fade Out 工作室淡出',
+        execute: () => updated,
+        undo: () => before,
+      });
+      updateHistoryState();
+      toast.success(`已对 ${changed} 个片段应用 Studio Fade Out`);
+    } catch (error) {
+      logger.error('Studio Fade Out 失败:', String(error));
+      toast.error(error instanceof Error ? `Studio Fade Out 失败：${error.message}` : 'Studio Fade Out 失败');
+    } finally {
+      setIsApplyingStudioFadeOut(false);
     }
   }
 
@@ -5756,6 +5792,12 @@ export default function AudioEditorPage() {
                 disabled={!quantizedGeneratorSelection || isApplyingCrossfadeClips}
               >
                 Crossfade Clips 片段交叉淡化
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleStudioFadeOut}
+                disabled={!quantizedGeneratorSelection || isApplyingStudioFadeOut}
+              >
+                Studio Fade Out 工作室淡出
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setReverbDialogOpen(true)}
