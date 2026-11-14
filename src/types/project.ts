@@ -5,6 +5,8 @@ export type ProjectStatus = 'active' | 'deleted';
 export type EffectType = 'eq' | 'compressor' | 'reverb' | 'delay' | 'noiseGate' | 'gain' | 'highPass' | 'lowPass';
 export type TrackType = 'audio';
 export type SnapMode = 'clips' | 'samples' | 'milliseconds' | 'seconds' | 'beats' | 'bars';
+export type { FrequencySelection } from '@/lib/spectralSelection';
+import type { FrequencySelection } from '@/lib/spectralSelection';
 
 export interface IProjectSummary {
   id: string;
@@ -73,6 +75,8 @@ export interface IProject {
   tracks: ITrack[];
   cursorPosition: number;
   selection: { start: number; end: number } | null;
+  /** Independent linear frequency range; legacy projects omit this field. */
+  spectralSelection?: FrequencySelection | null;
   /** Independent Audacity 4-style loop region; legacy projects omit both fields. */
   loopRegion?: { start: number; end: number } | null;
   loopEnabled?: boolean;

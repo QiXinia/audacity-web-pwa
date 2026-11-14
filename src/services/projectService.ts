@@ -10,6 +10,11 @@ import {
   type ProjectRecord,
 } from '@/db/audioDb';
 import { generateId, getTrackColor } from '@/lib/audioUtils';
+import {
+  normalizeFrequencySelection,
+  parseFrequencySelection,
+  type FrequencySelection,
+} from '@/lib/spectralSelection';
 import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect } from '@/types/project';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
@@ -2007,6 +2012,7 @@ class ProjectService {
     selection: GeneratorSelection,
     settings: SpectralEditSettings,
     targets: readonly SpectralEditTrackAudio[],
+    spectralSelection?: FrequencySelection | null,
   ): Promise<number> {
     validateSpectralEditSettings(settings);
     if (isSpectralEditBypassed(settings)) {
@@ -2120,6 +2126,9 @@ class ProjectService {
     const updatedProject: IProject = {
       ...project,
       selection,
+      spectralSelection: spectralSelection === undefined
+        ? normalizeFrequencySelection(project.spectralSelection, project.sampleRate)
+        : normalizeFrequencySelection(spectralSelection, project.sampleRate),
       tracks: project.tracks.map((track) => nextTracks.get(track.id) ?? track),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
@@ -5746,6 +5755,7 @@ class ProjectService {
       tracks: deserializeTracks(record.tracksData),
       cursorPosition: 0,
       selection: deserializeSelection(record.selectionData),
+      spectralSelection: parseFrequencySelection(record.spectralSelectionData, record.sampleRate),
       loopRegion: deserializeSelection(record.loopRegionData ?? null),
       loopEnabled: record.loopEnabled ?? false,
       viewState: record.viewStateData ? JSON.parse(record.viewStateData) : {
@@ -5784,6 +5794,9 @@ class ProjectService {
       timeSignature: project.timeSignature,
       cursorPosition: project.cursorPosition,
       selectionData: serializeSelection(project.selection),
+      spectralSelectionData: JSON.stringify(
+        normalizeFrequencySelection(project.spectralSelection, project.sampleRate),
+      ),
       loopRegionData: serializeSelection(project.loopRegion ?? null),
       loopEnabled: project.loopEnabled ?? false,
       thumbnail: undefined,

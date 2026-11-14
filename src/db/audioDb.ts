@@ -10,6 +10,7 @@ export interface ProjectRecord extends IProjectSummary {
   timeSignature: { numerator: number; denominator: number };
   cursorPosition: number;
   selectionData: string | null; // JSON serialized selection
+  spectralSelectionData?: string | null; // JSON serialized independent frequency selection
   loopRegionData?: string | null; // JSON serialized independent loop region
   loopEnabled?: boolean;
 }

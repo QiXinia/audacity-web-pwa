@@ -169,6 +169,13 @@ import { processNotchFilterChannels, type NotchFilterSettings } from '@/lib/notc
 import { processShelfFilterChannels, type ShelfFilterSettings } from '@/lib/shelfFilterEffect';
 import { processSpectralEditChannels, type SpectralEditKind, type SpectralEditSettings } from '@/lib/spectralEditEffect';
 import {
+  frequencyToSpectrumY,
+  getSpectrumDisplayMaxHz,
+  normalizeFrequencySelection,
+  spectrumYToFrequency,
+  type FrequencySelection,
+} from '@/lib/spectralSelection';
+import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
 } from '@/lib/adjustableFadeEffect';
@@ -371,6 +378,7 @@ export default function AudioEditorPage() {
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [cursorPosition, setCursorPosition] = useState(0);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
+  const [spectralSelection, setSpectralSelection] = useState<FrequencySelection | null>(null);
   const [loopRegion, setLoopRegion] = useState<LoopRegion | null>(null);
   const [loopEnabled, setLoopEnabled] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('waveform');
@@ -674,6 +682,7 @@ export default function AudioEditorPage() {
         setShowClipping(workspace.layout.showClipping);
         setScrollX(proj.viewState.scrollX);
         setSelection(proj.selection);
+        setSpectralSelection(normalizeFrequencySelection(proj.spectralSelection, proj.sampleRate));
         const restoredLoop = normalizeLoopRegion(proj.loopRegion);
         setLoopRegion(restoredLoop);
         setLoopEnabled(restoredLoop ? (proj.loopEnabled ?? false) : false);
@@ -711,6 +720,7 @@ export default function AudioEditorPage() {
           snapMode,
         },
         selection,
+        spectralSelection,
         loopRegion,
         loopEnabled,
       };
@@ -1848,6 +1858,10 @@ export default function AudioEditorPage() {
     ));
     setProject(restoredProject);
     setSelection(restoredProject.selection);
+    setSpectralSelection(normalizeFrequencySelection(
+      restoredProject.spectralSelection,
+      restoredProject.sampleRate,
+    ));
     setSelectedClips((current) => current.filter((key) => validClipKeys.has(clipKeyId(key))));
     setSelectedTrackId((current) => current && validTrackIds.has(current)
       ? current
@@ -2626,12 +2640,17 @@ export default function AudioEditorPage() {
         toast.info('选区内没有可处理的音频');
         return;
       }
-      const before = JSON.parse(JSON.stringify(project)) as IProject;
+      const before = JSON.parse(JSON.stringify({
+        ...project,
+        selection: activeSelection,
+        spectralSelection,
+      })) as IProject;
       const changed = await projectService.spectralEditSelectionOnTracks(
         project.id,
         activeSelection,
         settings,
         targets,
+        spectralSelection,
       );
       const updated = await projectService.getProject(project.id);
       if (!updated) throw new Error('应用 Spectral tools 后无法重新读取工程');
@@ -2642,6 +2661,8 @@ export default function AudioEditorPage() {
         'amplify-selection': 'Spectral Edit Amplify selection',
       };
       setProject(updated);
+      setSelection(updated.selection);
+      setSpectralSelection(normalizeFrequencySelection(updated.spectralSelection, updated.sampleRate));
       pushHistoryCmd({
         id: generateId(),
         label: labels[settings.kind],
@@ -4010,11 +4031,43 @@ export default function AudioEditorPage() {
 
   // Selection handling from canvas
   function handleSelectionChange(start: number, end: number) {
-    if (start === end) {
-      setSelection(null);
-    } else {
-      setSelection({ start: Math.min(start, end), end: Math.max(start, end) });
-    }
+    const nextSelection = start === end
+      ? null
+      : { start: Math.min(start, end), end: Math.max(start, end) };
+    setSelection(nextSelection);
+    setSpectralSelection(null);
+    setProject((current) => current
+      ? { ...current, selection: nextSelection, spectralSelection: null }
+      : current);
+  }
+
+  function handleSpectralSelectionChange(
+    start: number,
+    end: number,
+    firstHz: number,
+    secondHz: number,
+  ) {
+    if (!project) return;
+    const nextSelection = start === end
+      ? null
+      : { start: Math.min(start, end), end: Math.max(start, end) };
+    const nextFrequency = nextSelection
+      ? normalizeFrequencySelection({ lowHz: firstHz, highHz: secondHz }, project.sampleRate)
+      : null;
+    const committedSelection = nextFrequency ? nextSelection : null;
+    setSelection(committedSelection);
+    setSpectralSelection(nextFrequency);
+    setProject((current) => current
+      ? { ...current, selection: committedSelection, spectralSelection: nextFrequency }
+      : current);
+  }
+
+  function clearSelection() {
+    setSelection(null);
+    setSpectralSelection(null);
+    setProject((current) => current
+      ? { ...current, selection: null, spectralSelection: null }
+      : current);
   }
 
   function handleCursorChange(pos: number) {
@@ -5385,7 +5438,7 @@ export default function AudioEditorPage() {
               >
                 选择全部音频
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSelection(null)} disabled={!selection}>清除选区</DropdownMenuItem>
+              <DropdownMenuItem onClick={clearSelection} disabled={!selection}>清除选区</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <DropdownMenu>
@@ -6082,11 +6135,19 @@ export default function AudioEditorPage() {
                 <span className="size-1.5 rounded-full bg-[#84b5ff]" />
                 <span>选区：{formatTime(selection.start)} → {formatTime(selection.end)}</span>
                 <span className="text-muted-foreground">（{formatTime(selection.end - selection.start)}）</span>
+                {spectralSelection && (
+                  <span
+                    className="rounded-sm border border-[#fff2a8]/40 bg-[#fff2a8]/10 px-1.5 py-0.5 text-[#fff2a8]"
+                    data-testid="spectral-selection-status"
+                  >
+                    频率 {spectralSelection.lowHz.toFixed(3)}–{spectralSelection.highHz.toFixed(3)} Hz
+                  </span>
+                )}
                 <Button
                   variant="ghost"
                   size="icon"
                   className="ml-1 size-5 hover:bg-[#84b5ff]/20"
-                  onClick={() => setSelection(null)}
+                  onClick={clearSelection}
                   aria-label="清除选区"
                   title="清除选区"
                 >
@@ -6338,6 +6399,8 @@ export default function AudioEditorPage() {
                 pxPerSec={pxPerSec}
                 totalWidth={totalWidth}
                 viewMode={viewMode}
+                selection={selection}
+                spectralSelection={spectralSelection}
                 scrollX={scrollX}
                 verticalZoom={verticalZoom}
                 showClipping={showClipping}
@@ -6350,6 +6413,7 @@ export default function AudioEditorPage() {
                 onResolveClipDelta={(clipId, operation, delta, bypassSnap) => resolveClipSnapDelta(track.id, clipId, operation, delta, bypassSnap)}
                 onResetClip={(clipId) => handleClipReset(track.id, clipId)}
                 onSelectionChange={handleSelectionChange}
+                onSpectralSelectionChange={handleSpectralSelectionChange}
                 onCursorChange={handleCursorChange}
                 onSnapTime={resolveTimelineSnap}
               />
@@ -6512,7 +6576,7 @@ export default function AudioEditorPage() {
                 variant="ghost"
                 size="icon"
                 className="size-6"
-                onClick={() => setSelection(null)}
+                onClick={clearSelection}
                 aria-label="清除选区时间"
                 title="清除选区"
               >
@@ -6742,6 +6806,7 @@ export default function AudioEditorPage() {
           kind={spectralEditKind}
           onOpenChange={(open) => { if (!open) setSpectralEditKind(null); }}
           sampleRate={project.sampleRate}
+          frequencySelection={spectralSelection}
           selectionStart={quantizedGeneratorSelection?.start ?? 0}
           selectionEnd={quantizedGeneratorSelection?.end ?? 0}
           isApplying={isApplyingSpectralEdit}
@@ -7421,6 +7486,8 @@ function TrackTimeline({
   pxPerSec,
   totalWidth,
   viewMode,
+  selection,
+  spectralSelection,
   scrollX,
   verticalZoom,
   showClipping,
@@ -7433,6 +7500,7 @@ function TrackTimeline({
   onResolveClipDelta,
   onResetClip,
   onSelectionChange,
+  onSpectralSelectionChange,
   onCursorChange,
   onSnapTime,
 }: {
@@ -7443,6 +7511,8 @@ function TrackTimeline({
   pxPerSec: number;
   totalWidth: number;
   viewMode: ViewMode;
+  selection: { start: number; end: number } | null;
+  spectralSelection: FrequencySelection | null;
   scrollX: number;
   verticalZoom: number;
   showClipping: boolean;
@@ -7455,6 +7525,7 @@ function TrackTimeline({
   onResolveClipDelta: (clipId: string, operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onResetClip: (clipId: string) => void;
   onSelectionChange: (start: number, end: number) => void;
+  onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
   onSnapTime: (time: number, bypassSnap: boolean) => number;
 }) {
@@ -7518,6 +7589,8 @@ function TrackTimeline({
           verticalZoom={verticalZoom}
           showClipping={showClipping}
           viewMode={viewMode}
+          selection={selection}
+          spectralSelection={spectralSelection}
           isSelected={selectedClips.some((key) => key.trackId === track.id && key.clipId === clip.id)}
           hasMultipleSelections={selectedClips.length > 1}
           trackColor={track.color}
@@ -7527,6 +7600,9 @@ function TrackTimeline({
           onResolveDelta={(operation, delta, bypassSnap) => onResolveClipDelta(clip.id, operation, delta, bypassSnap)}
           onReset={() => onResetClip(clip.id)}
           onSelect={(mode) => onSelectClip(clip.id, mode)}
+          onSpectralSelectionChange={onSpectralSelectionChange}
+          onCursorChange={onCursorChange}
+          onSnapTime={onSnapTime}
         />
       ))}
     </div>
@@ -7544,6 +7620,8 @@ function ClipItem({
   verticalZoom,
   showClipping,
   viewMode,
+  selection,
+  spectralSelection,
   isSelected,
   hasMultipleSelections,
   trackColor,
@@ -7553,6 +7631,9 @@ function ClipItem({
   onResolveDelta,
   onReset,
   onSelect,
+  onSpectralSelectionChange,
+  onCursorChange,
+  onSnapTime,
 }: {
   clip: IClip;
   track: ITrack;
@@ -7563,6 +7644,8 @@ function ClipItem({
   verticalZoom: number;
   showClipping: boolean;
   viewMode: ViewMode;
+  selection: { start: number; end: number } | null;
+  spectralSelection: FrequencySelection | null;
   isSelected: boolean;
   hasMultipleSelections: boolean;
   trackColor: string;
@@ -7572,6 +7655,9 @@ function ClipItem({
   onResolveDelta: (operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onReset: () => void;
   onSelect: (mode: ClipSelectionMode) => void;
+  onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
+  onCursorChange: (pos: number) => void;
+  onSnapTime: (time: number, bypassSnap: boolean) => number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [audioData, setAudioData] = useState<Float32Array | null>(null);
@@ -7583,6 +7669,14 @@ function ClipItem({
   } | null>(null);
   const [moveDrag, setMoveDrag] = useState<{ startX: number; delta: number } | null>(null);
   const suppressClickRef = useRef(false);
+  const spectralDragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    time: number;
+    frequencyHz: number;
+    moved: boolean;
+  } | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -7650,6 +7744,20 @@ function ClipItem({
     2,
     width + (edgeDrag?.edge === 'left' ? -edgeDelta : edgeDelta) * pxPerSec,
   );
+  const spectrumHeight = trackHeight - 24;
+  const spectralRect = selection && spectralSelection ? (() => {
+    const clipEnd = clip.startTime + clip.duration;
+    const selectedStart = Math.max(selection.start, clip.startTime);
+    const selectedEnd = Math.min(selection.end, clipEnd);
+    if (selectedEnd <= selectedStart) return null;
+    const rectLeft = (selectedStart - clip.startTime) * pxPerSec;
+    const rectRight = (selectedEnd - clip.startTime) * pxPerSec;
+    const top = frequencyToSpectrumY(spectralSelection.highHz, spectrumHeight, sampleRate);
+    const bottom = frequencyToSpectrumY(spectralSelection.lowHz, spectrumHeight, sampleRate);
+    return bottom > top
+      ? { left: rectLeft, width: rectRight - rectLeft, top, height: bottom - top }
+      : null;
+  })() : null;
 
   function boundedEdgeDelta(edge: 'left' | 'right', mode: 'trim' | 'stretch', rawDelta: number) {
     const ratio = getClipStretchRatio(clip);
@@ -7723,6 +7831,74 @@ function ClipItem({
     if (Math.abs(moveDrag.delta) >= 0.001) onMove(moveDrag.delta, e.altKey);
     setMoveDrag(null);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+  }
+
+  function getSpectrumPoint(e: React.PointerEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = clamp(e.clientX - rect.left, 0, rect.width);
+    const y = clamp(e.clientY - rect.top, 0, rect.height);
+    return {
+      time: clip.startTime + x / pxPerSec,
+      frequencyHz: spectrumYToFrequency(y, rect.height, sampleRate),
+    };
+  }
+
+  function handleSpectrumStart(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const point = getSpectrumPoint(e);
+    const time = onSnapTime(point.time, e.altKey);
+    spectralDragRef.current = {
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      time,
+      frequencyHz: point.frequencyHz,
+      moved: false,
+    };
+    onCursorChange(time);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function handleSpectrumMove(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = spectralDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!drag.moved && Math.hypot(
+      e.clientX - drag.startClientX,
+      e.clientY - drag.startClientY,
+    ) < 2) return;
+    drag.moved = true;
+    suppressClickRef.current = true;
+    const point = getSpectrumPoint(e);
+    onSpectralSelectionChange(
+      drag.time,
+      onSnapTime(point.time, e.altKey),
+      drag.frequencyHz,
+      point.frequencyHz,
+    );
+  }
+
+  function handleSpectrumEnd(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = spectralDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (drag.moved) {
+      const point = getSpectrumPoint(e);
+      onSpectralSelectionChange(
+        drag.time,
+        onSnapTime(point.time, e.altKey),
+        drag.frequencyHz,
+        point.frequencyHz,
+      );
+    }
+    spectralDragRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
   }
 
   function handleSelection(e: React.MouseEvent<HTMLDivElement> | React.KeyboardEvent<HTMLDivElement>) {
@@ -7799,6 +7975,36 @@ function ClipItem({
 
       {/* Waveform canvas */}
       <canvas ref={canvasRef} className="absolute inset-x-0 bottom-1 top-5" />
+
+      {(viewMode === 'spectrum' || viewMode === 'both') && (
+        <div
+          className="absolute inset-x-0 bottom-1 top-5 z-[15] cursor-crosshair touch-none select-none"
+          data-testid={`spectral-selection-surface-${clip.id}`}
+          role="group"
+          aria-label="频谱矩形选区，拖拽选择时间和频率"
+          title="拖拽创建时间×频率选区；频率范围对应当前线性频谱显示范围"
+          onPointerDown={handleSpectrumStart}
+          onPointerMove={handleSpectrumMove}
+          onPointerUp={handleSpectrumEnd}
+          onPointerCancel={() => { spectralDragRef.current = null; }}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {spectralRect && (
+            <div
+              className="pointer-events-none absolute border border-[#fff2a8] bg-[#fff2a8]/25 shadow-[inset_0_0_0_1px_rgba(32,37,42,0.25)]"
+              data-testid="spectral-selection-rectangle"
+              style={spectralRect}
+            >
+              {spectralRect.width >= 110 && spectralRect.height >= 18 && spectralSelection && (
+                <span className="absolute right-1 top-0.5 rounded-sm bg-[#20252a]/75 px-1 text-[9px] text-[#fff2a8]">
+                  {spectralSelection.lowHz.toFixed(1)}–{spectralSelection.highHz.toFixed(1)} Hz
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Functional trim and non-destructive stretch handles */}
       {([
@@ -7891,9 +8097,12 @@ function drawSpectrumMini(
   const numFrames = Math.floor(specData.length / specLen);
   const pxPerFrame = width / numFrames;
 
-  // Get only visible range (first ~2kHz for overview)
-  const maxFreq = sampleRate / 2;
-  const displayBins = Math.min(specLen, Math.floor(specLen * 0.2)); // top 20% of frequencies
+  // Linear overview of the first 20% of Nyquist; shared with rectangle coordinates.
+  const hzPerBin = sampleRate / windowSize;
+  const displayBins = Math.min(
+    specLen,
+    Math.floor(getSpectrumDisplayMaxHz(sampleRate) / hzPerBin) + 1,
+  );
 
   for (let f = 0; f < numFrames; f++) {
     const x = f * pxPerFrame;

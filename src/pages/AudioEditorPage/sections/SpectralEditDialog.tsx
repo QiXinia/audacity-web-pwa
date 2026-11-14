@@ -19,6 +19,7 @@ import {
   type SpectralEditKind,
   type SpectralEditSettings,
 } from '@/lib/spectralEditEffect';
+import type { FrequencySelection } from '@/lib/spectralSelection';
 import type { PreviewChannels } from '@/lib/generatorPreview';
 import { useGeneratorPreview } from './useGeneratorPreview';
 
@@ -26,6 +27,7 @@ interface SpectralEditDialogProps {
   kind: SpectralEditKind | null;
   onOpenChange: (open: boolean) => void;
   sampleRate: number;
+  frequencySelection?: FrequencySelection | null;
   selectionStart: number;
   selectionEnd: number;
   isApplying: boolean;
@@ -64,6 +66,7 @@ export default function SpectralEditDialog({
   kind,
   onOpenChange,
   sampleRate,
+  frequencySelection,
   selectionStart,
   selectionEnd,
   isApplying,
@@ -96,6 +99,13 @@ export default function SpectralEditDialog({
   useEffect(() => {
     if (!kind) stopPreview();
   }, [kind, stopPreview]);
+
+  useEffect(() => {
+    if (!kind) return;
+    setLowText(String(frequencySelection?.lowHz ?? DEFAULT_SPECTRAL_EDIT_SETTINGS.lowHz));
+    setHighText(String(frequencySelection?.highHz ?? DEFAULT_SPECTRAL_EDIT_SETTINGS.highHz));
+    setGainText(String(DEFAULT_SPECTRAL_EDIT_SETTINGS.gainDb));
+  }, [frequencySelection, kind]);
 
   function changeOpen(nextOpen: boolean) {
     if (!nextOpen) stopPreview();
@@ -143,7 +153,12 @@ export default function SpectralEditDialog({
               </div>
               <div className="space-y-1 rounded-md bg-muted/50 p-3 text-xs text-muted-foreground" data-testid="spectral-selection-summary">
                 <p>选区：{formatTime(selectionStart)}–{formatTime(selectionEnd)}</p>
-                <p>Center: {selection?.centerHz?.toFixed(3) ?? '—'} Hz　Bandwidth: {selection?.bandwidth?.toFixed(6) ?? '—'}　Nyquist: {sampleRate / 2} Hz</p>
+                {frequencySelection && (
+                  <p data-testid="spectral-selection-source">
+                    已读取频谱图矩形：{frequencySelection.lowHz.toFixed(3)}–{frequencySelection.highHz.toFixed(3)} Hz；可直接修改边界。
+                  </p>
+                )}
+                <p>Center: {selection?.centerHz?.toFixed(3) ?? '—'} Hz | Bandwidth: {selection?.bandwidth?.toFixed(6) ?? '—'} | Nyquist: {sampleRate / 2} Hz</p>
               </div>
               {kind !== 'delete-selection' && kind !== 'delete-center' && (
                 <div className="space-y-2">

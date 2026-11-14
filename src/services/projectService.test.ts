@@ -33,6 +33,7 @@ function makeProject(loopEnabled = true): IProject {
     tracks: [],
     cursorPosition: 0,
     selection: { start: 0.5, end: 1.5 },
+    spectralSelection: { lowHz: 120, highHz: 980 },
     loopRegion: { start: 2.5, end: 3 },
     loopEnabled,
     viewState: {
@@ -86,5 +87,32 @@ describe('Project loop persistence', () => {
     const legacy = converter.recordToProject(record);
     expect(legacy.tempo).toBe(120);
     expect(legacy.timeSignature).toEqual({ numerator: 4, denominator: 4 });
+  });
+});
+
+describe('Project spectral frequency selection persistence', () => {
+  it('round-trips independent time and frequency boundaries', () => {
+    const record = converter.projectToRecord(makeProject());
+    expect(record.selectionData).toBe('{"start":0.5,"end":1.5}');
+    expect(record.spectralSelectionData).toBe('{"lowHz":120,"highHz":980}');
+
+    const restored = converter.recordToProject(record);
+    expect(restored.selection).toEqual({ start: 0.5, end: 1.5 });
+    expect(restored.spectralSelection).toEqual({ lowHz: 120, highHz: 980 });
+  });
+
+  it('keeps legacy records compatible and normalizes malformed frequency data', () => {
+    const record = converter.projectToRecord(makeProject());
+    delete record.spectralSelectionData;
+    expect(converter.recordToProject(record).spectralSelection).toBeNull();
+
+    record.spectralSelectionData = '{"lowHz":9000,"highHz":100}';
+    expect(converter.recordToProject(record).spectralSelection).toEqual({
+      lowHz: 100,
+      highHz: 4410,
+    });
+
+    record.spectralSelectionData = '{broken';
+    expect(converter.recordToProject(record).spectralSelection).toBeNull();
   });
 });

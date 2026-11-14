@@ -80,8 +80,9 @@ describe('ProjectService Spectral tools', () => {
     }];
 
     const selection = { start: 0.002, end: 0.02 };
+    const frequencySelection = { lowHz: 20, highHz: 80 };
     const changed = await projectService.spectralEditSelectionOnTracks(
-      project.id, selection, settings, targets,
+      project.id, selection, settings, targets, frequencySelection,
     );
     const ranges = project.tracks[0].clips.map((clip, index) => getClipSampleRange(
       clip, selection, 0, project.sampleRate, inputs[index].length,
@@ -105,6 +106,8 @@ describe('ProjectService Spectral tools', () => {
       cursor += length;
     });
     const savedClips = save.mock.calls[0][0].tracks[0].clips;
+    expect(save.mock.calls[0][0].selection).toEqual(selection);
+    expect(save.mock.calls[0][0].spectralSelection).toEqual(frequencySelection);
     expect(savedClips.map((clip) => [clip.startTime, clip.duration, clip.originalDuration])).toEqual([
       [0, 0.01, 0.01],
       [0.01, 0.01, 0.01],
