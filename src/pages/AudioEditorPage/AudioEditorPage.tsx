@@ -158,6 +158,11 @@ import {
   type GeneratorSelection,
 } from '@/lib/generatorEditing';
 import {
+  measureContrastSelection as measureContrastPcm,
+  type ContrastClip,
+  type ContrastMeasurement,
+} from '@/lib/contrastAnalysis';
+import {
   createEchoState,
   getEchoClipSampleRange,
   getEchoPlan,
@@ -350,6 +355,7 @@ import ShelfFilterDialog from './sections/ShelfFilterDialog';
 import SpectralEditDialog from './sections/SpectralEditDialog';
 import SpectralSelectionBar from './sections/SpectralSelectionBar';
 import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
+import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
@@ -467,6 +473,7 @@ export default function AudioEditorPage() {
   const [spectralEditKind, setSpectralEditKind] = useState<SpectralEditKind | null>(null);
   const [isApplyingSpectralEdit, setIsApplyingSpectralEdit] = useState(false);
   const [plotSpectrumDialogOpen, setPlotSpectrumDialogOpen] = useState(false);
+  const [contrastDialogOpen, setContrastDialogOpen] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -611,11 +618,15 @@ export default function AudioEditorPage() {
 
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.matches('input, textarea, [contenteditable="true"]')) return;
+      const target = event.target;
+      if (target instanceof Element && target.matches('input, textarea, [contenteditable="true"]')) return;
       const key = event.key.toLowerCase();
       const modified = event.ctrlKey || event.metaKey;
-      if (modified && key === 'i') {
+      if (modified && event.shiftKey && key === 't' && quantizedGeneratorSelection
+        && playbackState !== 'playing' && recordingState !== 'recording') {
+        event.preventDefault();
+        setContrastDialogOpen(true);
+      } else if (modified && key === 'i') {
         event.preventDefault();
         void splitClipsAtCursor();
       } else if (modified && key === 'c' && selection) {
@@ -671,6 +682,8 @@ export default function AudioEditorPage() {
     snapMode,
     horizontalZoom,
     verticalZoom,
+    playbackState,
+    recordingState,
     scrollX,
     viewMode,
   ]);
@@ -2241,6 +2254,29 @@ export default function AudioEditorPage() {
       if (clips.length > 0) segments.push({ trackId: track.id, clips });
     }
     return mixPlotSpectrumSegments(segments, activeSelection, project.sampleRate);
+  }
+
+  async function measureContrastAudio(): Promise<ContrastMeasurement> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要测量的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length !== 1) throw new Error('一次只能测量一条音频轨道');
+    const track = project.tracks.find(({ id }) => id === trackIds[0]);
+    if (!track) throw new Error('请选择一条音频轨道');
+    const clips: ContrastClip[] = [];
+    for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+      if (activeSelection.end <= clip.startTime || activeSelection.start >= clip.startTime + clip.duration) continue;
+      const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+      if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+      clips.push({
+        clipId: clip.id,
+        startTime: clip.startTime,
+        duration: clip.duration,
+        sourceOffset: effective.sourceOffset,
+        channels: effective.channels,
+      });
+    }
+    return measureContrastPcm(clips, activeSelection, project.sampleRate);
   }
 
   async function collectEffectTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
@@ -5772,6 +5808,13 @@ export default function AudioEditorPage() {
               >
                 Plot Spectrum… 频谱分析…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setContrastDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
+                title="Ctrl+Shift+T"
+              >
+                Contrast… 对比度分析…
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button
@@ -7022,6 +7065,13 @@ export default function AudioEditorPage() {
           selectionEnd={quantizedGeneratorSelection?.end ?? 0}
           sampleRate={project.sampleRate}
           onLoadAudio={loadPlotSpectrumAudio}
+        />
+
+        <ContrastAnalysisDialog
+          open={contrastDialogOpen}
+          onOpenChange={setContrastDialogOpen}
+          projectName={project.name}
+          onMeasure={measureContrastAudio}
         />
 
         <RepeatSelectionDialog
