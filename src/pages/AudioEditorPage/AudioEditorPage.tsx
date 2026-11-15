@@ -191,6 +191,12 @@ import {
   type ClassicFilterSettings,
 } from '@/lib/classicFilterEffect';
 import {
+  createPassFilterState,
+  processPassFilterChannels,
+  type PassFilterKind,
+  type PassFilterSettings,
+} from '@/lib/passFilterEffect';
+import {
   createTremoloState,
   processTremoloChannels,
   type TremoloSettings,
@@ -360,6 +366,7 @@ import { PaulstretchDialog } from './sections/PaulstretchDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
 import PhaserEffectDialog from './sections/PhaserEffectDialog';
 import ClassicFilterEffectDialog from './sections/ClassicFilterEffectDialog';
+import PassFilterDialog from './sections/PassFilterDialog';
 import TremoloEffectDialog from './sections/TremoloEffectDialog';
 import VocoderDialog from './sections/VocoderDialog';
 import AutoDuckEffectDialog from './sections/AutoDuckEffectDialog';
@@ -462,6 +469,8 @@ export default function AudioEditorPage() {
   const [isApplyingPhaser, setIsApplyingPhaser] = useState(false);
   const [classicFilterDialogOpen, setClassicFilterDialogOpen] = useState(false);
   const [isApplyingClassicFilter, setIsApplyingClassicFilter] = useState(false);
+  const [passFilterKind, setPassFilterKind] = useState<PassFilterKind | null>(null);
+  const [isApplyingPassFilter, setIsApplyingPassFilter] = useState(false);
   const [tremoloDialogOpen, setTremoloDialogOpen] = useState(false);
   const [isApplyingTremolo, setIsApplyingTremolo] = useState(false);
   const [vocoderDialogOpen, setVocoderDialogOpen] = useState(false);
@@ -3218,6 +3227,95 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? `应用 Classic Filters 失败：${error.message}` : '应用 Classic Filters 失败');
     } finally {
       setIsApplyingClassicFilter(false);
+    }
+  }
+
+  async function handlePassFilterPreview(settings: PassFilterSettings): Promise<Float32Array[]> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const targets = await collectEffectTargets(activeSelection);
+    const target = targets[0];
+    if (!target) throw new Error('选区内没有可试听的音频');
+    const sourceTrack = project.tracks.find((track) => track.id === target.trackId);
+    if (!sourceTrack) throw new Error('试听轨道不可用');
+    const states = target.clips[0]?.sampleData.map(() => (
+      createPassFilterState(settings, project.sampleRate)
+    )) ?? [];
+    const segments: Float32Array[][] = [];
+
+    for (const input of target.clips) {
+      const clip = sourceTrack.clips.find((candidate) => candidate.id === input.clipId);
+      if (!clip) throw new Error('试听片段不可用');
+      const range = getClipSampleRange(
+        clip,
+        activeSelection,
+        input.sourceOffset,
+        project.sampleRate,
+        input.sampleData[0]?.length ?? 0,
+      );
+      if (!range) continue;
+      const selectedChannels = input.sampleData.map((channel) => (
+        channel.slice(range.startSample, range.endSample)
+      ));
+      segments.push(processPassFilterChannels(selectedChannels, settings, project.sampleRate, states));
+    }
+
+    const totalLength = segments.reduce((total, segment) => total + (segment[0]?.length ?? 0), 0);
+    const channelCount = segments.reduce((maximum, segment) => Math.max(maximum, segment.length), 0);
+    if (totalLength === 0 || channelCount === 0) throw new Error('选区内没有可试听的采样');
+    const preview = Array.from({ length: channelCount }, () => new Float32Array(totalLength));
+    let destinationOffset = 0;
+    for (const segment of segments) {
+      const length = segment[0]?.length ?? 0;
+      preview.forEach((channel, channelIndex) => {
+        const source = segment[channelIndex];
+        if (source) channel.set(source, destinationOffset);
+      });
+      destinationOffset += length;
+    }
+    return preview;
+  }
+
+  async function handleApplyPassFilter(settings: PassFilterSettings) {
+    if (!project || !quantizedGeneratorSelection || !passFilterKind || isApplyingPassFilter) return;
+    const kind = passFilterKind;
+    const title = kind === 'highpass' ? 'High-pass filter' : 'Low-pass filter';
+    setIsApplyingPassFilter(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...(JSON.parse(JSON.stringify(project)) as IProject),
+        selection: activeSelection,
+      };
+      const changed = await projectService.passFilterSelectionOnTracks(
+        project.id,
+        activeSelection,
+        settings,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error(`应用 ${title} 后无法重新读取工程`);
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: title,
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      setPassFilterKind(null);
+      toast.success(`已对 ${changed} 个片段应用 ${title}`);
+    } catch (error) {
+      logger.error(`应用 ${title} 失败:`, String(error));
+      toast.error(error instanceof Error ? `应用 ${title} 失败：${error.message}` : `应用 ${title} 失败`);
+    } finally {
+      setIsApplyingPassFilter(false);
     }
   }
 
@@ -6010,6 +6108,22 @@ export default function AudioEditorPage() {
                 Phaser…
               </DropdownMenuItem>
               <DropdownMenuItem
+                data-testid="effect-highpass-filter"
+                onClick={() => setPassFilterKind('highpass')}
+                disabled={!quantizedGeneratorSelection || isApplyingPassFilter}
+                title="使用 Audacity 4 highpass.ny 一阶或 Butterworth 级联处理选区"
+              >
+                High-pass filter 高通滤波…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="effect-lowpass-filter"
+                onClick={() => setPassFilterKind('lowpass')}
+                disabled={!quantizedGeneratorSelection || isApplyingPassFilter}
+                title="使用 Audacity 4 lowpass.ny 一阶或 Butterworth 级联处理选区"
+              >
+                Low-pass filter 低通滤波…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 data-testid="effect-classic-filters"
                 onClick={() => setClassicFilterDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection}
@@ -7196,6 +7310,19 @@ export default function AudioEditorPage() {
           isApplying={isApplyingPhaser}
           onPreview={handlePhaserPreview}
           onApply={handleApplyPhaser}
+        />
+
+        <PassFilterDialog
+          key={passFilterKind ?? 'closed'}
+          kind={passFilterKind ?? 'lowpass'}
+          open={passFilterKind !== null}
+          onOpenChange={(open) => { if (!open) setPassFilterKind(null); }}
+          sampleRate={project.sampleRate}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isApplyingPassFilter}
+          onPreview={handlePassFilterPreview}
+          onApply={handleApplyPassFilter}
         />
 
         <ClassicFilterEffectDialog
