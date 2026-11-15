@@ -176,6 +176,11 @@ import {
   type FrequencySelection,
 } from '@/lib/spectralSelection';
 import {
+  mixPlotSpectrumSegments,
+  type PlotSpectrumAudio,
+  type PlotSpectrumSegment,
+} from '@/lib/plotSpectrum';
+import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
 } from '@/lib/adjustableFadeEffect';
@@ -344,6 +349,7 @@ import NotchFilterDialog from './sections/NotchFilterDialog';
 import ShelfFilterDialog from './sections/ShelfFilterDialog';
 import SpectralEditDialog from './sections/SpectralEditDialog';
 import SpectralSelectionBar from './sections/SpectralSelectionBar';
+import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
@@ -460,6 +466,7 @@ export default function AudioEditorPage() {
   const [isApplyingShelfFilter, setIsApplyingShelfFilter] = useState(false);
   const [spectralEditKind, setSpectralEditKind] = useState<SpectralEditKind | null>(null);
   const [isApplyingSpectralEdit, setIsApplyingSpectralEdit] = useState(false);
+  const [plotSpectrumDialogOpen, setPlotSpectrumDialogOpen] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -2209,6 +2216,31 @@ export default function AudioEditorPage() {
     } finally {
       setIsApplyingStudioFadeOut(false);
     }
+  }
+
+  async function loadPlotSpectrumAudio(): Promise<PlotSpectrumAudio> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要分析的音频');
+    const activeSelection = quantizedGeneratorSelection;
+    const trackIds = new Set(resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips));
+    const segments: PlotSpectrumSegment[] = [];
+    for (const track of project.tracks) {
+      if (!trackIds.has(track.id)) continue;
+      const clips: PlotSpectrumSegment['clips'][number][] = [];
+      for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+        if (activeSelection.end <= clip.startTime || activeSelection.start >= clip.startTime + clip.duration) continue;
+        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+        if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+        clips.push({
+          clipId: clip.id,
+          startTime: clip.startTime,
+          duration: clip.duration,
+          sourceOffset: effective.sourceOffset,
+          channels: effective.channels,
+        });
+      }
+      if (clips.length > 0) segments.push({ trackId: track.id, clips });
+    }
+    return mixPlotSpectrumSegments(segments, activeSelection, project.sampleRate);
   }
 
   async function collectEffectTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
@@ -5729,6 +5761,19 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setSilenceDialogOpen(true)}>静默…</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">分析</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem
+                onClick={() => setPlotSpectrumDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection}
+              >
+                Plot Spectrum… 频谱分析…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             variant="ghost"
             size="sm"
@@ -6968,6 +7013,15 @@ export default function AudioEditorPage() {
           selectionActive={Boolean(quantizedGeneratorSelection)}
           isGenerating={isGeneratingSilence}
           onGenerate={handleGenerateSilence}
+        />
+
+        <PlotSpectrumDialog
+          open={plotSpectrumDialogOpen}
+          onOpenChange={setPlotSpectrumDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          onLoadAudio={loadPlotSpectrumAudio}
         />
 
         <RepeatSelectionDialog
