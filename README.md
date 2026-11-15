@@ -24,7 +24,7 @@
 | 多轨音频编辑 | ✅ | 支持多轨道导入、录音、叠加播放 |
 | 波形显示 | ✅ | 实时波形渲染，支持缩放与滚动 |
 | 频谱视图 | ✅ | FFT 频谱分析视图，切换波形/频谱/混合显示 |
-| Plot Spectrum 频率分析 | ✅ | “分析 → Plot Spectrum”对照 Audacity 4.0.2 `SpectrumAnalyst` 实现 5 种算法、10 种窗函数、128–131072 FFT Size、半窗重叠功率平均与相干增益归一化；支持对数／线性轴、网格、光标与三次插值峰值、Replot 和文本导出，读取 Shift 多选轨道的有效拉伸 PCM，声道求和且间隙为零；浏览器资源上限为 20,000,000 采样，并有独立直接 DFT／冲激锚点及页面集成测试。当前未实现官方纵向缩放／平移、分析进度条与跨关闭首选项持久化，也未宣称官方 C++ 逐样本 golden 一致 |
+| Plot Spectrum 频率分析 | ✅ | “分析 → Plot Spectrum”对照 Audacity 4.0.2 `SpectrumAnalyst`／`FreqWindow` 实现 5 种算法、10 种窗函数、128–131072 FFT Size、半窗重叠功率平均与相干增益归一化；支持对数／线性轴、网格、光标与三次插值峰值、Replot 和文本导出，读取 Shift 多选轨道的有效拉伸 PCM，声道求和且间隙为零；按官方 1–100% 可见范围实现纵向居中缩放、1/100 单位平移与边界复位，按真实分析窗显示可取消进度，算法／Size／窗函数／频率轴／网格跨关闭持久化且损坏或拒绝存储时安全回退；浏览器资源上限为 20,000,000 采样，并有独立直接 DFT／冲激锚点、同步／异步等价及页面集成测试。未宣称官方 C++ 逐样本 golden 一致 |
 | 选区编辑 | ✅ | 剪切、复制、粘贴、裁剪、删除 |
 | 非破坏性时间拉伸 | ✅ | 片段级 WSOLA 拉伸，0.25×–4×，保持音高并贯穿播放、分割、编辑与导出 |
 | Shift 片段多选 | ✅ | 跨轨不连续选择，支持成组移动、修剪、拉伸、删除与速度复位 |
@@ -265,6 +265,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/verticalZoom.test.ts` | 纵向缩放步进与范围边界 | 2 |
 | `src/lib/appBase.test.ts` | Pages 子路径规范化 | 2 |
 | `src/lib/waveformDrawing.test.ts` | 波形采样绘制与边界 | 2 |
+| `src/lib/plotSpectrum.test.ts` | 直接 DFT／冲激锚点、同步／异步 DSP 等价、真实进度与取消、五项首选项、纵向缩放居中和平移边界 | 17 |
 | `src/wasm/processor.test.ts` | WAV 编解码、DSP 函数与缓冲区工具 | 24 |
 | `src/wasm/selection-ops.test.ts` | 选区截取、删除、插入、替换操作 | 18 |
 | `src/services/historyService.test.ts` | 撤销/重做命令栈、push/undo/redo/clear | 9 |
@@ -314,8 +315,10 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/sections/CompressorDialog.test.tsx` | 七参数官方默认值与范围、传递曲线、试听提交、恢复默认及非法输入 | 5 |
 | `src/pages/AudioEditorPage/sections/LimiterDialog.test.tsx` | 五参数官方默认值与范围、2 秒动态历史、真实输入／输出试听、显示开关、恢复默认及非法输入防崩溃 | 5 |
 | `src/pages/AudioEditorPage/sections/TruncateSilenceDialog.test.tsx` | Truncate Silence 官方默认值、完整参数提交、动作联动控件、非法范围、恢复默认及无选区／busy 禁用 | 4 |
+| `src/pages/AudioEditorPage/sections/PlotSpectrumDialog.test.tsx` | 官方默认值、真实分析进度与 stale 取消、纵向缩放／平移／复位、跨关闭首选项、峰值、导出、Replot 与截断提示 | 6 |
 | `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史、选区量化与 Shift 多选 | 26 |
 | `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
+| `src/pages/AudioEditorPage/AudioEditorPage.plotSpectrum.test.tsx` | Shift 多选轨道的拉伸立体声 PCM、真实菜单入口、无工程／历史写入及无选区禁用 | 2 |
 | `src/pages/AudioEditorPage/AudioEditorPage.repeat.test.tsx` | 效果菜单、双轨 Repeat、单次历史命令与撤销 | 1 |
 | `src/pages/AudioEditorPage/AudioEditorPage.echo.test.tsx` | Echo 菜单、双声道精确试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.bassTreble.test.tsx` | BassTreble 菜单、双声道精确试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
@@ -334,7 +337,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.noiseReduction.test.tsx` | Noise Reduction 两步 Profile、双声道精确试听、多轨单次历史、失败无历史与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.truncateSilence.test.tsx` | Truncate Silence 真实菜单、联动双声道 PCM 试听、多轨单次历史、失败／无变更无历史与无选区禁用 | 4 |
 
-当前完整前端回归共 **127 个测试文件、1007 项测试**；本次实际完整运行全部通过且无跳过；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
+当前完整前端回归共 **189 个测试文件、1470 项测试**；本次实际完整运行全部通过且无跳过；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
 
 运行测试：
 

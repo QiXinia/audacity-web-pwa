@@ -5,17 +5,23 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import {
-  analyzePlotSpectrum,
+  analyzePlotSpectrumWithProgress,
   findNearestPlotSpectrumPeak,
   frequencyToPitchName,
+  loadPlotSpectrumPreferences,
   PLOT_SPECTRUM_ALGORITHMS,
   PLOT_SPECTRUM_SIZES,
   PLOT_SPECTRUM_WINDOWS,
+  resolvePlotSpectrumViewport,
   samplePlotSpectrum,
+  savePlotSpectrumPreferences,
   serializePlotSpectrum,
+  zoomPlotSpectrumViewport,
   type PlotSpectrumAlgorithm,
   type PlotSpectrumAudio,
+  type PlotSpectrumAxis,
   type PlotSpectrumResult,
+  type PlotSpectrumViewport,
   type PlotSpectrumWindow,
 } from '@/lib/plotSpectrum';
 
@@ -28,7 +34,7 @@ interface PlotSpectrumDialogProps {
   onLoadAudio: () => Promise<PlotSpectrumAudio>;
 }
 
-type AxisChoice = 'linear' | 'log';
+type AxisChoice = PlotSpectrumAxis;
 
 interface CursorReadout {
   position: number;
@@ -79,21 +85,34 @@ function formatCursor(readout: CursorReadout | null, spectrum: boolean, peak = f
 export function PlotSpectrumDialog({
   open, onOpenChange, selectionStart, selectionEnd, sampleRate, onLoadAudio,
 }: PlotSpectrumDialogProps) {
-  const [algorithm, setAlgorithm] = useState<PlotSpectrumAlgorithm>('spectrum');
-  const [size, setSize] = useState(1024);
-  const [windowFunction, setWindowFunction] = useState<PlotSpectrumWindow>('hann');
-  const [axis, setAxis] = useState<AxisChoice>('log');
-  const [drawGrid, setDrawGrid] = useState(true);
+  const [initialPreferences] = useState(loadPlotSpectrumPreferences);
+  const [algorithm, setAlgorithm] = useState<PlotSpectrumAlgorithm>(initialPreferences.algorithm);
+  const [size, setSize] = useState(initialPreferences.size);
+  const [windowFunction, setWindowFunction] = useState<PlotSpectrumWindow>(initialPreferences.window);
+  const [axis, setAxis] = useState<AxisChoice>(initialPreferences.axis);
+  const [drawGrid, setDrawGrid] = useState(initialPreferences.drawGrid);
+  const [viewport, setViewport] = useState<PlotSpectrumViewport>({ zoom: 100, pan: 0 });
   const [audio, setAudio] = useState<PlotSpectrumAudio | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [analysis, setAnalysis] = useState<{ result: PlotSpectrumResult | null; error: string | null }>({ result: null, error: null });
   const [reloadIndex, setReloadIndex] = useState(0);
   const [cursor, setCursor] = useState<CursorReadout | null>(null);
   const loadAudioRef = useRef(onLoadAudio);
   loadAudioRef.current = onLoadAudio;
 
   useEffect(() => {
-    if (!open) return;
+    savePlotSpectrumPreferences({ algorithm, size, window: windowFunction, axis, drawGrid });
+  }, [algorithm, axis, drawGrid, size, windowFunction]);
+
+  useEffect(() => {
+    if (!open) {
+      setAudio(null);
+      setIsLoading(false);
+      return;
+    }
     let active = true;
     setAudio(null);
     setCursor(null);
@@ -109,28 +128,53 @@ export function PlotSpectrumDialog({
     return () => { active = false; };
   }, [open, reloadIndex]);
 
-  const analysis = useMemo<{ result: PlotSpectrumResult | null; error: string | null }>(() => {
-    if (!audio || audio.samples.length < size) return { result: null, error: null };
-    try {
-      return { result: analyzePlotSpectrum(audio.samples, { algorithm, size, window: windowFunction, sampleRate }), error: null };
-    } catch (error) {
-      return { result: null, error: error instanceof Error ? error.message : '频谱分析失败' };
+  useEffect(() => {
+    const controller = new AbortController();
+    setAnalysis({ result: null, error: null });
+    setProgress(null);
+    setCursor(null);
+    setViewport({ zoom: 100, pan: 0 });
+    if (!open || !audio || audio.samples.length < size) {
+      setIsAnalyzing(false);
+      return () => controller.abort();
     }
-  }, [algorithm, audio, sampleRate, size, windowFunction]);
+    setIsAnalyzing(true);
+    void analyzePlotSpectrumWithProgress(
+      audio.samples,
+      { algorithm, size, window: windowFunction, sampleRate },
+      (completed, total) => { if (!controller.signal.aborted) setProgress({ completed, total }); },
+      controller.signal,
+    ).then((result) => {
+      if (!controller.signal.aborted) setAnalysis({ result, error: null });
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      setAnalysis({ result: null, error: error instanceof Error ? error.message : '频谱分析失败' });
+    }).finally(() => {
+      if (!controller.signal.aborted) setIsAnalyzing(false);
+    });
+    return () => controller.abort();
+  }, [algorithm, audio, open, sampleRate, size, windowFunction]);
+
   const result = analysis.result;
   const isSpectrum = algorithm === 'spectrum';
   const effectiveAxis: AxisChoice = isSpectrum ? axis : 'linear';
-
-  const plot = useMemo(() => {
+  const fullYRange = useMemo(() => {
     if (!result) return null;
-    const xMin = isSpectrum ? sampleRate / size : 0;
-    const xMax = isSpectrum ? sampleRate / 2 : result.values.length / sampleRate;
     let yMin = isSpectrum ? Math.max(-90, result.yMin) : result.yMin;
     let yMax = isSpectrum ? (result.yMax <= -90 ? -80 : result.yMax + 0.5) : result.yMax;
     if (!(yMax > yMin) || !Number.isFinite(yMax - yMin)) {
       yMin = Number.isFinite(yMin) ? yMin - 0.5 : -90;
       yMax = Number.isFinite(yMax) ? yMax + 0.5 : -80;
     }
+    return { yMin, yMax };
+  }, [isSpectrum, result]);
+
+  const plot = useMemo(() => {
+    if (!result || !fullYRange) return null;
+    const resolvedViewport = resolvePlotSpectrumViewport(fullYRange.yMin, fullYRange.yMax, viewport);
+    const { yMin, yMax } = resolvedViewport;
+    const xMin = isSpectrum ? sampleRate / size : 0;
+    const xMax = isSpectrum ? sampleRate / 2 : result.values.length / sampleRate;
     const xToSvg = (value: number) => PLOT_LEFT + (effectiveAxis === 'log'
       ? Math.log(value / xMin) / Math.log(xMax / xMin)
       : (value - xMin) / (xMax - xMin)) * PLOT_WIDTH;
@@ -153,8 +197,19 @@ export function PlotSpectrumDialog({
     }
     const xTicks = frequencyTicks(xMin, xMax, effectiveAxis).filter((tick) => effectiveAxis !== 'log' || tick > 0);
     const yTicks = Array.from({ length: 6 }, (_, index) => yMin + (yMax - yMin) * index / 5);
-    return { xMin, xMax, yMin, yMax, xToSvg, yToSvg, commands: commands.join(''), xTicks, yTicks };
-  }, [effectiveAxis, isSpectrum, result, sampleRate, size]);
+    return { xMin, xMax, yMin, yMax, xToSvg, yToSvg, commands: commands.join(''), xTicks, yTicks, resolvedViewport };
+  }, [effectiveAxis, fullYRange, isSpectrum, result, sampleRate, size, viewport]);
+
+  function handleZoom(nextZoom: number): void {
+    if (!fullYRange) return;
+    setViewport((current) => zoomPlotSpectrumViewport(fullYRange.yMin, fullYRange.yMax, current, nextZoom));
+    setCursor(null);
+  }
+
+  function handlePan(pan: number): void {
+    setViewport((current) => ({ ...current, pan }));
+    setCursor(null);
+  }
 
   function updateCursor(clientX: number, element: SVGSVGElement): void {
     if (!result || !plot) return;
@@ -233,19 +288,27 @@ export function PlotSpectrumDialog({
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-[#11161b] p-2">
-          {isLoading && <p role="status" className="p-12 text-center text-sm text-muted-foreground">正在读取并分析选区…</p>}
-          {!isLoading && error && <p role="alert" className="p-8 text-center text-sm text-destructive">{error}</p>}
-          {!isLoading && !error && audio && audio.samples.length < size && (
+          {isLoading && <p role="status" className="p-12 text-center text-sm text-muted-foreground">正在读取选区音频…</p>}
+          {!isLoading && isAnalyzing && (
+            <div role="status" className="flex min-h-[280px] flex-col items-center justify-center gap-3 p-12 text-sm text-muted-foreground">
+              <span>{progress ? `正在分析选区 · ${progress.completed}/${progress.total} 个分析窗` : '正在准备频谱分析…'}</span>
+              {progress && <progress aria-label="频谱分析进度" className="h-2 w-full max-w-lg accent-sky-400" max={progress.total} value={progress.completed} />}
+            </div>
+          )}
+          {!isLoading && !isAnalyzing && error && <p role="alert" className="p-8 text-center text-sm text-destructive">{error}</p>}
+          {!isLoading && !isAnalyzing && !error && audio && audio.samples.length < size && (
             <p role="status" className="p-12 text-center text-sm text-warning">
               所选音频只有 {audio.samples.length} 个采样，不足当前 FFT Size {size}；请选择更小的 Size 或扩大选区。
             </p>
           )}
-          {!isLoading && !error && result && plot && (
+          {!isLoading && !isAnalyzing && !error && result && plot && (
             <svg
               viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
               className="h-auto min-h-[280px] w-full select-none"
               role="img"
               aria-label={`${PLOT_SPECTRUM_ALGORITHMS.find((item) => item.id === algorithm)?.label} 频谱分析图，${result.windowCount} 个分析窗`}
+              data-y-min={plot.yMin}
+              data-y-max={plot.yMax}
               onPointerMove={(event) => updateCursor(event.clientX, event.currentTarget)}
               onPointerDown={(event) => updateCursor(event.clientX, event.currentTarget)}
               onPointerLeave={() => setCursor(null)}
@@ -271,6 +334,27 @@ export function PlotSpectrumDialog({
           )}
         </div>
 
+        {!isAnalyzing && result && plot && (
+          <div className="grid shrink-0 grid-cols-1 items-end gap-2 rounded-md border bg-muted/10 p-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            <label className="space-y-1">Y Zoom · 纵向缩放（{plot.resolvedViewport.zoom}% 可见）
+              <input aria-label="纵向缩放" className="h-8 w-full accent-sky-400" type="range" min={1} max={100} step={1}
+                value={plot.resolvedViewport.zoom} onChange={(event) => handleZoom(Number(event.target.value))} />
+            </label>
+            <label className="space-y-1">Pan · 纵向平移
+              <input aria-label="纵向平移" className="h-8 w-full accent-sky-400 disabled:opacity-50" type="range"
+                min={0} max={plot.resolvedViewport.maxPan} step={1} value={plot.resolvedViewport.pan}
+                disabled={plot.resolvedViewport.maxPan === 0} onChange={(event) => handlePan(Number(event.target.value))} />
+            </label>
+            <output aria-label="纵向显示范围" className="rounded bg-muted/20 px-3 py-2 font-mono">
+              Y: {formatAxisValue(plot.yMin)} … {formatAxisValue(plot.yMax)} {isSpectrum ? 'dB' : 'Level'}
+            </output>
+            <Button type="button" variant="outline" size="sm" disabled={plot.resolvedViewport.zoom === 100 && plot.resolvedViewport.pan === 0}
+              onClick={() => { setViewport({ zoom: 100, pan: 0 }); setCursor(null); }}>
+              <RotateCcw className="size-4" />重置纵向视图
+            </Button>
+          </div>
+        )}
+
         <div className="grid shrink-0 grid-cols-1 gap-2 text-xs sm:grid-cols-2">
           <output aria-label="光标读数" className="rounded bg-muted/20 px-3 py-2 font-mono">Cursor: {formatCursor(cursor, isSpectrum)}</output>
           <output aria-label="峰值读数" className="rounded bg-muted/20 px-3 py-2 font-mono">Peak: {formatCursor(cursor, isSpectrum, true)}</output>
@@ -283,10 +367,10 @@ export function PlotSpectrumDialog({
           {audio?.truncated && <span className="text-warning">选区过长，仅分析前 {audio.samples.length} 个采样（共 {audio.sourceSamples}）</span>}
         </div>
         <DialogFooter className="shrink-0">
-          <Button type="button" variant="outline" onClick={() => setReloadIndex((value) => value + 1)} disabled={isLoading}>
+          <Button type="button" variant="outline" onClick={() => setReloadIndex((value) => value + 1)} disabled={isLoading || isAnalyzing}>
             <RotateCcw className="size-4" />Replot · 重新读取
           </Button>
-          <Button type="button" variant="outline" onClick={handleExport} disabled={!result}>
+          <Button type="button" variant="outline" onClick={handleExport} disabled={!result || isAnalyzing}>
             <Download className="size-4" />Export · 导出文本
           </Button>
           <Button type="button" onClick={() => onOpenChange(false)}>关闭</Button>

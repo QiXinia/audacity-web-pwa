@@ -7,7 +7,7 @@ import AudioEditorPage from './AudioEditorPage';
 import { projectService } from '@/services/projectService';
 import { historyManager } from '@/services/historyService';
 import type { IClip, IProject } from '@/types/project';
-import type { PlotSpectrumOptions } from '@/lib/plotSpectrum';
+import type { PlotSpectrumAnalysisProgress, PlotSpectrumOptions } from '@/lib/plotSpectrum';
 
 const mocks = vi.hoisted(() => ({
   analyze: vi.fn(),
@@ -21,6 +21,15 @@ vi.mock('@/lib/plotSpectrum', async (importOriginal) => {
     analyzePlotSpectrum: (data: Float32Array, options: PlotSpectrumOptions) => {
       mocks.analyze(data, options);
       return actual.analyzePlotSpectrum(data, options);
+    },
+    analyzePlotSpectrumWithProgress: async (
+      data: Float32Array,
+      options: PlotSpectrumOptions,
+      onProgress: PlotSpectrumAnalysisProgress,
+      signal?: AbortSignal,
+    ) => {
+      mocks.analyze(data, options);
+      return actual.analyzePlotSpectrumWithProgress(data, options, onProgress, signal);
     },
   };
 });

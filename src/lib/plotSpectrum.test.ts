@@ -1,14 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   analyzePlotSpectrum,
+  analyzePlotSpectrumWithProgress,
   createAnalysisWindow,
+  DEFAULT_PLOT_SPECTRUM_PREFERENCES,
   findNearestPlotSpectrumPeak,
   frequencyToPitchName,
+  loadPlotSpectrumPreferences,
   mixPlotSpectrumSegments,
   PLOT_SPECTRUM_ALGORITHMS,
+  PLOT_SPECTRUM_PREFERENCES_STORAGE_KEY,
   PLOT_SPECTRUM_WINDOWS,
+  resolvePlotSpectrumViewport,
   samplePlotSpectrum,
+  savePlotSpectrumPreferences,
   serializePlotSpectrum,
+  zoomPlotSpectrumViewport,
   type PlotSpectrumResult,
   type PlotSpectrumSegment,
 } from './plotSpectrum';
@@ -185,5 +192,76 @@ describe('Plot Spectrum selected PCM mixing', () => {
     expect(() => mixPlotSpectrumSegments([
       { trackId: 'one', clips: [{ clipId: 'bad', startTime: 0, duration: 1, sourceOffset: 0, channels: [new Float32Array(5), new Float32Array(4)] }] },
     ], { start: 0, end: 1 }, 10)).toThrow('等长声道');
+  });
+});
+
+describe('Plot Spectrum progress, preferences and vertical viewport', () => {
+  it('keeps synchronous and yielding asynchronous DSP identical while reporting every real analysis window', async () => {
+    const input = sine(320, 40, 0.75);
+    const options = { algorithm: 'spectrum', size: 128, window: 'hann', sampleRate: 128 } as const;
+    const synchronousProgress: number[][] = [];
+    const asynchronousProgress: number[][] = [];
+    const expected = analyzePlotSpectrum(input, options, (completed, total) => synchronousProgress.push([completed, total]));
+    const actual = await analyzePlotSpectrumWithProgress(input, options, (completed, total) => asynchronousProgress.push([completed, total]));
+    expect(synchronousProgress).toEqual([[0, 4], [1, 4], [2, 4], [3, 4], [4, 4]]);
+    expect(asynchronousProgress).toEqual(synchronousProgress);
+    expect(actual.values).toEqual(expected.values);
+    expect(actual.windowCount).toBe(expected.windowCount);
+    expect(actual.yMin).toBe(expected.yMin);
+    expect(actual.yMax).toBe(expected.yMax);
+  });
+
+  it('cancels a stale asynchronous analysis without finalizing a partial spectrum', async () => {
+    const controller = new AbortController();
+    const progress: number[][] = [];
+    const pending = analyzePlotSpectrumWithProgress(
+      sine(4096, 40), { algorithm: 'spectrum', size: 128, window: 'hann', sampleRate: 128 },
+      (completed, total) => {
+        progress.push([completed, total]);
+        if (completed === 1) controller.abort();
+      },
+      controller.signal,
+    );
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(progress).toEqual([[0, 63], [1, 63]]);
+  });
+
+  it('persists the five official preferences and fails safely on corrupt or denied storage', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const preferences = { algorithm: 'cepstrum', size: 4096, window: 'blackman', axis: 'linear', drawGrid: false } as const;
+    expect(savePlotSpectrumPreferences(preferences, storage)).toBe(true);
+    expect(loadPlotSpectrumPreferences(storage)).toEqual(preferences);
+
+    values.set(PLOT_SPECTRUM_PREFERENCES_STORAGE_KEY, '{not-json');
+    expect(loadPlotSpectrumPreferences(storage)).toEqual(DEFAULT_PLOT_SPECTRUM_PREFERENCES);
+    values.set(PLOT_SPECTRUM_PREFERENCES_STORAGE_KEY, JSON.stringify({ algorithm: 'invalid', size: 100, window: 'invalid', axis: 'vertical', drawGrid: 'yes' }));
+    expect(loadPlotSpectrumPreferences(storage)).toEqual(DEFAULT_PLOT_SPECTRUM_PREFERENCES);
+
+    const denied = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+    expect(loadPlotSpectrumPreferences(denied)).toEqual(DEFAULT_PLOT_SPECTRUM_PREFERENCES);
+    expect(savePlotSpectrumPreferences(preferences, denied)).toBe(false);
+  });
+
+  it('matches official zoom-centred pan arithmetic and clamps both ends of the vertical range', () => {
+    const full = resolvePlotSpectrumViewport(-90, 0.5, { zoom: 100, pan: 0 });
+    expect(full).toMatchObject({ yMin: -90, yMax: 0.5, maxPan: 0, pan: 0 });
+
+    const zoomed = zoomPlotSpectrumViewport(-90, 0.5, { zoom: 100, pan: 0 }, 50);
+    expect(zoomed).toEqual({ zoom: 50, pan: 2262 });
+    const centred = resolvePlotSpectrumViewport(-90, 0.5, zoomed);
+    expect(centred.maxPan).toBe(4525);
+    expect(centred.yMax).toBeCloseTo(-22.12, 10);
+    expect(centred.yMin).toBeCloseTo(-67.37, 10);
+
+    const bottom = resolvePlotSpectrumViewport(-90, 0.5, { zoom: 50, pan: 999999 });
+    expect(bottom.pan).toBe(bottom.maxPan);
+    expect(bottom.yMin).toBeCloseTo(-90, 10);
+    expect(bottom.yMax).toBeCloseTo(-44.75, 10);
+    expect(zoomPlotSpectrumViewport(-90, 0.5, bottom, 100)).toEqual({ zoom: 100, pan: 0 });
+    expect(() => resolvePlotSpectrumViewport(0, 0, { zoom: 100, pan: 0 })).toThrow('有限区间');
   });
 });

@@ -63,6 +63,117 @@ export interface PlotSpectrumAudio {
   trackCount: number;
 }
 
+export type PlotSpectrumAxis = 'linear' | 'log';
+
+export interface PlotSpectrumPreferences {
+  algorithm: PlotSpectrumAlgorithm;
+  size: number;
+  window: PlotSpectrumWindow;
+  axis: PlotSpectrumAxis;
+  drawGrid: boolean;
+}
+
+export const PLOT_SPECTRUM_PREFERENCES_STORAGE_KEY = 'audacity-web:plot-spectrum:v1';
+export const DEFAULT_PLOT_SPECTRUM_PREFERENCES: Readonly<PlotSpectrumPreferences> = {
+  algorithm: 'spectrum', size: 1024, window: 'hann', axis: 'log', drawGrid: true,
+};
+
+function normalizePlotSpectrumPreferences(value: Partial<PlotSpectrumPreferences>): PlotSpectrumPreferences {
+  return {
+    algorithm: PLOT_SPECTRUM_ALGORITHMS.some((item) => item.id === value.algorithm)
+      ? value.algorithm as PlotSpectrumAlgorithm : DEFAULT_PLOT_SPECTRUM_PREFERENCES.algorithm,
+    size: (PLOT_SPECTRUM_SIZES as readonly number[]).includes(value.size as number)
+      ? value.size as number : DEFAULT_PLOT_SPECTRUM_PREFERENCES.size,
+    window: PLOT_SPECTRUM_WINDOWS.some((item) => item.id === value.window)
+      ? value.window as PlotSpectrumWindow : DEFAULT_PLOT_SPECTRUM_PREFERENCES.window,
+    axis: value.axis === 'linear' || value.axis === 'log' ? value.axis : DEFAULT_PLOT_SPECTRUM_PREFERENCES.axis,
+    drawGrid: typeof value.drawGrid === 'boolean' ? value.drawGrid : DEFAULT_PLOT_SPECTRUM_PREFERENCES.drawGrid,
+  };
+}
+
+export function loadPlotSpectrumPreferences(storage?: Pick<Storage, 'getItem'>): PlotSpectrumPreferences {
+  try {
+    const target = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage);
+    const raw = target?.getItem(PLOT_SPECTRUM_PREFERENCES_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_PLOT_SPECTRUM_PREFERENCES };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ...DEFAULT_PLOT_SPECTRUM_PREFERENCES };
+    return normalizePlotSpectrumPreferences(parsed as Partial<PlotSpectrumPreferences>);
+  } catch {
+    return { ...DEFAULT_PLOT_SPECTRUM_PREFERENCES };
+  }
+}
+
+export function savePlotSpectrumPreferences(
+  preferences: PlotSpectrumPreferences,
+  storage?: Pick<Storage, 'setItem'>,
+): boolean {
+  try {
+    const target = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage);
+    if (!target) return false;
+    target.setItem(PLOT_SPECTRUM_PREFERENCES_STORAGE_KEY, JSON.stringify(normalizePlotSpectrumPreferences(preferences)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface PlotSpectrumViewport {
+  /** Audacity's Zoom slider: 100 shows the full range; 1 shows 1% of it. */
+  zoom: number;
+  /** Distance down from the full-range maximum, in official 1/100-unit ticks. */
+  pan: number;
+}
+
+export interface ResolvedPlotSpectrumViewport extends PlotSpectrumViewport {
+  yMin: number;
+  yMax: number;
+  maxPan: number;
+  visibleRange: number;
+}
+
+function validZoom(zoom: number): number {
+  return Number.isFinite(zoom) ? Math.max(1, Math.min(100, Math.round(zoom))) : 100;
+}
+
+export function resolvePlotSpectrumViewport(
+  fullYMin: number,
+  fullYMax: number,
+  viewport: PlotSpectrumViewport,
+): ResolvedPlotSpectrumViewport {
+  if (!Number.isFinite(fullYMin) || !Number.isFinite(fullYMax) || !(fullYMax > fullYMin)) {
+    throw new RangeError('频谱纵向范围必须是正的有限区间');
+  }
+  const zoom = validZoom(viewport.zoom);
+  const fullRange = fullYMax - fullYMin;
+  const visibleRange = fullRange * zoom / 100;
+  const fullTicks = Math.trunc(fullRange * 100);
+  const visibleTicks = Math.trunc(visibleRange * 100);
+  const maxPan = Math.max(0, fullTicks - visibleTicks);
+  const pan = Number.isFinite(viewport.pan) ? Math.max(0, Math.min(maxPan, Math.round(viewport.pan))) : 0;
+  const yMax = fullYMax - pan / 100;
+  return { zoom, pan, maxPan, visibleRange, yMin: yMax - visibleRange, yMax };
+}
+
+/** Match FreqWindow.cpp: zooming preserves the centre of the visible range. */
+export function zoomPlotSpectrumViewport(
+  fullYMin: number,
+  fullYMax: number,
+  current: PlotSpectrumViewport,
+  nextZoom: number,
+): PlotSpectrumViewport {
+  const previous = resolvePlotSpectrumViewport(fullYMin, fullYMax, current);
+  const zoom = validZoom(nextZoom);
+  const fullRange = fullYMax - fullYMin;
+  const nextVisibleRange = fullRange * zoom / 100;
+  const fullTicks = Math.trunc(fullRange * 100);
+  const previousVisibleTicks = Math.trunc(previous.visibleRange * 100);
+  const nextVisibleTicks = Math.trunc(nextVisibleRange * 100);
+  const nextMaxPan = Math.max(0, fullTicks - nextVisibleTicks);
+  const centredPan = previous.pan + Math.trunc((previousVisibleTicks - nextVisibleTicks) / 2);
+  return { zoom, pan: Math.max(0, Math.min(nextMaxPan, centredPan)) };
+}
+
 function assertSampleRate(sampleRate: number): void {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
     throw new RangeError('频谱分析采样率必须是正的有限数值');
@@ -161,7 +272,15 @@ function extrema(values: Float64Array, ignore = 0): { yMin: number; yMax: number
   return { yMin, yMax };
 }
 
-export function analyzePlotSpectrum(data: Float32Array, options: PlotSpectrumOptions): PlotSpectrumResult {
+export type PlotSpectrumAnalysisProgress = (completedWindows: number, totalWindows: number) => void;
+
+interface PlotSpectrumAnalysisSession {
+  totalWindows: number;
+  processNext: () => number;
+  finish: () => PlotSpectrumResult;
+}
+
+function createPlotSpectrumAnalysisSession(data: Float32Array, options: PlotSpectrumOptions): PlotSpectrumAnalysisSession {
   const { algorithm, size, window, sampleRate } = options;
   assertSampleRate(sampleRate);
   if (!(PLOT_SPECTRUM_SIZES as readonly number[]).includes(size)) {
@@ -174,6 +293,7 @@ export function analyzePlotSpectrum(data: Float32Array, options: PlotSpectrumOpt
   }
 
   const half = size / 2;
+  const totalWindows = Math.floor((data.length - size) / half) + 1;
   const processed = new Float64Array(half);
   const windowValues = createAnalysisWindow(window, size);
   let windowSum = 0;
@@ -185,7 +305,9 @@ export function analyzePlotSpectrum(data: Float32Array, options: PlotSpectrumOpt
   const secondaryImaginary = new Float64Array(size);
   let windowCount = 0;
 
-  for (let start = 0; start + size <= data.length; start += half) {
+  function processNext(): number {
+    if (windowCount >= totalWindows) return 0;
+    const start = windowCount * half;
     for (let index = 0; index < size; index += 1) {
       real[index] = data[start + index] * windowValues[index];
       imaginary[index] = 0;
@@ -213,26 +335,79 @@ export function analyzePlotSpectrum(data: Float32Array, options: PlotSpectrumOpt
       for (let index = 0; index < half; index += 1) processed[index] += secondaryReal[index];
     }
     windowCount += 1;
+    return windowCount;
   }
 
-  if (algorithm === 'spectrum') {
-    const scale = spectrumScale / windowCount;
-    for (let index = 0; index < half; index += 1) processed[index] = 10 * Math.log10(processed[index] * scale);
-  } else {
-    for (let index = 0; index < half; index += 1) processed[index] /= windowCount;
-    if (algorithm === 'enhanced-autocorrelation') {
-      const clipped = new Float64Array(half);
-      for (let index = 0; index < half; index += 1) clipped[index] = Math.max(0, processed[index]);
-      for (let index = 0; index < half; index += 1) {
-        const doubled = index % 2 === 0
-          ? clipped[index / 2]
-          : (clipped[(index - 1) / 2] + clipped[Math.min(half - 1, (index + 1) / 2)]) / 2;
-        processed[index] = Math.max(0, processed[index] - doubled);
+  function finish(): PlotSpectrumResult {
+    if (windowCount !== totalWindows) throw new Error('频谱分析尚未处理完全部分析窗');
+    if (algorithm === 'spectrum') {
+      const scale = spectrumScale / windowCount;
+      for (let index = 0; index < half; index += 1) processed[index] = 10 * Math.log10(processed[index] * scale);
+    } else {
+      for (let index = 0; index < half; index += 1) processed[index] /= windowCount;
+      if (algorithm === 'enhanced-autocorrelation') {
+        const clipped = new Float64Array(half);
+        for (let index = 0; index < half; index += 1) clipped[index] = Math.max(0, processed[index]);
+        for (let index = 0; index < half; index += 1) {
+          const doubled = index % 2 === 0
+            ? clipped[index / 2]
+            : (clipped[(index - 1) / 2] + clipped[Math.min(half - 1, (index + 1) / 2)]) / 2;
+          processed[index] = Math.max(0, processed[index] - doubled);
+        }
       }
     }
+    const { yMin, yMax } = extrema(processed, algorithm === 'cepstrum' ? 4 : 0);
+    return { ...options, values: processed, windowCount, yMin, yMax };
   }
-  const { yMin, yMax } = extrema(processed, algorithm === 'cepstrum' ? 4 : 0);
-  return { ...options, values: processed, windowCount, yMin, yMax };
+
+  return { totalWindows, processNext, finish };
+}
+
+export function analyzePlotSpectrum(
+  data: Float32Array,
+  options: PlotSpectrumOptions,
+  onProgress?: PlotSpectrumAnalysisProgress,
+): PlotSpectrumResult {
+  const session = createPlotSpectrumAnalysisSession(data, options);
+  onProgress?.(0, session.totalWindows);
+  let completed = 0;
+  while ((completed = session.processNext()) > 0) onProgress?.(completed, session.totalWindows);
+  return session.finish();
+}
+
+function throwIfPlotSpectrumAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('频谱分析已取消');
+  error.name = 'AbortError';
+  throw error;
+}
+
+/**
+ * The same DSP session as analyzePlotSpectrum, yielded in bounded chunks so
+ * the official per-window FreqGauge progress remains visible and stale runs
+ * can be cancelled when the dialog closes or its parameters change.
+ */
+export async function analyzePlotSpectrumWithProgress(
+  data: Float32Array,
+  options: PlotSpectrumOptions,
+  onProgress: PlotSpectrumAnalysisProgress,
+  signal?: AbortSignal,
+): Promise<PlotSpectrumResult> {
+  const session = createPlotSpectrumAnalysisSession(data, options);
+  const yieldEvery = Math.max(1, Math.ceil(session.totalWindows / 200));
+  onProgress(0, session.totalWindows);
+  let completed = 0;
+  while (true) {
+    throwIfPlotSpectrumAborted(signal);
+    completed = session.processNext();
+    if (completed === 0) break;
+    if (completed % yieldEvery === 0 || completed === session.totalWindows) {
+      onProgress(completed, session.totalWindows);
+      await new Promise<void>((resolve) => { globalThis.setTimeout(resolve, 0); });
+    }
+  }
+  throwIfPlotSpectrumAborted(signal);
+  return session.finish();
 }
 
 function cubicInterpolate(y0: number, y1: number, y2: number, y3: number, x: number): number {
