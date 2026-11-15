@@ -85,7 +85,7 @@ export function createPassFilterState(settings: PassFilterSettings, sampleRate: 
     for (const q of Q_BY_ROLLOFF[settings.rolloff]) {
       const alpha = sw * officialSinh(0.5 / q);
       const a0r = 1 / (1 + alpha);
-      const b1 = settings.kind === 'lowpass' ? 1 - cw : -1 + cw;
+      const b1 = settings.kind === 'lowpass' ? 1 - cw : -1 - cw;
       const b0 = settings.kind === 'lowpass' ? 0.5 * b1 : -0.5 * b1;
       sections.push({
         b0: a0r * b0,

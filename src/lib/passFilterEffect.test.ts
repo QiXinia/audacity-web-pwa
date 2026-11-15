@@ -46,7 +46,7 @@ function officialReference(input: Float32Array, settings: PassFilterSettings, sa
   for (const q of Q[settings.rolloff]) {
     const alpha = sw * (0.5 * (Math.exp(0.5 / q) - Math.exp(-0.5 / q)));
     const a0r = 1 / (1 + alpha);
-    const b1 = settings.kind === 'lowpass' ? 1 - cw : -1 + cw;
+    const b1 = settings.kind === 'lowpass' ? 1 - cw : -1 - cw;
     const b0 = settings.kind === 'lowpass' ? 0.5 * b1 : -0.5 * b1;
     const nb0 = a0r * b0;
     const nb1 = a0r * b1;
@@ -170,6 +170,21 @@ describe('Audacity High-pass / Low-pass sample-exact Nyquist oracle', () => {
     for (const rolloff of PASS_FILTER_ROLLOFFS) {
       expect(processPassFilter(input, { kind: 'lowpass', frequencyHz: 1000, rolloff }, 48000)[8191]).toBeCloseTo(1, 4);
       expect(processPassFilter(input, { kind: 'highpass', frequencyHz: 1000, rolloff }, 48000)[8191]).toBeCloseTo(0, 4);
+    }
+  });
+
+  it('preserves sinusoids in the pass band instead of collapsing them to digital silence', () => {
+    const sampleRate = 48000;
+    const highInput = Float32Array.from({ length: sampleRate }, (_, i) => 0.5 * Math.sin(2 * Math.PI * 2000 * i / sampleRate));
+    const lowInput = Float32Array.from({ length: sampleRate }, (_, i) => 0.5 * Math.sin(2 * Math.PI * 1000 * i / sampleRate));
+    const tailRms = (input: Float32Array) => Math.sqrt(
+      input.slice(sampleRate / 2).reduce((sum, value) => sum + value * value, 0) / (sampleRate / 2),
+    );
+    for (const rolloff of PASS_FILTER_ROLLOFFS) {
+      const high = processPassFilter(highInput, { kind: 'highpass', frequencyHz: 100, rolloff }, sampleRate);
+      const low = processPassFilter(lowInput, { kind: 'lowpass', frequencyHz: 8000, rolloff }, sampleRate);
+      expect(tailRms(high) / tailRms(highInput)).toBeGreaterThan(0.99);
+      expect(tailRms(low) / tailRms(lowInput)).toBeGreaterThan(0.99);
     }
   });
 
