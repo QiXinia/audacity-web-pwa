@@ -54,5 +54,11 @@ const serviceWorker = readFileSync(resolve(dist, 'sw.js'), 'utf8');
 if (!serviceWorker.includes(`${base}index.html`)) {
   throw new Error(`Service worker does not use deployment base ${base}`);
 }
+if (!serviceWorker.includes('.clientsClaim()')) {
+  throw new Error('Service worker must claim open clients after a prompted update');
+}
+if (!serviceWorker.includes('SKIP_WAITING') || !serviceWorker.includes('self.skipWaiting()')) {
+  throw new Error('Service worker must keep explicit refresh activation');
+}
 
 console.log(`Verified ${checked.size} local assets and PWA paths for base ${base}`);

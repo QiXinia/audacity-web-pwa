@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config';
 import { VitePWA } from 'vite-plugin-pwa';
 import tailwindcss from '@tailwindcss/vite';
 import { resolveAppBase } from './src/lib/appBase.ts';
+import { pwaUpdateWorkboxConfig } from './src/lib/pwaConfig.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -57,6 +58,7 @@ export default defineConfig({
         ],
       },
       workbox: {
+        ...pwaUpdateWorkboxConfig,
         globPatterns: ['**/*.{js,css,html,svg,wasm,png,jpg,ico,woff,woff2,json}'],
         navigateFallback: `${APP_BASE}index.html`,
         runtimeCaching: [
