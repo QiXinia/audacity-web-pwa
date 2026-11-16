@@ -200,6 +200,7 @@ import {
   type BeatFinderSettings,
   type BeatFinderTrack,
 } from '@/lib/beatFinder';
+import { measureRmsSelection, type MeasureRmsClip } from '@/lib/measureRms';
 import {
   createRegularIntervalLabels,
   type RegularIntervalLabelsSettings,
@@ -375,6 +376,7 @@ import SpectralEditDialog from './sections/SpectralEditDialog';
 import SpectralSelectionBar from './sections/SpectralSelectionBar';
 import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
+import MeasureRmsDialog, { type MeasureRmsTrackResult } from './sections/MeasureRmsDialog';
 import FindClippingDialog from './sections/FindClippingDialog';
 import LabelSoundsDialog from './sections/LabelSoundsDialog';
 import BeatFinderDialog from './sections/BeatFinderDialog';
@@ -499,6 +501,11 @@ export default function AudioEditorPage() {
   const [isApplyingSpectralEdit, setIsApplyingSpectralEdit] = useState(false);
   const [plotSpectrumDialogOpen, setPlotSpectrumDialogOpen] = useState(false);
   const [contrastDialogOpen, setContrastDialogOpen] = useState(false);
+  const [measureRmsDialogOpen, setMeasureRmsDialogOpen] = useState(false);
+  const [measureRmsResults, setMeasureRmsResults] = useState<MeasureRmsTrackResult[]>([]);
+  const [measureRmsError, setMeasureRmsError] = useState<string | null>(null);
+  const [isMeasuringRms, setIsMeasuringRms] = useState(false);
+  const measureRmsOperationRef = useRef(0);
   const [findClippingDialogOpen, setFindClippingDialogOpen] = useState(false);
   const [isFindingClipping, setIsFindingClipping] = useState(false);
   const [labelSoundsDialogOpen, setLabelSoundsDialogOpen] = useState(false);
@@ -2315,6 +2322,58 @@ export default function AudioEditorPage() {
       });
     }
     return measureContrastPcm(clips, activeSelection, project.sampleRate);
+  }
+
+  function handleMeasureRmsDialogChange(open: boolean): void {
+    if (!open) {
+      measureRmsOperationRef.current += 1;
+      setIsMeasuringRms(false);
+    }
+    setMeasureRmsDialogOpen(open);
+  }
+
+  async function openMeasureRms(): Promise<void> {
+    if (!project || !quantizedGeneratorSelection) return;
+    const operation = ++measureRmsOperationRef.current;
+    setMeasureRmsDialogOpen(true);
+    setIsMeasuringRms(true);
+    setMeasureRmsResults([]);
+    setMeasureRmsError(null);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const trackIds = new Set(resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips));
+      const results: MeasureRmsTrackResult[] = [];
+      for (const track of project.tracks) {
+        if (!trackIds.has(track.id)) continue;
+        const clips: MeasureRmsClip[] = [];
+        for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+          if (activeSelection.end <= clip.startTime || activeSelection.start >= clip.startTime + clip.duration) continue;
+          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (operation !== measureRmsOperationRef.current) return;
+          if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+          clips.push({
+            clipId: clip.id,
+            startTime: clip.startTime,
+            duration: clip.duration,
+            sourceOffset: effective.sourceOffset,
+            channels: effective.channels,
+          });
+        }
+        results.push({
+          trackId: track.id,
+          trackName: track.name,
+          measurement: measureRmsSelection(clips, activeSelection, project.sampleRate),
+        });
+      }
+      if (results.length === 0) throw new Error('没有可测量的目标音频轨道');
+      if (operation === measureRmsOperationRef.current) setMeasureRmsResults(results);
+    } catch (reason: unknown) {
+      if (operation === measureRmsOperationRef.current) {
+        setMeasureRmsError(reason instanceof Error ? reason.message : '无法测量当前选区');
+      }
+    } finally {
+      if (operation === measureRmsOperationRef.current) setIsMeasuringRms(false);
+    }
   }
 
   async function handleFindClipping(settings: FindClippingSettings): Promise<void> {
@@ -6039,6 +6098,12 @@ export default function AudioEditorPage() {
                 Contrast… 对比度分析…
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => { void openMeasureRms(); }}
+                disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
+              >
+                Measure RMS… RMS 测量…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setFindClippingDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
               >
@@ -7346,6 +7411,16 @@ export default function AudioEditorPage() {
           onOpenChange={setContrastDialogOpen}
           projectName={project.name}
           onMeasure={measureContrastAudio}
+        />
+
+        <MeasureRmsDialog
+          open={measureRmsDialogOpen}
+          onOpenChange={handleMeasureRmsDialogChange}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          results={measureRmsResults}
+          isMeasuring={isMeasuringRms}
+          error={measureRmsError}
         />
 
         <FindClippingDialog
