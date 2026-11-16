@@ -288,6 +288,81 @@ describe('ProjectService Invert transactions', () => {
   });
 });
 
+describe('ProjectService Reverse transactions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setCurrentProject(makeProject());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    (projectService as unknown as { currentProject: IProject | null }).currentProject = null;
+  });
+
+  it('reverses the exact selection on every track with one commit and preserves input PCM', async () => {
+    const project = makeProject();
+    setCurrentProject(project);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const inputs = [target('track-a', 'a', 2), target('track-b', 'b')];
+    inputs[0].clips[0].sampleData = [
+      Float32Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+      Float32Array.from([0, -1, -2, -3, -4, -5, -6, -7, -8, -9]),
+    ];
+    inputs[1].clips[0].sampleData = [Float32Array.from([10, 11, 12, 13, 14, 15, 16, 17, 18, 19])];
+
+    const changed = await projectService.reverseSelectionOnTracks(
+      project.id, { start: 0.2, end: 0.7 }, inputs,
+    );
+
+    expect(changed).toBe(2);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(audioDb.audioBuffers.put).toHaveBeenCalledTimes(2);
+    const records = writes();
+    expect(pcm(records[0])).toEqual([0, 1, 6, 5, 4, 3, 2, 7, 8, 9]);
+    expect(pcm(records[0], 1)).toEqual([0, -1, -6, -5, -4, -3, -2, -7, -8, -9]);
+    expect(pcm(records[1])).toEqual([10, 11, 16, 15, 14, 13, 12, 17, 18, 19]);
+    expect(Array.from(inputs[0].clips[0].sampleData[0])).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(project.tracks[0].clips[0].audioBufferId).toBe('buffer-a');
+    expect(audioEngine.cacheBuffer).toHaveBeenCalledTimes(2);
+  });
+
+  it('reverses the effective stretched source range and resets stretch metadata', async () => {
+    const project = makeProject();
+    project.tracks = [track('track-a', [{ ...clip('a', 0, 1), stretchRatio: 2, offset: 0.25 }])];
+    setCurrentProject(project);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const input = Float32Array.from({ length: 20 }, (_, index) => index + 1);
+
+    await projectService.reverseSelectionOnTracks(
+      project.id,
+      { start: 0.2, end: 0.7 },
+      [{ trackId: 'track-a', clips: [{ clipId: 'a', sourceOffset: 0.5, sampleData: [input] }] }],
+    );
+
+    expect(pcm(writes()[0])).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 12, 11, 10,
+      9, 8, 13, 14, 15, 16, 17, 18, 19, 20,
+    ]);
+    expect(save.mock.calls[0][0].tracks[0].clips[0]).toMatchObject({
+      duration: 1,
+      offset: 0.5,
+      originalDuration: 2,
+      stretchRatio: 1,
+    });
+  });
+
+  it('performs no writes when any target is invalid', async () => {
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    await expect(projectService.reverseSelectionOnTracks(
+      'project-echo', { start: 0, end: 1 },
+      [target('track-a', 'a'), target('track-b', 'missing')],
+    )).rejects.toThrow('目标片段不可用');
+
+    expect(audioDb.audioBuffers.put).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
 describe('ProjectService Stereo To Mono transactions', () => {
   beforeEach(() => {
     vi.clearAllMocks();

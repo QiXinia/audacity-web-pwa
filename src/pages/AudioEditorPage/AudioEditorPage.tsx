@@ -477,6 +477,7 @@ export default function AudioEditorPage() {
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
+  const [isApplyingReverse, setIsApplyingReverse] = useState(false);
   const [wahWahDialogOpen, setWahWahDialogOpen] = useState(false);
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
   const [phaserDialogOpen, setPhaserDialogOpen] = useState(false);
@@ -5525,57 +5526,37 @@ export default function AudioEditorPage() {
   }
 
   async function applyReverse() {
-    if (!project || !selection) return;
-    const before = JSON.parse(JSON.stringify(project)) as IProject;
-
-    const updated = JSON.parse(JSON.stringify(project)) as IProject;
-
-    for (const track of updated.tracks) {
-      for (const clip of track.clips) {
-        const clipEnd = clip.startTime + clip.duration;
-        if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
-
-        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
-        if (!effective) continue;
-        const clipChannels = effective.channels;
-
-        const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
-
-        const overlapStart = Math.max(clip.startTime, selection.start);
-        const overlapEnd = Math.min(clipEnd, selection.end);
-
-        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
-        const startSample = Math.floor(offsetInClip * project.sampleRate);
-        const endSample = Math.floor(
-          (offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate,
-        );
-
-        // Reverse the same time range independently in each channel.
-        for (const dataCopy of dataCopies) {
-          const segment = dataCopy.slice(startSample, endSample);
-          segment.reverse();
-          dataCopy.set(segment, startSample);
-        }
-
-        const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
-
-        clip.audioBufferId = newBufferId;
-        clip.offset = effective.sourceOffset;
-        clip.originalDuration = dataCopies[0].length / project.sampleRate;
-        clip.stretchRatio = 1;
-      }
+    if (!project || !quantizedGeneratorSelection || isApplyingReverse) return;
+    const activeSelection = quantizedGeneratorSelection;
+    setIsApplyingReverse(true);
+    try {
+      const before = {
+        ...structuredClone(project),
+        selection: activeSelection,
+      };
+      const targets = await collectEffectTargets(activeSelection);
+      const changed = await projectService.reverseSelectionOnTracks(
+        project.id,
+        activeSelection,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('时间反转后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Reverse 时间反转',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      toast.success(`已对 ${changed} 个片段应用时间反转`);
+    } catch (error) {
+      logger.error('应用时间反转失败:', String(error));
+      toast.error(error instanceof Error ? `应用时间反转失败：${error.message}` : '应用时间反转失败');
+    } finally {
+      setIsApplyingReverse(false);
     }
-
-    setProject(updated);
-    projectService.saveProject(updated);
-    historyManager.push({
-      id: generateId(),
-      label: '反转',
-      execute: () => updated,
-      undo: () => before,
-    }, before);
-    updateHistoryState();
-    toast.success('已反转选区');
   }
 
   function scrollTimelineTo(time: number, zoom: number) {
@@ -6408,7 +6389,11 @@ export default function AudioEditorPage() {
               >
                 Invert 极性反转
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={applyReverse} disabled={!selection}>
+              <DropdownMenuItem
+                onClick={applyReverse}
+                disabled={!quantizedGeneratorSelection || isApplyingReverse}
+                title="按 Audacity Reverse 逐声道反转选区采样，不改变采样极性"
+              >
                 Reverse 时间反转
               </DropdownMenuItem>
             </DropdownMenuContent>
