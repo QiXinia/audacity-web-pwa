@@ -82,7 +82,24 @@ describe('ProjectService Shelf Filter', () => {
     expect(clip.originalDuration).toBe(0.01);
   });
 
-  it('rejects empty targets and invalid Nyquist settings before any write', async () => {
+  it('accepts an exact-Nyquist selection and commits the processed audio once', async () => {
+    const project = makeProject();
+    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+    const input = [Float32Array.from([1, 0, -0.5, 0.25, 0.75, -0.25, 0.2, -0.1, 0.4, 0.3])];
+    const changed = await projectService.shelfFilterSelectionOnTracks(
+      project.id,
+      { start: 0, end: 0.01 },
+      { type: 'low', frequencyHz: 500, gainDb: 6 },
+      [{ trackId: 'track-1', clips: [{ clipId: 'clip-1', sourceOffset: 0, sampleData: input }] }],
+    );
+    expect(changed).toBe(1);
+    expect(audioDb.audioBuffers.put).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(input[0]).toEqual(Float32Array.from([1, 0, -0.5, 0.25, 0.75, -0.25, 0.2, -0.1, 0.4, 0.3]));
+  });
+
+  it('rejects empty targets and above-Nyquist settings before any write', async () => {
     const project = makeProject();
     (projectService as unknown as { currentProject: IProject }).currentProject = project;
     const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
@@ -92,7 +109,7 @@ describe('ProjectService Shelf Filter', () => {
     await expect(projectService.shelfFilterSelectionOnTracks(
       project.id,
       { start: 0, end: 0.01 },
-      { type: 'high', frequencyHz: 500, gainDb: 6 },
+      { type: 'high', frequencyHz: 501, gainDb: 6 },
       [{ trackId: 'track-1', clips: [] }],
     )).rejects.toThrow('Nyquist');
     expect(save).not.toHaveBeenCalled();

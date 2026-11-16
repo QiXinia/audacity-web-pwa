@@ -71,6 +71,19 @@ describe('ShelfFilterDialog', () => {
     expect(screen.getByRole('button', { name: '应用 Shelf Filter' })).toBeDisabled();
   });
 
+  it('allows exact Nyquist but rejects an above-Nyquist frequency', () => {
+    const props = renderDialog({ sampleRate: 1000 });
+    const frequency = screen.getByLabelText('频率（Hz）');
+    fireEvent.change(frequency, { target: { value: '500' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText('频率不得高于 500 Hz；等于或接近 Nyquist 时按官方逻辑在双倍采样率处理。0 dB 可直接试听，但不写入无效历史。')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Shelf Filter' }));
+    expect(props.onApply).toHaveBeenCalledWith({ type: 'low', frequencyHz: 500, gainDb: -6 });
+    fireEvent.change(frequency, { target: { value: '501' } });
+    expect(screen.getByRole('alert')).toHaveTextContent('Nyquist');
+    expect(screen.getByRole('button', { name: '应用 Shelf Filter' })).toBeDisabled();
+  });
+
   it('suppresses a zero-gain history write', () => {
     renderDialog();
     fireEvent.change(screen.getByLabelText('增益（dB）'), { target: { value: '0' } });

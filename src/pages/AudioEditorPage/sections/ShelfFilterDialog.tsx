@@ -123,7 +123,7 @@ export default function ShelfFilterDialog({
           </div>
           <div className="space-y-1 rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
             <p>选区：{formatTime(selectionStart)}–{formatTime(selectionEnd)}，共 {formatTime(Math.max(0, selectionEnd - selectionStart))}</p>
-            <p>频率须低于 {sampleRate / 2} Hz；接近 Nyquist 时按官方逻辑在双倍采样率处理。0 dB 可直接试听，但不写入无效历史。</p>
+            <p>频率不得高于 {sampleRate / 2} Hz；等于或接近 Nyquist 时按官方逻辑在双倍采样率处理。0 dB 可直接试听，但不写入无效历史。</p>
           </div>
           {bypassed && <p className="text-xs text-muted-foreground">当前为 0 dB，无实际处理；请选择非零增益后应用。</p>}
           {validationError && <p role="alert" className="text-sm text-destructive">{validationError}</p>}

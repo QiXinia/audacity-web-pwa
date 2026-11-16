@@ -55,8 +55,10 @@ export function validateShelfFilterSettings(
     if (!Number.isFinite(sampleRate) || sampleRate <= 20) {
       throw new RangeError('Shelf Filter 采样率必须是大于 20 的有限数值');
     }
-    if (settings.frequencyHz >= sampleRate / 2) {
-      throw new RangeError(`Shelf Filter 频率必须低于当前 Nyquist 频率（${sampleRate / 2} Hz）`);
+    // ShelfFilter.ny rejects only HZ > *sound-srate* / 2. Equality is
+    // intentional: it takes the force-srate(2 * rate) branch below.
+    if (settings.frequencyHz > sampleRate / 2) {
+      throw new RangeError(`Shelf Filter 频率不能高于当前 Nyquist 频率（${sampleRate / 2} Hz）`);
     }
   }
 }

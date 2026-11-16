@@ -25,6 +25,19 @@ const HIGH_IMPULSE_ORACLE = [
   -0.0905611971597431,
 ];
 
+// Independently computed from ShelfFilter.ny's forced-double-rate branch.
+// The source signal is [1, 0, -0.5, 0.25, 0.75, -0.25] at 1000 Hz.
+const EXACT_NYQUIST_ORACLE = {
+  low: [
+    1.4125375747680664, 0.39949798583984375, -0.9243314862251282,
+    0.25545376539230347, 1.3980159759521484, -0.17797784507274628,
+  ],
+  high: [
+    1.4125375747680664, -0.16993986070156097, -0.5609529614448547,
+    0.3517535328865051, 0.8118971586227417, -0.3818283975124359,
+  ],
+} as const;
+
 function impulse(settings: ShelfFilterSettings): Float32Array {
   return processShelfFilter(Float32Array.from([1, 0, 0, 0, 0, 0]), settings, 48_000);
 }
@@ -70,6 +83,22 @@ describe('Shelf Filter DSP', () => {
     expect(output.length).toBe(input.length);
     expect(Array.from(output).every(Number.isFinite)).toBe(true);
     expect(output).not.toEqual(input);
+  });
+
+  it('accepts exact Nyquist and matches independent forced-rate reference samples', () => {
+    const input = Float32Array.from([1, 0, -0.5, 0.25, 0.75, -0.25]);
+    for (const type of ['low', 'high'] as const) {
+      const settings: ShelfFilterSettings = { type, frequencyHz: 500, gainDb: 6 };
+      expect(() => validateShelfFilterSettings(settings, 1000)).not.toThrow();
+      const [output] = processShelfFilterChannels([input], settings, 1000);
+      expect(output).toHaveLength(input.length);
+      EXACT_NYQUIST_ORACLE[type].forEach((expected, index) => {
+        expect(output[index]).toBeCloseTo(expected, 10);
+      });
+    }
+    expect(() => validateShelfFilterSettings(
+      { type: 'low', frequencyHz: 501, gainDb: 6 }, 1000,
+    )).toThrow('Nyquist');
   });
 
   it('supports continuity when a caller reuses the same filter state', () => {
