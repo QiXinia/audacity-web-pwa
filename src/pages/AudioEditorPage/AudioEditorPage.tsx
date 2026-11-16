@@ -202,6 +202,12 @@ import {
 } from '@/lib/beatFinder';
 import { measureRmsSelection, type MeasureRmsClip } from '@/lib/measureRms';
 import {
+  serializeSampleDataExport,
+  type SampleDataClip,
+  type SampleDataExportFile,
+  type SampleDataExportSettings,
+} from '@/lib/sampleDataExport';
+import {
   createRegularIntervalLabels,
   type RegularIntervalLabelsSettings,
 } from '@/lib/regularIntervalLabels';
@@ -377,6 +383,7 @@ import SpectralSelectionBar from './sections/SpectralSelectionBar';
 import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
 import MeasureRmsDialog, { type MeasureRmsTrackResult } from './sections/MeasureRmsDialog';
+import SampleDataExportDialog from './sections/SampleDataExportDialog';
 import FindClippingDialog from './sections/FindClippingDialog';
 import LabelSoundsDialog from './sections/LabelSoundsDialog';
 import BeatFinderDialog from './sections/BeatFinderDialog';
@@ -506,6 +513,9 @@ export default function AudioEditorPage() {
   const [measureRmsError, setMeasureRmsError] = useState<string | null>(null);
   const [isMeasuringRms, setIsMeasuringRms] = useState(false);
   const measureRmsOperationRef = useRef(0);
+  const [sampleDataExportDialogOpen, setSampleDataExportDialogOpen] = useState(false);
+  const [isExportingSampleData, setIsExportingSampleData] = useState(false);
+  const sampleDataExportOperationRef = useRef(0);
   const [findClippingDialogOpen, setFindClippingDialogOpen] = useState(false);
   const [isFindingClipping, setIsFindingClipping] = useState(false);
   const [labelSoundsDialogOpen, setLabelSoundsDialogOpen] = useState(false);
@@ -2373,6 +2383,62 @@ export default function AudioEditorPage() {
       }
     } finally {
       if (operation === measureRmsOperationRef.current) setIsMeasuringRms(false);
+    }
+  }
+
+  function handleSampleDataExportDialogChange(open: boolean): void {
+    if (!open) {
+      sampleDataExportOperationRef.current += 1;
+      setIsExportingSampleData(false);
+    }
+    setSampleDataExportDialogOpen(open);
+  }
+
+  async function handleSampleDataExport(settings: SampleDataExportSettings): Promise<SampleDataExportFile> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要导出的音频');
+    const operation = ++sampleDataExportOperationRef.current;
+    setIsExportingSampleData(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+      if (trackIds.length !== 1) {
+        throw new Error(trackIds.length === 0 ? '没有可导出的目标音频轨道' : 'Sample Data Export 一次仅支持一条目标音轨，请只选择一条轨道');
+      }
+      const track = project.tracks.find((candidate) => candidate.id === trackIds[0]);
+      if (!track) throw new Error('目标音轨不可用');
+      const clips: SampleDataClip[] = [];
+      for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+        if (activeSelection.end <= clip.startTime || activeSelection.start >= clip.startTime + clip.duration) continue;
+        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+        if (operation !== sampleDataExportOperationRef.current) throw new Error('导出已取消');
+        if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+        clips.push({
+          clipId: clip.id,
+          startTime: clip.startTime,
+          duration: clip.duration,
+          sourceOffset: effective.sourceOffset,
+          channels: effective.channels,
+        });
+      }
+      const file = serializeSampleDataExport({
+        clips,
+        selection: activeSelection,
+        sampleRate: project.sampleRate,
+        settings,
+      });
+      if (operation !== sampleDataExportOperationRef.current) throw new Error('导出已取消');
+      const blob = new Blob([file.content], { type: file.mimeType });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = file.filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      return file;
+    } finally {
+      if (operation === sampleDataExportOperationRef.current) setIsExportingSampleData(false);
     }
   }
 
@@ -6104,6 +6170,12 @@ export default function AudioEditorPage() {
                 Measure RMS… RMS 测量…
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => setSampleDataExportDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
+              >
+                Sample Data Export… 采样数据导出…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setFindClippingDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
               >
@@ -7421,6 +7493,15 @@ export default function AudioEditorPage() {
           results={measureRmsResults}
           isMeasuring={isMeasuringRms}
           error={measureRmsError}
+        />
+
+        <SampleDataExportDialog
+          open={sampleDataExportDialogOpen}
+          onOpenChange={handleSampleDataExportDialogChange}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isExporting={isExportingSampleData}
+          onExport={handleSampleDataExport}
         />
 
         <FindClippingDialog
