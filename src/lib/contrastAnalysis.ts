@@ -105,13 +105,22 @@ export function measureContrastSelection(
   };
 }
 
+const WCAG_CONTRAST_THRESHOLD_DB = 20;
+// Treat sub-picobel arithmetic noise as equality, while keeping real values above
+// the strict 20 dB boundary (for example 20.0001 dB) eligible to pass.
+const WCAG_CONTRAST_FLOAT_TOLERANCE_DB = 1e-10;
+
+export function passesWcagContrastThreshold(differenceDb: number): boolean {
+  return differenceDb > WCAG_CONTRAST_THRESHOLD_DB + WCAG_CONTRAST_FLOAT_TOLERANCE_DB;
+}
+
 /** Audacity uses a strict > 20 dB threshold and checks invalid levels first. */
 export function evaluateContrast(foregroundDb: number, backgroundDb: number): ContrastResult {
   const differenceDb = Math.abs(foregroundDb - backgroundDb);
   if (foregroundDb > 0) return { kind: 'foreground-too-high', differenceDb };
   if (backgroundDb > 0) return { kind: 'background-too-high', differenceDb };
   if (backgroundDb > foregroundDb) return { kind: 'background-higher', differenceDb };
-  return { kind: differenceDb > 20 ? 'pass' : 'fail', differenceDb };
+  return { kind: passesWcagContrastThreshold(differenceDb) ? 'pass' : 'fail', differenceDb };
 }
 
 export function formatContrastDifference(differenceDb: number): string {
@@ -153,7 +162,7 @@ export function serializeContrastResults(options: {
       ? `Difference = ${differenceDb.toFixed(2)} RMS dB.`
       : 'Difference = infinite RMS dB.';
   // Audacity's text export uses the signed foreground-minus-background value.
-  const pass = differenceDb > 20;
+  const pass = passesWcagContrastThreshold(differenceDb);
   const month = now.toLocaleString('en-US', { month: 'long' });
   const gathered = `${now.getDate()} ${month} ${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}h ${String(now.getMinutes()).padStart(2, '0')}m ${String(now.getSeconds()).padStart(2, '0')}s`;
   const lines = [

@@ -620,7 +620,8 @@ export default function AudioEditorPage() {
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.matches('input, textarea, [contenteditable="true"]')) return;
+      const readOnlyInput = target instanceof HTMLInputElement && target.readOnly;
+      if (target instanceof Element && target.matches('input, textarea, [contenteditable="true"]') && !readOnlyInput) return;
       const key = event.key.toLowerCase();
       const modified = event.ctrlKey || event.metaKey;
       if (modified && event.shiftKey && key === 't' && quantizedGeneratorSelection

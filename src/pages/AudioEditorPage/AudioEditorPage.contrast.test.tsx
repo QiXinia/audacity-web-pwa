@@ -148,6 +148,16 @@ describe('AudioEditorPage Contrast Analyzer integration', () => {
     expect(await screen.findByRole('dialog', { name: 'Contrast Analysis (WCAG 2 compliance)' })).toBeInTheDocument();
   });
 
+  it('opens with Ctrl+Shift+T while a read-only selection time field has focus', async () => {
+    renderEditor();
+    await screen.findByText('Contrast integration');
+    const selectionEnd = await screen.findByLabelText('选区结束时间');
+    expect(selectionEnd).toHaveAttribute('readonly');
+    selectionEnd.focus();
+    fireEvent.keyDown(selectionEnd, { key: 'T', ctrlKey: true, shiftKey: true });
+    expect(await screen.findByRole('dialog', { name: 'Contrast Analysis (WCAG 2 compliance)' })).toBeInTheDocument();
+  });
+
   it('disables the command without a real time selection', async () => {
     const withoutSelection: IProject = { ...makeProject(), selection: null };
     vi.mocked(projectService.openProject).mockResolvedValue(withoutSelection);

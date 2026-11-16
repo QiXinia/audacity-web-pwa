@@ -81,6 +81,24 @@ describe('Audacity WCAG result ordering and formatting', () => {
     expect(evaluateContrast(-10, -31).differenceDb).toBe(21);
   });
 
+  it('does not pass an exact -20 dB gain because of floating-point noise', () => {
+    const foregroundDb = 20 * Math.log10(0.8 / Math.sqrt(2));
+    const backgroundDb = 20 * Math.log10(0.08 / Math.sqrt(2));
+    const result = evaluateContrast(foregroundDb, backgroundDb);
+    expect(result.differenceDb).toBeCloseTo(20, 12);
+    expect(result.kind).toBe('fail');
+    expect(formatContrastDifference(result.differenceDb)).toBe('20.00 dB RMS');
+
+    const exported = serializeContrastResults({
+      projectName: 'Exact threshold',
+      foreground: measurement(foregroundDb),
+      background: measurement(backgroundDb),
+      now: new Date(2026, 10, 16, 12, 50, 0),
+    });
+    expect(exported).toContain('Difference = 20.00 RMS dB.');
+    expect(exported).toContain('Success Criteria 1.4.7 of WCAG 2.0: Fail');
+  });
+
   it('checks excessive foreground, excessive background and reversed levels first', () => {
     expect(evaluateContrast(2, -50).kind).toBe('foreground-too-high');
     expect(evaluateContrast(-10, 1).kind).toBe('background-too-high');
