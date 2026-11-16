@@ -196,6 +196,11 @@ import {
   type LabelSoundsTrack,
 } from '@/lib/labelSounds';
 import {
+  analyzeBeatFinderTracks,
+  type BeatFinderSettings,
+  type BeatFinderTrack,
+} from '@/lib/beatFinder';
+import {
   createRegularIntervalLabels,
   type RegularIntervalLabelsSettings,
 } from '@/lib/regularIntervalLabels';
@@ -372,6 +377,7 @@ import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
 import FindClippingDialog from './sections/FindClippingDialog';
 import LabelSoundsDialog from './sections/LabelSoundsDialog';
+import BeatFinderDialog from './sections/BeatFinderDialog';
 import RegularIntervalLabelsDialog from './sections/RegularIntervalLabelsDialog';
 import LabelEditorDialog from './sections/LabelEditorDialog';
 import { ClippingLabelTimeline } from './sections/ClippingLabelTimeline';
@@ -497,6 +503,8 @@ export default function AudioEditorPage() {
   const [isFindingClipping, setIsFindingClipping] = useState(false);
   const [labelSoundsDialogOpen, setLabelSoundsDialogOpen] = useState(false);
   const [isLabelingSounds, setIsLabelingSounds] = useState(false);
+  const [beatFinderDialogOpen, setBeatFinderDialogOpen] = useState(false);
+  const [isFindingBeats, setIsFindingBeats] = useState(false);
   const [regularIntervalLabelsDialogOpen, setRegularIntervalLabelsDialogOpen] = useState(false);
   const [isCreatingRegularIntervalLabels, setIsCreatingRegularIntervalLabels] = useState(false);
   const [labelEditorDialogOpen, setLabelEditorDialogOpen] = useState(false);
@@ -2402,6 +2410,54 @@ export default function AudioEditorPage() {
       setLabelSoundsDialogOpen(false);
     } finally {
       setIsLabelingSounds(false);
+    }
+  }
+
+  async function handleBeatFinder(settings: BeatFinderSettings): Promise<void> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要分析的音频');
+    setIsFindingBeats(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const trackIds = new Set(resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips));
+      const tracks: BeatFinderTrack[] = [];
+      for (const track of project.tracks) {
+        if (!trackIds.has(track.id)) continue;
+        const clips: BeatFinderTrack['clips'][number][] = [];
+        for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+          if (activeSelection.end <= clip.startTime || activeSelection.start >= clip.startTime + clip.duration) continue;
+          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+          clips.push({
+            clipId: clip.id,
+            startTime: clip.startTime,
+            duration: clip.duration,
+            sourceOffset: effective.sourceOffset,
+            channels: effective.channels,
+          });
+        }
+        if (clips.length > 0) tracks.push({ trackId: track.id, clips });
+      }
+      const detected = analyzeBeatFinderTracks(tracks, activeSelection, project.sampleRate, settings);
+      if (detected.length === 0) {
+        toast.info('No beats found. Try lowering Threshold Percentage.');
+        setBeatFinderDialogOpen(false);
+        return;
+      }
+      const created: IAnalysisLabel[] = detected.map((label) => ({
+        ...label,
+        id: generateId(),
+        kind: 'manual',
+      }));
+      const updated: IProject = {
+        ...project,
+        analysisLabels: [...(project.analysisLabels ?? []), ...created],
+        updatedAt: Date.now(),
+      };
+      await commitClipEdit(updated, `Beat finder 节拍查找（${created.length} 个标签）`);
+      toast.success(`已创建 ${created.length} 个节拍标签`);
+      setBeatFinderDialogOpen(false);
+    } finally {
+      setIsFindingBeats(false);
     }
   }
 
@@ -5989,6 +6045,12 @@ export default function AudioEditorPage() {
                 Find Clipping… 查找削波…
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() => setBeatFinderDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
+              >
+                Beat finder… 节拍查找…
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setLabelSoundsDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
               >
@@ -7304,6 +7366,15 @@ export default function AudioEditorPage() {
           sampleRate={project.sampleRate}
           isApplying={isLabelingSounds}
           onApply={handleLabelSounds}
+        />
+
+        <BeatFinderDialog
+          open={beatFinderDialogOpen}
+          onOpenChange={setBeatFinderDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isFindingBeats}
+          onApply={handleBeatFinder}
         />
 
         <RegularIntervalLabelsDialog
