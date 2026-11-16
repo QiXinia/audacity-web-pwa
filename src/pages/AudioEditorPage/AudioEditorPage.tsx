@@ -196,6 +196,10 @@ import {
   type LabelSoundsTrack,
 } from '@/lib/labelSounds';
 import {
+  createRegularIntervalLabels,
+  type RegularIntervalLabelsSettings,
+} from '@/lib/regularIntervalLabels';
+import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
 } from '@/lib/adjustableFadeEffect';
@@ -368,6 +372,7 @@ import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
 import FindClippingDialog from './sections/FindClippingDialog';
 import LabelSoundsDialog from './sections/LabelSoundsDialog';
+import RegularIntervalLabelsDialog from './sections/RegularIntervalLabelsDialog';
 import LabelEditorDialog from './sections/LabelEditorDialog';
 import { ClippingLabelTimeline } from './sections/ClippingLabelTimeline';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
@@ -492,6 +497,8 @@ export default function AudioEditorPage() {
   const [isFindingClipping, setIsFindingClipping] = useState(false);
   const [labelSoundsDialogOpen, setLabelSoundsDialogOpen] = useState(false);
   const [isLabelingSounds, setIsLabelingSounds] = useState(false);
+  const [regularIntervalLabelsDialogOpen, setRegularIntervalLabelsDialogOpen] = useState(false);
+  const [isCreatingRegularIntervalLabels, setIsCreatingRegularIntervalLabels] = useState(false);
   const [labelEditorDialogOpen, setLabelEditorDialogOpen] = useState(false);
   const [isApplyingLabels, setIsApplyingLabels] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
@@ -2395,6 +2402,39 @@ export default function AudioEditorPage() {
       setLabelSoundsDialogOpen(false);
     } finally {
       setIsLabelingSounds(false);
+    }
+  }
+
+  async function handleRegularIntervalLabels(settings: RegularIntervalLabelsSettings): Promise<void> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要创建标签的音频选区');
+    setIsCreatingRegularIntervalLabels(true);
+    try {
+      const result = createRegularIntervalLabels(quantizedGeneratorSelection, settings);
+      if (result.labels.length === 0) {
+        if (result.completion) toast.error(result.completion.message);
+        setRegularIntervalLabelsDialogOpen(false);
+        return;
+      }
+      const trackIds = new Set(resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips));
+      const targetTrack = project.tracks.filter((track) => trackIds.has(track.id)).at(-1);
+      if (!targetTrack) throw new Error('没有可接收标签的目标轨道');
+      const created: IAnalysisLabel[] = result.labels.map((label) => ({
+        ...label,
+        id: generateId(),
+        kind: 'manual',
+        trackId: targetTrack.id,
+      }));
+      const updated: IProject = {
+        ...project,
+        analysisLabels: [...(project.analysisLabels ?? []), ...created],
+        updatedAt: Date.now(),
+      };
+      await commitClipEdit(updated, `Regular interval labels 等间隔标签（${created.length} 个标签）`);
+      setRegularIntervalLabelsDialogOpen(false);
+      if (result.completion?.type === 'warning') toast.warning(result.completion.message);
+      else if (result.completion?.type === 'success') toast.success(result.completion.message);
+    } finally {
+      setIsCreatingRegularIntervalLabels(false);
     }
   }
 
@@ -5954,6 +5994,12 @@ export default function AudioEditorPage() {
               >
                 Label sounds… 标记声音…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setRegularIntervalLabelsDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
+              >
+                Regular interval labels… 等间隔标签…
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button
@@ -7258,6 +7304,15 @@ export default function AudioEditorPage() {
           sampleRate={project.sampleRate}
           isApplying={isLabelingSounds}
           onApply={handleLabelSounds}
+        />
+
+        <RegularIntervalLabelsDialog
+          open={regularIntervalLabelsDialogOpen}
+          onOpenChange={setRegularIntervalLabelsDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          isApplying={isCreatingRegularIntervalLabels}
+          onApply={handleRegularIntervalLabels}
         />
 
         <LabelEditorDialog
