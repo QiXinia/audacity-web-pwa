@@ -158,6 +158,19 @@ describe('AudioEditorPage Contrast Analyzer integration', () => {
     expect(await screen.findByRole('dialog', { name: 'Contrast Analysis (WCAG 2 compliance)' })).toBeInTheDocument();
   });
 
+  it('offers Alt+Shift+T when the browser reserves Ctrl+Shift+T', async () => {
+    renderEditor();
+    await screen.findByText('Contrast integration');
+    const contrastItem = await openAnalysisMenu();
+    expect(contrastItem).toHaveAttribute('title', expect.stringContaining('Alt+Shift+T'));
+    fireEvent.keyDown(contrastItem, { key: 'Escape' });
+    await waitFor(() => expect(contrastItem).not.toBeInTheDocument());
+    const selectionEnd = await screen.findByLabelText('选区结束时间');
+    selectionEnd.focus();
+    fireEvent.keyDown(selectionEnd, { key: 'T', altKey: true, shiftKey: true });
+    expect(await screen.findByRole('dialog', { name: 'Contrast Analysis (WCAG 2 compliance)' })).toBeInTheDocument();
+  });
+
   it('disables the command without a real time selection', async () => {
     const withoutSelection: IProject = { ...makeProject(), selection: null };
     vi.mocked(projectService.openProject).mockResolvedValue(withoutSelection);

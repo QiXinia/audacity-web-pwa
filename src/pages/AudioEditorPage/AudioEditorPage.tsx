@@ -624,7 +624,8 @@ export default function AudioEditorPage() {
       if (target instanceof Element && target.matches('input, textarea, [contenteditable="true"]') && !readOnlyInput) return;
       const key = event.key.toLowerCase();
       const modified = event.ctrlKey || event.metaKey;
-      if (modified && event.shiftKey && key === 't' && quantizedGeneratorSelection
+      const contrastShortcut = event.shiftKey && key === 't' && (modified || event.altKey);
+      if (contrastShortcut && quantizedGeneratorSelection
         && playbackState !== 'playing' && recordingState !== 'recording') {
         event.preventDefault();
         setContrastDialogOpen(true);
@@ -5793,7 +5794,7 @@ export default function AudioEditorPage() {
               <DropdownMenuItem
                 onClick={() => setContrastDialogOpen(true)}
                 disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
-                title="Ctrl+Shift+T"
+                title="Ctrl+Shift+T；浏览器保留该组合键时可用 Alt+Shift+T"
               >
                 Contrast… 对比度分析…
               </DropdownMenuItem>
