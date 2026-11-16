@@ -68,9 +68,10 @@ export interface IViewState {
 
 export interface IAnalysisLabel {
   id: string;
-  kind: 'clipping';
+  /** Clipping labels retain their source channel; manual labels have no fabricated channel. */
+  kind: 'clipping' | 'manual';
   trackId: string;
-  channelIndex: number;
+  channelIndex?: number;
   start: number;
   end: number;
   text: string;

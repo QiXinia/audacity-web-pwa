@@ -362,6 +362,7 @@ import SpectralSelectionBar from './sections/SpectralSelectionBar';
 import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
 import FindClippingDialog from './sections/FindClippingDialog';
+import LabelEditorDialog from './sections/LabelEditorDialog';
 import { ClippingLabelTimeline } from './sections/ClippingLabelTimeline';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
@@ -483,6 +484,8 @@ export default function AudioEditorPage() {
   const [contrastDialogOpen, setContrastDialogOpen] = useState(false);
   const [findClippingDialogOpen, setFindClippingDialogOpen] = useState(false);
   const [isFindingClipping, setIsFindingClipping] = useState(false);
+  const [labelEditorDialogOpen, setLabelEditorDialogOpen] = useState(false);
+  const [isApplyingLabels, setIsApplyingLabels] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -2346,6 +2349,23 @@ export default function AudioEditorPage() {
     setSpectralSelection(null);
     setProject((current) => current ? { ...current, selection: nextSelection, spectralSelection: null } : current);
     handleCursorChange(label.start);
+  }
+
+  async function handleEditLabels(labels: IAnalysisLabel[]): Promise<void> {
+    if (!project) return;
+    if (JSON.stringify(labels) === JSON.stringify(project.analysisLabels ?? [])) {
+      setLabelEditorDialogOpen(false);
+      return;
+    }
+    setIsApplyingLabels(true);
+    try {
+      const updated: IProject = { ...project, analysisLabels: labels, updatedAt: Date.now() };
+      await commitClipEdit(updated, `Edit Labels 编辑标签（${labels.length} 个标签）`);
+      setLabelEditorDialogOpen(false);
+      toast.success(`已保存 ${labels.length} 个标签`);
+    } finally {
+      setIsApplyingLabels(false);
+    }
   }
 
   async function collectEffectTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
@@ -5739,6 +5759,8 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={handlePaste}>粘贴</DropdownMenuItem>
               <DropdownMenuItem onClick={() => void splitClipsAtCursor()} disabled={!canSplitAtCursor}>在光标处分割 (Ctrl+I)</DropdownMenuItem>
               <DropdownMenuItem onClick={handleTrim} disabled={!selection}>裁剪到选区</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setLabelEditorDialogOpen(true)}>Edit Labels… 编辑标签…</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <DropdownMenu>
@@ -6634,9 +6656,17 @@ export default function AudioEditorPage() {
                 />
               ))}
               {(project.analysisLabels?.length ?? 0) > 0 && (
-                <div className="flex h-10 shrink-0 flex-col justify-center border-b border-[#434a50] bg-[#20262b] px-3 text-[#d8c49a]">
-                  <span className="text-xs font-medium">Clipping</span>
-                  <span className="text-[10px] text-[#aab0b6]">{project.analysisLabels!.length} 个标签</span>
+                <div className="flex h-10 shrink-0 border-b border-[#434a50] bg-[#20262b] px-1 text-[#d8c49a]">
+                  <button
+                    type="button"
+                    aria-label="编辑标签"
+                    title="打开 Edit Labels"
+                    className="flex flex-1 flex-col justify-center rounded-sm px-2 text-left hover:bg-[#30383f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f0c56d]"
+                    onClick={() => setLabelEditorDialogOpen(true)}
+                  >
+                    <span className="text-xs font-medium">Labels 标签</span>
+                    <span className="text-[10px] text-[#aab0b6]">{project.analysisLabels!.length} 个标签</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -6797,6 +6827,7 @@ export default function AudioEditorPage() {
               pxPerSec={pxPerSec}
               totalWidth={totalWidth}
               onSelect={handleAnalysisLabelSelect}
+              onEdit={() => setLabelEditorDialogOpen(true)}
             />
 
             {/* Bottom padding for transport bar visibility */}
@@ -7155,6 +7186,17 @@ export default function AudioEditorPage() {
           sampleRate={project.sampleRate}
           isApplying={isFindingClipping}
           onApply={handleFindClipping}
+        />
+
+        <LabelEditorDialog
+          open={labelEditorDialogOpen}
+          onOpenChange={setLabelEditorDialogOpen}
+          labels={project.analysisLabels ?? []}
+          tracks={project.tracks}
+          selectedTrackId={selectedTrackId}
+          selection={selection}
+          isApplying={isApplyingLabels}
+          onApply={handleEditLabels}
         />
 
         <RepeatSelectionDialog
