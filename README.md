@@ -26,6 +26,7 @@
 | 频谱视图 | ✅ | FFT 频谱分析视图，切换波形/频谱/混合显示 |
 | Plot Spectrum 频率分析 | ✅ | “分析 → Plot Spectrum”对照 Audacity 4.0.2 `SpectrumAnalyst`／`FreqWindow` 实现 5 种算法、10 种窗函数、128–131072 FFT Size、半窗重叠功率平均与相干增益归一化；支持对数／线性轴、网格、光标与三次插值峰值、Replot 和文本导出，读取 Shift 多选轨道的有效拉伸 PCM，声道求和且间隙为零；按官方 1–100% 可见范围实现纵向居中缩放、1/100 单位平移与边界复位，按真实分析窗显示可取消进度，算法／Size／窗函数／频率轴／网格跨关闭持久化且损坏或拒绝存储时安全回退；浏览器资源上限为 20,000,000 采样，并有独立直接 DFT／冲激锚点、同步／异步等价及页面集成测试。未宣称官方 C++ 逐样本 golden 一致 |
 | Contrast Analyzer 对比度分析 | ✅ | “分析 → Contrast”或 `Ctrl+Shift+T` 打开非模态面板；对照 Audacity 4.0.2 `Contrast.cpp`／`ContrastBase.cpp` 实现单轨前景／背景两次选区测量、逐声道 RMS 均方平均、时间轴间隙忽略与真实零采样保留、严格 `>20 dB` WCAG2 判定、异常电平顺序、Reset、官方文本格式 Export 和关闭复位；多轨、空选区、无效 PCM 及不完整声道均明确报错，附独立 DSP、对话框和页面集成测试 |
+| Find Clipping 削波分析 | ✅ | “分析 → Find Clipping”对照 Audacity 4.0.2 `FindClippingBase` 实现官方 Start／Stop threshold、逐轨逐声道满幅 run 检测、停止阈值后标签落地及选区末尾不强制补标签；读取 Shift 多选轨道的有效拉伸 PCM，时间轴空隙按零采样处理，生成可持久化、可撤销并可点击定位选区的 Clipping 标签轨；附算法、持久化及页面集成测试 |
 | 选区编辑 | ✅ | 剪切、复制、粘贴、裁剪、删除 |
 | 非破坏性时间拉伸 | ✅ | 片段级 WSOLA 拉伸，0.25×–4×，保持音高并贯穿播放、分割、编辑与导出 |
 | Shift 片段多选 | ✅ | 跨轨不连续选择，支持成组移动、修剪、拉伸、删除与速度复位 |
@@ -320,6 +321,8 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史、选区量化与 Shift 多选 | 26 |
 | `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
 | `src/pages/AudioEditorPage/AudioEditorPage.plotSpectrum.test.tsx` | Shift 多选轨道的拉伸立体声 PCM、真实菜单入口、无工程／历史写入及无选区禁用 | 2 |
+| `src/lib/findClipping.test.ts` | 官方 run／停止阈值与末尾边界、轨道和声道身份、时间轴空隙、参数校验及标签持久化 | 10 |
+| `src/pages/AudioEditorPage/AudioEditorPage.findClipping.test.tsx` | Shift 多选有效 PCM、真实菜单与参数对话框、标签保存／历史／时间轴定位及无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.repeat.test.tsx` | 效果菜单、双轨 Repeat、单次历史命令与撤销 | 1 |
 | `src/pages/AudioEditorPage/AudioEditorPage.echo.test.tsx` | Echo 菜单、双声道精确试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.bassTreble.test.tsx` | BassTreble 菜单、双声道精确试听、双轨单次历史、失败无写入与无选区禁用 | 3 |
@@ -338,7 +341,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.noiseReduction.test.tsx` | Noise Reduction 两步 Profile、双声道精确试听、多轨单次历史、失败无历史与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.truncateSilence.test.tsx` | Truncate Silence 真实菜单、联动双声道 PCM 试听、多轨单次历史、失败／无变更无历史与无选区禁用 | 4 |
 
-当前完整前端回归共 **189 个测试文件、1470 项测试**；本次实际完整运行全部通过且无跳过；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
+当前完整前端回归共 **196 个测试文件、1520 项测试**；本次实际完整运行全部通过且无跳过；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
 
 运行测试：
 

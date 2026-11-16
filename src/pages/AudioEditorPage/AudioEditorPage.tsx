@@ -186,6 +186,11 @@ import {
   type PlotSpectrumSegment,
 } from '@/lib/plotSpectrum';
 import {
+  analyzeFindClippingTracks,
+  type FindClippingSettings,
+  type FindClippingTrack,
+} from '@/lib/findClipping';
+import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
 } from '@/lib/adjustableFadeEffect';
@@ -335,7 +340,7 @@ import {
   type WorkspaceLayout,
   type WorkspaceStore,
 } from '@/services/workspaceService';
-import type { IProject, ITrack, IClip, IEffect, ViewMode, EffectType, SnapMode } from '@/types/project';
+import type { IProject, ITrack, IClip, IEffect, IAnalysisLabel, ViewMode, EffectType, SnapMode } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
 import ToneGeneratorDialog from './sections/ToneGeneratorDialog';
@@ -356,6 +361,8 @@ import SpectralEditDialog from './sections/SpectralEditDialog';
 import SpectralSelectionBar from './sections/SpectralSelectionBar';
 import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
+import FindClippingDialog from './sections/FindClippingDialog';
+import { ClippingLabelTimeline } from './sections/ClippingLabelTimeline';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
@@ -474,6 +481,8 @@ export default function AudioEditorPage() {
   const [isApplyingSpectralEdit, setIsApplyingSpectralEdit] = useState(false);
   const [plotSpectrumDialogOpen, setPlotSpectrumDialogOpen] = useState(false);
   const [contrastDialogOpen, setContrastDialogOpen] = useState(false);
+  const [findClippingDialogOpen, setFindClippingDialogOpen] = useState(false);
+  const [isFindingClipping, setIsFindingClipping] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -2280,6 +2289,63 @@ export default function AudioEditorPage() {
       });
     }
     return measureContrastPcm(clips, activeSelection, project.sampleRate);
+  }
+
+  async function handleFindClipping(settings: FindClippingSettings): Promise<void> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要分析的音频');
+    setIsFindingClipping(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const trackIds = new Set(resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips));
+      const tracks: FindClippingTrack[] = [];
+      for (const track of project.tracks) {
+        if (!trackIds.has(track.id)) continue;
+        const clips: FindClippingTrack['clips'][number][] = [];
+        for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+          if (activeSelection.end <= clip.startTime || activeSelection.start >= clip.startTime + clip.duration) continue;
+          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+          clips.push({
+            clipId: clip.id,
+            startTime: clip.startTime,
+            duration: clip.duration,
+            sourceOffset: effective.sourceOffset,
+            channels: effective.channels,
+          });
+        }
+        if (clips.length > 0) tracks.push({ trackId: track.id, clips });
+      }
+      const detected = analyzeFindClippingTracks(tracks, activeSelection, project.sampleRate, settings);
+      if (detected.length === 0) {
+        toast.info('当前选区没有符合阈值的削波');
+        setFindClippingDialogOpen(false);
+        return;
+      }
+      const created: IAnalysisLabel[] = detected.map((label) => ({
+        ...label,
+        id: generateId(),
+        kind: 'clipping',
+      }));
+      const updated: IProject = {
+        ...project,
+        analysisLabels: [...(project.analysisLabels ?? []), ...created],
+        updatedAt: Date.now(),
+      };
+      await commitClipEdit(updated, `Find Clipping 查找削波（${created.length} 个标签）`);
+      toast.success(`已创建 ${created.length} 个 Clipping 标签`);
+      setFindClippingDialogOpen(false);
+    } finally {
+      setIsFindingClipping(false);
+    }
+  }
+
+  function handleAnalysisLabelSelect(label: IAnalysisLabel): void {
+    const nextSelection = label.end > label.start ? { start: label.start, end: label.end } : null;
+    setSelectedTrackId(label.trackId);
+    setSelection(nextSelection);
+    setSpectralSelection(null);
+    setProject((current) => current ? { ...current, selection: nextSelection, spectralSelection: null } : current);
+    handleCursorChange(label.start);
   }
 
   async function collectEffectTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
@@ -5798,6 +5864,12 @@ export default function AudioEditorPage() {
               >
                 Contrast… 对比度分析…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setFindClippingDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
+              >
+                Find Clipping… 查找削波…
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button
@@ -6561,6 +6633,12 @@ export default function AudioEditorPage() {
                   }}
                 />
               ))}
+              {(project.analysisLabels?.length ?? 0) > 0 && (
+                <div className="flex h-10 shrink-0 flex-col justify-center border-b border-[#434a50] bg-[#20262b] px-3 text-[#d8c49a]">
+                  <span className="text-xs font-medium">Clipping</span>
+                  <span className="text-[10px] text-[#aab0b6]">{project.analysisLabels!.length} 个标签</span>
+                </div>
+              )}
             </div>
           </div>
           )}
@@ -6712,6 +6790,14 @@ export default function AudioEditorPage() {
                 onSnapTime={resolveTimelineSnap}
               />
             ))}
+
+            <ClippingLabelTimeline
+              labels={project.analysisLabels ?? []}
+              tracks={project.tracks}
+              pxPerSec={pxPerSec}
+              totalWidth={totalWidth}
+              onSelect={handleAnalysisLabelSelect}
+            />
 
             {/* Bottom padding for transport bar visibility */}
             <div className="h-20" />
@@ -7059,6 +7145,16 @@ export default function AudioEditorPage() {
           onOpenChange={setContrastDialogOpen}
           projectName={project.name}
           onMeasure={measureContrastAudio}
+        />
+
+        <FindClippingDialog
+          open={findClippingDialogOpen}
+          onOpenChange={setFindClippingDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          isApplying={isFindingClipping}
+          onApply={handleFindClipping}
         />
 
         <RepeatSelectionDialog

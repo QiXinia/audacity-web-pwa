@@ -13,6 +13,7 @@ export interface ProjectRecord extends IProjectSummary {
   spectralSelectionData?: string | null; // JSON serialized independent frequency selection
   loopRegionData?: string | null; // JSON serialized independent loop region
   loopEnabled?: boolean;
+  analysisLabelsData?: string | null; // JSON serialized analysis labels
 }
 
 export interface AudioBufferRecord {

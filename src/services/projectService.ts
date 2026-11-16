@@ -16,6 +16,7 @@ import {
   type FrequencySelection,
 } from '@/lib/spectralSelection';
 import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect } from '@/types/project';
+import { deserializeAnalysisLabels, serializeAnalysisLabels } from '@/lib/analysisLabels';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
@@ -6166,6 +6167,7 @@ class ProjectService {
       spectralSelection: parseFrequencySelection(record.spectralSelectionData, record.sampleRate),
       loopRegion: deserializeSelection(record.loopRegionData ?? null),
       loopEnabled: record.loopEnabled ?? false,
+      analysisLabels: deserializeAnalysisLabels(record.analysisLabelsData),
       viewState: record.viewStateData ? JSON.parse(record.viewStateData) : {
         horizontalZoom: 50,
         verticalZoom: 1,
@@ -6207,6 +6209,7 @@ class ProjectService {
       ),
       loopRegionData: serializeSelection(project.loopRegion ?? null),
       loopEnabled: project.loopEnabled ?? false,
+      analysisLabelsData: serializeAnalysisLabels(project.analysisLabels),
       thumbnail: undefined,
       deletedAt: undefined,
     };

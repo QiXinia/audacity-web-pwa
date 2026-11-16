@@ -66,6 +66,16 @@ export interface IViewState {
   snapMode?: SnapMode;
 }
 
+export interface IAnalysisLabel {
+  id: string;
+  kind: 'clipping';
+  trackId: string;
+  channelIndex: number;
+  start: number;
+  end: number;
+  text: string;
+}
+
 export interface IProject {
   id: string;
   name: string;
@@ -75,6 +85,8 @@ export interface IProject {
   tracks: ITrack[];
   cursorPosition: number;
   selection: { start: number; end: number } | null;
+  /** Persistent Audacity-style analysis labels; legacy projects omit this field. */
+  analysisLabels?: IAnalysisLabel[];
   /** Independent linear frequency range; legacy projects omit this field. */
   spectralSelection?: FrequencySelection | null;
   /** Independent Audacity 4-style loop region; legacy projects omit both fields. */
