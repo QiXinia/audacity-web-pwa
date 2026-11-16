@@ -191,6 +191,11 @@ import {
   type FindClippingTrack,
 } from '@/lib/findClipping';
 import {
+  analyzeLabelSoundsTracks,
+  type LabelSoundsSettings,
+  type LabelSoundsTrack,
+} from '@/lib/labelSounds';
+import {
   processAdjustableFadeChannels,
   type AdjustableFadeSettings,
 } from '@/lib/adjustableFadeEffect';
@@ -362,6 +367,7 @@ import SpectralSelectionBar from './sections/SpectralSelectionBar';
 import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
 import FindClippingDialog from './sections/FindClippingDialog';
+import LabelSoundsDialog from './sections/LabelSoundsDialog';
 import LabelEditorDialog from './sections/LabelEditorDialog';
 import { ClippingLabelTimeline } from './sections/ClippingLabelTimeline';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
@@ -484,6 +490,8 @@ export default function AudioEditorPage() {
   const [contrastDialogOpen, setContrastDialogOpen] = useState(false);
   const [findClippingDialogOpen, setFindClippingDialogOpen] = useState(false);
   const [isFindingClipping, setIsFindingClipping] = useState(false);
+  const [labelSoundsDialogOpen, setLabelSoundsDialogOpen] = useState(false);
+  const [isLabelingSounds, setIsLabelingSounds] = useState(false);
   const [labelEditorDialogOpen, setLabelEditorDialogOpen] = useState(false);
   const [isApplyingLabels, setIsApplyingLabels] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
@@ -2339,6 +2347,54 @@ export default function AudioEditorPage() {
       setFindClippingDialogOpen(false);
     } finally {
       setIsFindingClipping(false);
+    }
+  }
+
+  async function handleLabelSounds(settings: LabelSoundsSettings): Promise<void> {
+    if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要分析的音频');
+    setIsLabelingSounds(true);
+    try {
+      const activeSelection = quantizedGeneratorSelection;
+      const trackIds = new Set(resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips));
+      const tracks: LabelSoundsTrack[] = [];
+      for (const track of project.tracks) {
+        if (!trackIds.has(track.id)) continue;
+        const clips: LabelSoundsTrack['clips'][number][] = [];
+        for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+          if (activeSelection.end <= clip.startTime || activeSelection.start >= clip.startTime + clip.duration) continue;
+          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!effective) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
+          clips.push({
+            clipId: clip.id,
+            startTime: clip.startTime,
+            duration: clip.duration,
+            sourceOffset: effective.sourceOffset,
+            channels: effective.channels,
+          });
+        }
+        if (clips.length > 0) tracks.push({ trackId: track.id, clips });
+      }
+      const detected = analyzeLabelSoundsTracks(tracks, activeSelection, project.sampleRate, settings);
+      if (detected.length === 0) {
+        toast.info('No sounds found. Try lowering Threshold level (dB).');
+        setLabelSoundsDialogOpen(false);
+        return;
+      }
+      const created: IAnalysisLabel[] = detected.map((label) => ({
+        ...label,
+        id: generateId(),
+        kind: 'manual',
+      }));
+      const updated: IProject = {
+        ...project,
+        analysisLabels: [...(project.analysisLabels ?? []), ...created],
+        updatedAt: Date.now(),
+      };
+      await commitClipEdit(updated, `Label sounds 标记声音（${created.length} 个标签）`);
+      toast.success(`已创建 ${created.length} 个声音标签`);
+      setLabelSoundsDialogOpen(false);
+    } finally {
+      setIsLabelingSounds(false);
     }
   }
 
@@ -5892,6 +5948,12 @@ export default function AudioEditorPage() {
               >
                 Find Clipping… 查找削波…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setLabelSoundsDialogOpen(true)}
+                disabled={!quantizedGeneratorSelection || playbackState === 'playing' || recordingState === 'recording'}
+              >
+                Label sounds… 标记声音…
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button
@@ -7186,6 +7248,16 @@ export default function AudioEditorPage() {
           sampleRate={project.sampleRate}
           isApplying={isFindingClipping}
           onApply={handleFindClipping}
+        />
+
+        <LabelSoundsDialog
+          open={labelSoundsDialogOpen}
+          onOpenChange={setLabelSoundsDialogOpen}
+          selectionStart={quantizedGeneratorSelection?.start ?? 0}
+          selectionEnd={quantizedGeneratorSelection?.end ?? 0}
+          sampleRate={project.sampleRate}
+          isApplying={isLabelingSounds}
+          onApply={handleLabelSounds}
         />
 
         <LabelEditorDialog
