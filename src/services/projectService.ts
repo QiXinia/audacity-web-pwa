@@ -5834,6 +5834,23 @@ class ProjectService {
     return changedClips;
   }
 
+  /**
+   * Audacity Remove DC offset is non-interactive: analyse each complete track
+   * selection per channel, then add the float-negated mean without peak gain.
+   */
+  async removeDcOffsetSelectionOnTracks(
+    projectId: string,
+    selection: GeneratorSelection,
+    targets: readonly NormalizeTrackAudio[],
+  ): Promise<number> {
+    return this.normalizeSelectionOnTracks(projectId, selection, {
+      removeDc: true,
+      normalizePeak: false,
+      peakDb: -1,
+      stereoIndependent: true,
+    }, targets);
+  }
+
   /** Apply Audacity Normalize after one whole-track selection analysis. */
   async normalizeSelectionOnTracks(
     projectId: string,

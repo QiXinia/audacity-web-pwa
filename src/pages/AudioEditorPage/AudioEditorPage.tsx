@@ -543,6 +543,7 @@ export default function AudioEditorPage() {
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
+  const [isApplyingRemoveDcOffset, setIsApplyingRemoveDcOffset] = useState(false);
   const [isApplyingReverse, setIsApplyingReverse] = useState(false);
   const [wahWahDialogOpen, setWahWahDialogOpen] = useState(false);
   const [isApplyingWahWah, setIsApplyingWahWah] = useState(false);
@@ -5467,6 +5468,45 @@ export default function AudioEditorPage() {
     }
   }
 
+  async function handleApplyRemoveDcOffset() {
+    if (!project || !quantizedGeneratorSelection || isApplyingRemoveDcOffset) return;
+    const activeSelection = quantizedGeneratorSelection;
+    setIsApplyingRemoveDcOffset(true);
+    try {
+      const targets = await collectEffectTargets(activeSelection);
+      if (targets.length === 0) {
+        toast.info('选区内没有可处理的音频');
+        return;
+      }
+      const before = {
+        ...structuredClone(project),
+        selection: activeSelection,
+      };
+      const changed = await projectService.removeDcOffsetSelectionOnTracks(
+        project.id,
+        activeSelection,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('Remove DC offset 后无法重新读取工程');
+      setProject(updated);
+      setSelection(updated.selection);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Remove DC offset 去除直流偏移',
+        execute: () => updated,
+        undo: () => before,
+      }, before);
+      updateHistoryState();
+      toast.success(`已对 ${changed} 个片段应用 Remove DC offset`);
+    } catch (error) {
+      logger.error('应用 Remove DC offset 失败:', String(error));
+      toast.error(error instanceof Error ? `应用 Remove DC offset 失败：${error.message}` : '应用 Remove DC offset 失败');
+    } finally {
+      setIsApplyingRemoveDcOffset(false);
+    }
+  }
+
   async function handleLoudnessPreview(settings: LoudnessSettings): Promise<Float32Array[]> {
     if (!project || !quantizedGeneratorSelection) throw new Error('请先选择要试听的音频');
     const activeSelection = quantizedGeneratorSelection;
@@ -6965,6 +7005,14 @@ export default function AudioEditorPage() {
                 disabled={!quantizedGeneratorSelection}
               >
                 标准化…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="effect-remove-dc-offset"
+                onClick={() => void handleApplyRemoveDcOffset()}
+                disabled={!quantizedGeneratorSelection || isApplyingRemoveDcOffset}
+                title="按 Audacity Remove DC offset 逐声道减去选区均值，将音频垂直居中到 0.0"
+              >
+                Remove DC offset 去除直流偏移
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setLoudnessDialogOpen(true)}

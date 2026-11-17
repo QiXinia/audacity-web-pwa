@@ -1,0 +1,189 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { IProject } from '@/types/project';
+import type { EchoTrackAudio } from '@/services/projectService';
+
+const mocks = vi.hoisted(() => ({
+  push: vi.fn(),
+  success: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+  saveProject: vi.fn(),
+  removeDc: vi.fn(),
+  loadChannels: vi.fn(),
+}));
+let mockProject: IProject;
+
+function makeProject(): IProject {
+  const clip = (id: string) => ({
+    id,
+    audioBufferId: `buffer-${id}`,
+    startTime: 0,
+    offset: 0,
+    duration: 0.01,
+    originalDuration: 0.01,
+    stretchRatio: 1,
+    gain: 0,
+    fadeIn: 0,
+    fadeOut: 0,
+    name: `clip-${id}`,
+  });
+  const track = (id: string) => ({
+    id,
+    name: `Track ${id}`,
+    type: 'audio' as const,
+    gain: 0,
+    pan: 0,
+    muted: false,
+    solo: false,
+    armed: false,
+    color: '',
+    clips: [clip(id)],
+    effects: [],
+  });
+  return {
+    id: 'remove-dc-project',
+    name: 'Remove DC integration',
+    tracks: [track('one'), track('two')],
+    cursorPosition: 0,
+    selection: { start: 0.0025, end: 0.0075 },
+    viewState: { horizontalZoom: 100, verticalZoom: 1, scrollX: 0, viewMode: 'waveform' },
+    updatedAt: 100,
+    createdAt: 50,
+    sampleRate: 1000,
+    timeSignature: { numerator: 4, denominator: 4 },
+    tempo: 120,
+  };
+}
+
+vi.mock('@/services/projectService', () => ({
+  projectService: {
+    getProject: vi.fn(async () => mockProject),
+    openProject: vi.fn(async () => mockProject),
+    saveProject: mocks.saveProject,
+    loadAudioChannels: mocks.loadChannels,
+    loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
+    removeDcOffsetSelectionOnTracks: mocks.removeDc,
+  },
+}));
+vi.mock('@/services/historyService', () => ({
+  historyManager: {
+    push: mocks.push,
+    pushCommand: mocks.push,
+    canUndo: vi.fn(() => false),
+    canRedo: vi.fn(() => false),
+    loadForProject: vi.fn(async () => 0),
+    flush: vi.fn(async () => undefined),
+    undo: vi.fn(),
+    redo: vi.fn(),
+    getUndoStack: vi.fn(() => []),
+    getRedoStack: vi.fn(() => []),
+    getHistoryState: vi.fn(() => ({ canUndo: false, canRedo: false, undoLabel: '', redoLabel: '' })),
+    clearHistory: vi.fn(),
+    flushPersistence: vi.fn(),
+  },
+}));
+vi.mock('@/db/audioDb', () => ({
+  audioDb: {
+    audioBuffers: { get: vi.fn(), put: vi.fn(), delete: vi.fn() },
+    clipboard: {},
+    historySnapshots: {},
+  },
+  serializeTracks: (tracks: unknown) => JSON.stringify(tracks),
+  deserializeTracks: (data: string) => JSON.parse(data),
+  serializeSelection: (selection: unknown) => selection ? JSON.stringify(selection) : null,
+  deserializeSelection: (data: string | null) => data ? JSON.parse(data) : null,
+}));
+vi.mock('@/engine/audioEngine', () => ({
+  audioEngine: {
+    subscribe: vi.fn(() => () => {}),
+    getPlaybackState: vi.fn(() => 'stopped'),
+    getRecordingState: vi.fn(() => 'inactive'),
+    getCurrentTime: vi.fn(() => 0),
+    playTracks: vi.fn(), stopPlayback: vi.fn(), pausePlayback: vi.fn(), resumePlayback: vi.fn(),
+    seek: vi.fn(), startRecording: vi.fn(), stopRecording: vi.fn(), cancelRecording: vi.fn(),
+    initialize: vi.fn(), getLevel: vi.fn(() => 0), cacheBuffer: vi.fn(), evictBuffer: vi.fn(),
+    setCursorChangeCallback: vi.fn(), setStateChangeCallback: vi.fn(), setPlaybackCompleteCallback: vi.fn(), setTracksEndCallback: vi.fn(),
+    processClipChannels: vi.fn((_clip: unknown, source: Float32Array[]) => source.map((channel) => new Float32Array(channel))),
+  },
+}));
+vi.mock('@/wasm/processor', () => ({ isWasmAvailable: vi.fn(() => false), wasmProcessor: {} }));
+vi.mock('react-router-dom', () => ({
+  useParams: () => ({ projectId: 'remove-dc-project' }),
+  useNavigate: () => vi.fn(),
+}));
+vi.mock('sonner', () => ({ toast: { success: mocks.success, error: mocks.error, info: mocks.info } }));
+vi.mock('@/utils/logger', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), log: vi.fn() } }));
+
+import AudioEditorPage from './AudioEditorPage';
+
+async function openEffects() {
+  fireEvent.pointerDown(screen.getByRole('button', { name: '效果' }));
+  return screen.findByText('Remove DC offset 去除直流偏移');
+}
+
+describe('AudioEditorPage Remove DC offset effect', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockProject = makeProject();
+    mocks.loadChannels.mockImplementation(async (id: string) => {
+      if (id === 'buffer-one') {
+        return [
+          Float32Array.from({ length: 10 }, (_, index) => index / 10),
+          new Float32Array(10).fill(0.2),
+        ];
+      }
+      return [new Float32Array(10).fill(0.4)];
+    });
+    mocks.removeDc.mockImplementation(async (
+      _id: string,
+      _selection: { start: number; end: number },
+      targets: EchoTrackAudio[],
+    ) => {
+      mockProject = structuredClone(mockProject);
+      mockProject.tracks.forEach((track) => { track.clips[0].audioBufferId = `remove-dc-${track.id}`; });
+      return targets.reduce((total, target) => total + target.clips.length, 0);
+    });
+  });
+
+  it('offers the official non-interactive command and applies both tracks with one undo', async () => {
+    render(<AudioEditorPage />);
+    expect(await screen.findByText('Remove DC integration')).toBeInTheDocument();
+    await openEffects();
+    expect(screen.getByText('标准化…')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Remove DC offset 去除直流偏移'));
+
+    await waitFor(() => expect(mocks.success).toHaveBeenCalledWith('已对 2 个片段应用 Remove DC offset'));
+    expect(mocks.removeDc).toHaveBeenCalledTimes(1);
+    const [, selection, targets] = mocks.removeDc.mock.calls[0];
+    expect(selection.start).toBeCloseTo(0.002);
+    expect(selection.end).toBeCloseTo(0.008);
+    expect(targets).toHaveLength(2);
+    expect(targets[0].clips[0].sampleData).toHaveLength(2);
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push.mock.calls[0][0].label).toBe('Remove DC offset 去除直流偏移');
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+    const restored = mocks.push.mock.calls[0][0].undo() as IProject;
+    expect(restored.tracks[0].clips[0].audioBufferId).toBe('buffer-one');
+  });
+
+  it('records no history when the atomic service fails', async () => {
+    mocks.removeDc.mockRejectedValueOnce(new Error('injected DC failure'));
+    render(<AudioEditorPage />);
+    expect(await screen.findByText('Remove DC integration')).toBeInTheDocument();
+    await openEffects();
+    fireEvent.click(screen.getByText('Remove DC offset 去除直流偏移'));
+
+    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith('应用 Remove DC offset 失败：injected DC failure'));
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+  });
+
+  it('disables the command when there is no real selection', async () => {
+    mockProject.selection = null;
+    render(<AudioEditorPage />);
+    expect(await screen.findByText('Remove DC integration')).toBeInTheDocument();
+    await openEffects();
+    expect(screen.getByText('Remove DC offset 去除直流偏移')).toHaveAttribute('aria-disabled', 'true');
+  });
+});
