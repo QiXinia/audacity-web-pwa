@@ -9,7 +9,7 @@ import {
   deserializeSelection,
   type ProjectRecord,
 } from '@/db/audioDb';
-import { generateId, getTrackColor } from '@/lib/audioUtils';
+import { generateId, getTrackColor, resampleBuffer } from '@/lib/audioUtils';
 import {
   normalizeFrequencySelection,
   parseFrequencySelection,
@@ -257,6 +257,12 @@ import {
   renderMixAndRenderTracks,
   type MixAndRenderTrackInput,
 } from '@/lib/mixAndRenderEffect';
+import {
+  getResampledLength,
+  MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES,
+  resampleChannels,
+  validateResampleRate,
+} from '@/lib/resampleEffect';
 
 export type MixAndRenderClipAudio = EchoClipAudio;
 export type MixAndRenderTrackAudio = EchoTrackAudio;
@@ -268,6 +274,13 @@ export interface MixAndRenderResult {
   channelCount: number;
   startTime: number;
   endTime: number;
+}
+
+export interface ResampleTracksResult {
+  trackCount: number;
+  clipCount: number;
+  outputSampleCount: number;
+  sampleRate: number;
 }
 
 type EffectType = IEffect['type'];
@@ -2730,6 +2743,95 @@ class ProjectService {
       channelCount: rendered.channels.length,
       startTime: rendered.startTime,
       endTime: rendered.startTime + rendered.duration,
+    };
+  }
+
+  /**
+   * Audacity Tracks -> Resample: convert every complete source clip on each
+   * selected track. Timeline positions, trim offsets, stretch, gain, fades and
+   * effects stay untouched; only new PCM buffers and their rates are committed.
+   */
+  async resampleTracksOnTracks(
+    projectId: string,
+    trackIds: readonly string[],
+    newRate: number,
+  ): Promise<ResampleTracksResult> {
+    validateResampleRate(newRate);
+    if (trackIds.length === 0) throw new Error('没有可重采样的选中轨道');
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+
+    const selectedIds = new Set<string>();
+    for (const trackId of trackIds) {
+      if (selectedIds.has(trackId)) throw new Error(`轨道 ${trackId} 被重复指定`);
+      selectedIds.add(trackId);
+    }
+    const selectedTracks = project.tracks.filter((track) => selectedIds.has(track.id));
+    if (selectedTracks.length !== trackIds.length) throw new Error('目标轨道不可用');
+
+    const planned: Array<{
+      track: ITrack;
+      clip: IClip;
+      channels: Float32Array[];
+      fromRate: number;
+    }> = [];
+    let outputSampleCount = 0;
+    for (const track of selectedTracks) {
+      for (const clip of track.clips) {
+        const record = await audioDb.audioBuffers.get(clip.audioBufferId);
+        if (!record) throw new Error(`无法读取片段“${clip.name ?? clip.id}”的原始音频`);
+        validateResampleRate(record.sampleRate);
+        const channels = record.channelData.map((data) => new Float32Array(data));
+        const inputLength = channels[0]?.length ?? 0;
+        const outputLength = getResampledLength(inputLength, record.sampleRate, newRate);
+        const clipOutput = outputLength * channels.length;
+        outputSampleCount += clipOutput;
+        if (
+          !Number.isSafeInteger(clipOutput)
+          || !Number.isSafeInteger(outputSampleCount)
+          || outputSampleCount > MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES
+        ) {
+          throw new RangeError('Resample 总输出超过浏览器内存上限，请降低采样率或减少轨道');
+        }
+        planned.push({ track, clip, channels, fromRate: record.sampleRate });
+      }
+    }
+
+    if (planned.length === 0) {
+      return { trackCount: selectedTracks.length, clipCount: 0, outputSampleCount: 0, sampleRate: newRate };
+    }
+
+    // All records and output sizes are validated before PCM conversion or I/O.
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, Map<string, IClip>>();
+    for (const { track, clip, channels, fromRate } of planned) {
+      const sampleData = resampleChannels(channels, fromRate, newRate);
+      const bufferId = generateId();
+      pendingBuffers.push({ id: bufferId, sampleRate: newRate, sampleData });
+      const trackReplacements = replacements.get(track.id) ?? new Map<string, IClip>();
+      trackReplacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+      replacements.set(track.id, trackReplacements);
+    }
+
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => {
+        const trackReplacements = replacements.get(track.id);
+        if (!trackReplacements) return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => trackReplacements.get(clip.id) ?? clip),
+        };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return {
+      trackCount: selectedTracks.length,
+      clipCount: planned.length,
+      outputSampleCount,
+      sampleRate: newRate,
     };
   }
 
@@ -6209,7 +6311,7 @@ class ProjectService {
           clips.push(clip);
           continue;
         }
-        const channelData = await this.loadAudioChannels(clip.audioBufferId);
+        const channelData = await this.loadAudioChannels(clip.audioBufferId, project.sampleRate);
         if (!channelData) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
         const silenced = silenceClipSelection(channelData, clip, selection, project.sampleRate);
         if (!silenced) {
@@ -6262,7 +6364,7 @@ class ProjectService {
         || selection.start >= clip.startTime + clip.duration
       ) continue;
 
-      const channelData = await this.loadAudioChannels(clip.audioBufferId);
+      const channelData = await this.loadAudioChannels(clip.audioBufferId, project.sampleRate);
       if (!channelData) throw new Error(`片段“${clip.name ?? clip.id}”的音频不可用`);
       const silenced = silenceClipSelection(channelData, clip, selection, project.sampleRate);
       if (!silenced) continue;
@@ -6292,21 +6394,31 @@ class ProjectService {
     return changedClips;
   }
 
-  // Audio buffer loading
-  async loadAudioChannels(bufferId: string): Promise<Float32Array[] | null> {
+  // Audio buffer loading. Cached/Stored PCM keeps its source rate; timeline
+  // consumers explicitly request the project rate so speed and offsets stay correct.
+  async loadAudioChannels(bufferId: string, targetSampleRate?: number): Promise<Float32Array[] | null> {
+    if (
+      targetSampleRate !== undefined
+      && (!Number.isFinite(targetSampleRate) || targetSampleRate <= 0)
+    ) {
+      throw new RangeError('目标采样率必须是有限的正数');
+    }
     const cached = audioEngine.getCachedBuffer(bufferId);
-    if (cached && cached.length > 0) return cached;
+    if (targetSampleRate === undefined && cached && cached.length > 0) return cached;
 
     const record = await audioDb.audioBuffers.get(bufferId);
     if (!record || record.channelData.length === 0) return null;
 
-    const channels = record.channelData.map((buffer) => new Float32Array(buffer as ArrayBuffer));
-    audioEngine.cacheBuffer(bufferId, channels, record.sampleRate);
-    return channels;
+    const channels = cached && cached.length > 0
+      ? cached
+      : record.channelData.map((buffer) => new Float32Array(buffer as ArrayBuffer));
+    if (!cached || cached.length === 0) audioEngine.cacheBuffer(bufferId, channels, record.sampleRate);
+    if (targetSampleRate === undefined || targetSampleRate === record.sampleRate) return channels;
+    return channels.map((channel) => resampleBuffer(channel, record.sampleRate, targetSampleRate));
   }
 
-  async loadAudioBuffer(bufferId: string): Promise<Float32Array | null> {
-    const channels = await this.loadAudioChannels(bufferId);
+  async loadAudioBuffer(bufferId: string, targetSampleRate?: number): Promise<Float32Array | null> {
+    const channels = await this.loadAudioChannels(bufferId, targetSampleRate);
     return channels?.[0] ?? null;
   }
 

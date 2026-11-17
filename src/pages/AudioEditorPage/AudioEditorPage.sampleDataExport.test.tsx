@@ -138,7 +138,7 @@ describe('AudioEditorPage Sample Data Export integration', () => {
     expect(text.split('\n')).toHaveLength(101);
     expect(text.startsWith('-6.02060\n')).toBe(true);
     expect(await screen.findByRole('status')).toHaveTextContent('100 samples');
-    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-a');
+    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-a', 1000);
     expect(projectService.loadAudioChannels).not.toHaveBeenCalledWith('buffer-b');
     expect(projectService.saveProject).not.toHaveBeenCalled();
     expect(historyManager.push).not.toHaveBeenCalled();

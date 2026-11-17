@@ -115,7 +115,7 @@ describe('AudioEditorPage Contrast Analyzer integration', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Measure foreground selection' }));
     await waitFor(() => expect(screen.getByLabelText('Foreground volume')).toHaveTextContent('-10.00 dB'));
-    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-a');
+    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-a', 8000);
     expect(projectService.loadAudioChannels).not.toHaveBeenCalledWith('buffer-b');
 
     mocks.gain = 0.02;

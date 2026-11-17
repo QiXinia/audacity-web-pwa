@@ -135,8 +135,8 @@ describe('AudioEditorPage Plot Spectrum integration', () => {
     fireEvent.click(await openAnalysisMenu());
 
     expect(await screen.findByRole('img', { name: /Spectrum 频谱分析图，1 个分析窗/ })).toBeInTheDocument();
-    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-a');
-    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-b');
+    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-a', 8000);
+    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-b', 8000);
     expect(mocks.processClip).toHaveBeenCalledTimes(2);
     expect(mocks.analyze).toHaveBeenCalled();
     const [samples, options] = mocks.analyze.mock.calls[0] as [Float32Array, PlotSpectrumOptions];

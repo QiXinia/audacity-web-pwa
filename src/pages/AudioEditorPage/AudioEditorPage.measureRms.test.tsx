@@ -110,7 +110,7 @@ describe('AudioEditorPage Measure RMS integration', () => {
 
     expect(await screen.findByRole('dialog', { name: 'Measure RMS' })).toBeInTheDocument();
     expect(await screen.findByLabelText('Track A Mono RMS')).toHaveTextContent('-6.0206 dB');
-    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-a');
+    expect(projectService.loadAudioChannels).toHaveBeenCalledWith('buffer-a', 1000);
     expect(projectService.loadAudioChannels).not.toHaveBeenCalledWith('buffer-b');
     expect(projectService.saveProject).not.toHaveBeenCalled();
     expect(historyManager.push).not.toHaveBeenCalled();

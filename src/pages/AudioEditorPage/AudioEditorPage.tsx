@@ -391,6 +391,7 @@ import RissetDrumDialog from './sections/RissetDrumDialog';
 import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
+import ResampleDialog from './sections/ResampleDialog';
 import EchoEffectDialog from './sections/EchoEffectDialog';
 import DelayEffectDialog from './sections/DelayEffectDialog';
 import ClipFixDialog from './sections/ClipFixDialog';
@@ -470,6 +471,8 @@ export default function AudioEditorPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isMixingAndRendering, setIsMixingAndRendering] = useState(false);
+  const [resampleDialogOpen, setResampleDialogOpen] = useState(false);
+  const [isResampling, setIsResampling] = useState(false);
   const [exportFormat, setExportFormat] = useState('wav');
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [effectsPanelTrackId, setEffectsPanelTrackId] = useState<string | null>(null);
@@ -1090,6 +1093,48 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? error.message : '混音渲染失败');
     } finally {
       setIsMixingAndRendering(false);
+    }
+  }
+
+  async function resampleSelectedTracks(newRate: number) {
+    if (!project || isResampling) return;
+    if (playbackState === 'playing' || recordingState === 'recording') {
+      toast.warning('请先停止播放或录音');
+      return;
+    }
+    if (mixAndRenderTrackIds.length === 0) {
+      toast.warning('请先选择要重采样的轨道');
+      return;
+    }
+
+    const before = project;
+    setIsResampling(true);
+    try {
+      const result = await projectService.resampleTracksOnTracks(
+        project.id,
+        mixAndRenderTrackIds,
+        newRate,
+      );
+      if (result.clipCount === 0) {
+        toast.warning('选中轨道没有可重采样的音频片段');
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('重采样结果不可用');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Resample Track',
+        execute: () => updated,
+        undo: () => before,
+      });
+      setResampleDialogOpen(false);
+      toast.success(`已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段重采样为 ${newRate} Hz`);
+    } catch (error) {
+      logger.error('Resample failed', error);
+      toast.error(error instanceof Error ? error.message : '重采样失败');
+    } finally {
+      setIsResampling(false);
     }
   }
 
@@ -4979,7 +5024,7 @@ export default function AudioEditorPage() {
     channels: Float32Array[];
     sourceOffset: number;
   } | null> {
-    const source = await projectService.loadAudioChannels(clip.audioBufferId);
+    const source = await projectService.loadAudioChannels(clip.audioBufferId, sampleRate);
     if (!source || source.length === 0) return null;
     return {
       channels: audioEngine.processClipChannels(clip, source, sampleRate),
@@ -6448,6 +6493,13 @@ export default function AudioEditorPage() {
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+              <DropdownMenuItem
+                disabled={mixAndRenderTrackIds.length === 0 || isResampling
+                  || playbackState === 'playing' || recordingState === 'recording'}
+                onClick={() => setResampleDialogOpen(true)}
+              >
+                Resample… 重采样…
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={convertStereoTracksToMono}>Stereo To Mono 立体声转单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={splitStereoTracksToMono}>Split Stereo To Mono 立体声拆分为单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={handleRecord}>
@@ -7909,6 +7961,15 @@ export default function AudioEditorPage() {
           onRepeat={handleRepeatSelection}
         />
 
+        <ResampleDialog
+          open={resampleDialogOpen}
+          onOpenChange={setResampleDialogOpen}
+          projectSampleRate={project.sampleRate}
+          selectedTrackCount={mixAndRenderTrackIds.length}
+          isResampling={isResampling}
+          onResample={resampleSelectedTracks}
+        />
+
         <EchoEffectDialog
           open={echoDialogOpen}
           onOpenChange={setEchoDialogOpen}
@@ -8881,7 +8942,7 @@ function ClipItem({
   useEffect(() => {
     let mounted = true;
     async function load() {
-      const data = await projectService.loadAudioBuffer(clip.audioBufferId);
+      const data = await projectService.loadAudioBuffer(clip.audioBufferId, sampleRate);
       if (mounted && data) {
         setAudioData(data);
       }
@@ -8890,7 +8951,7 @@ function ClipItem({
     return () => {
       mounted = false;
     };
-  }, [clip.audioBufferId]);
+  }, [clip.audioBufferId, sampleRate]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
