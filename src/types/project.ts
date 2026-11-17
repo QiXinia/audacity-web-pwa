@@ -108,4 +108,6 @@ export interface IPreferences {
   autoBackup: boolean;
   maxRecordingDuration: number;
   useWasm: boolean;
+  /** Audacity /GUI/MoveSelectionWithTracks; defaults to false. */
+  moveSelectionWithTracks: boolean;
 }

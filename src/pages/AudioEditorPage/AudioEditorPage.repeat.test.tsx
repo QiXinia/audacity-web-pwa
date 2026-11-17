@@ -20,7 +20,7 @@ vi.mock('motion/react', () => ({
 }));
 vi.mock('@/engine/audioEngine', () => ({
   audioEngine: {
-    setCursorChangeCallback: vi.fn(), setStateChangeCallback: vi.fn(),
+    setCursorChangeCallback: vi.fn(), setStateChangeCallback: vi.fn(), seek: vi.fn(),
     cacheBuffer: vi.fn(), evictBuffer: vi.fn(), play: vi.fn(), pause: vi.fn(), resume: vi.fn(), stop: vi.fn(),
     initialize: vi.fn().mockResolvedValue(undefined), loadClip: vi.fn(),
     processClipChannels: vi.fn((_clip: IClip, channels: Float32Array[]) => channels.map((channel) => new Float32Array(channel))),

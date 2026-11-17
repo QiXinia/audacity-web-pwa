@@ -107,4 +107,63 @@ describe('Audacity DoAlign track alignment', () => {
     expect(aligned.analysisLabels![0]).toMatchObject({ start: 0.5, end: 0.75 });
     expect(aligned.analysisLabels![1]).toBe(project.analysisLabels![1]);
   });
+
+  it('moves selection and cursor with fixed-delta tracks only when the official preference is enabled', () => {
+    const tracks = [makeTrack('a', [[5, 2]]), makeTrack('b', [[1, 1]])];
+    const project = {
+      tracks,
+      cursorPosition: 6,
+      selection: { start: 6, end: 8 },
+    } as IProject;
+    const stationary = alignProjectTracks(project, ['a', 'b'], 'start-zero', project.selection);
+    expect(stationary.selection).toEqual({ start: 6, end: 8 });
+    expect(stationary.cursorPosition).toBe(6);
+
+    const moved = alignProjectTracks(
+      project,
+      ['a', 'b'],
+      'start-zero',
+      project.selection,
+      { moveSelectionWithTracks: true },
+    );
+    expect(starts(moved, 'a')).toEqual([4]);
+    expect(starts(moved, 'b')).toEqual([0]);
+    expect(moved.selection).toEqual({ start: 5, end: 7 });
+    expect(moved.cursorPosition).toBe(5);
+    expect(alignTracks(tracks, ['a', 'b'], 'start-zero', project.selection, true).label)
+      .toBe('Align/Move Start');
+  });
+
+  it('preserves official negative selection bounds and never moves selection for no-sync modes', () => {
+    const tracks = [makeTrack('a', [[5, 1]]), makeTrack('b', [[3, 4]])];
+    const project = {
+      tracks,
+      cursorPosition: 2,
+      selection: { start: 2, end: 9 },
+    } as IProject;
+    const moved = alignProjectTracks(
+      project,
+      ['a', 'b'],
+      'end-selection-start',
+      project.selection,
+      { moveSelectionWithTracks: true },
+    );
+    expect(moved.selection).toEqual({ start: -3, end: 4 });
+    expect(moved.cursorPosition).toBe(-3);
+    expect(alignTracks(tracks, ['a', 'b'], 'end-selection-start', project.selection, true).label)
+      .toBe('Align/Move End');
+
+    for (const mode of ['end-to-end', 'together'] as const) {
+      const aligned = alignProjectTracks(
+        project,
+        ['a', 'b'],
+        mode,
+        project.selection,
+        { moveSelectionWithTracks: true },
+      );
+      expect(aligned.selection).toEqual(project.selection);
+      expect(aligned.cursorPosition).toBe(project.cursorPosition);
+      expect(alignTracks(tracks, ['a', 'b'], mode, project.selection, true).selectionDelta).toBe(0);
+    }
+  });
 });

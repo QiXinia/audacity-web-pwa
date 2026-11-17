@@ -388,6 +388,7 @@ const DEFAULT_PREFS: IPreferences = {
   autoBackup: true,
   maxRecordingDuration: 600,
   useWasm: true,
+  moveSelectionWithTracks: false,
 };
 
 class ProjectService {
@@ -6592,7 +6593,7 @@ class ProjectService {
         ?? { numerator: 4, denominator: 4 },
       tempo: validateTempo(record.tempo) ?? 120,
       tracks: deserializeTracks(record.tracksData),
-      cursorPosition: 0,
+      cursorPosition: Number.isFinite(record.cursorPosition) ? record.cursorPosition : 0,
       selection: deserializeSelection(record.selectionData),
       spectralSelection: parseFrequencySelection(record.spectralSelectionData, record.sampleRate),
       loopRegion: deserializeSelection(record.loopRegionData ?? null),

@@ -55,6 +55,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuCheckboxItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   DropdownMenuLabel,
@@ -485,6 +486,9 @@ export default function AudioEditorPage() {
   const [isRemovingTracks, setIsRemovingTracks] = useState(false);
   const [isSortingTracks, setIsSortingTracks] = useState(false);
   const [isAligningTracks, setIsAligningTracks] = useState(false);
+  const [moveSelectionWithTracks, setMoveSelectionWithTracks] = useState(
+    () => projectService.getPreferences?.()?.moveSelectionWithTracks ?? false,
+  );
   const [exportFormat, setExportFormat] = useState('wav');
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [effectsPanelTrackId, setEffectsPanelTrackId] = useState<string | null>(null);
@@ -832,6 +836,8 @@ export default function AudioEditorPage() {
         setShowClipping(workspace.layout.showClipping);
         setScrollX(proj.viewState.scrollX);
         setSelection(proj.selection);
+        setCursorPosition(proj.cursorPosition);
+        audioEngine.seek(proj.cursorPosition);
         setSpectralSelection(normalizeFrequencySelection(proj.spectralSelection, proj.sampleRate));
         const restoredLoop = normalizeLoopRegion(proj.loopRegion);
         setLoopRegion(restoredLoop);
@@ -869,6 +875,7 @@ export default function AudioEditorPage() {
           snapEnabled,
           snapMode,
         },
+        cursorPosition,
         selection,
         spectralSelection,
         loopRegion,
@@ -1416,6 +1423,14 @@ export default function AudioEditorPage() {
     }
   }
 
+  function setMoveSelectionPreference(enabled: boolean): void {
+    setMoveSelectionWithTracks(enabled);
+    const preferences = projectService.getPreferences?.();
+    if (preferences) {
+      projectService.savePreferences?.({ ...preferences, moveSelectionWithTracks: enabled });
+    }
+  }
+
   async function alignSelectedTracks(mode: TrackAlignMode): Promise<void> {
     if (!project || isAligningTracks) return;
     if (playbackState !== 'stopped' || recordingState === 'recording') {
@@ -1432,16 +1447,26 @@ export default function AudioEditorPage() {
       return;
     }
 
-    const before = structuredClone(project);
+    const currentProject = { ...project, cursorPosition, selection };
+    const before = structuredClone(currentProject);
     const activeSelection = selection ?? { start: cursorPosition, end: cursorPosition };
-    const updated = alignProjectTracks(project, targetTrackIds, mode, activeSelection);
-    const label = getTrackAlignLabel(mode);
+    const updated = alignProjectTracks(
+      currentProject,
+      targetTrackIds,
+      mode,
+      activeSelection,
+      { moveSelectionWithTracks },
+    );
+    const label = getTrackAlignLabel(mode, moveSelectionWithTracks);
     setIsAligningTracks(true);
     try {
       await projectService.saveProject(updated);
       const persisted = await projectService.getProject(project.id);
       if (!persisted) throw new Error('轨道对齐后无法重新加载工程');
       setProject(persisted);
+      setSelection(persisted.selection);
+      setCursorPosition(persisted.cursorPosition);
+      if (persisted.cursorPosition !== cursorPosition) audioEngine.seek(persisted.cursorPosition);
       if (mode === 'end-to-end') {
         // Audacity's DoAlign calls ZoomFitHorizontally after Align End to End.
         // Use the persisted project so the fit includes the newly aligned clip end.
@@ -1452,7 +1477,7 @@ export default function AudioEditorPage() {
         label,
         execute: () => persisted,
         undo: () => before,
-      });
+      }, before);
       toast.success(`已对齐 ${targetTrackIds.length} 条选中轨道`);
     } catch (error) {
       logger.error('Align Tracks failed', error);
@@ -2420,6 +2445,8 @@ export default function AudioEditorPage() {
     ));
     setProject(restoredProject);
     setSelection(restoredProject.selection);
+    setCursorPosition(restoredProject.cursorPosition);
+    audioEngine.seek(restoredProject.cursorPosition);
     setSpectralSelection(normalizeFrequencySelection(
       restoredProject.spectralSelection,
       restoredProject.sampleRate,
@@ -6823,6 +6850,13 @@ export default function AudioEditorPage() {
                   <DropdownMenuItem disabled={isAligningTracks} onClick={() => void alignSelectedTracks('end-selection-end')}>
                     End to Selection End 终点到选区终点
                   </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuCheckboxItem
+                    checked={moveSelectionWithTracks}
+                    onCheckedChange={setMoveSelectionPreference}
+                  >
+                    Move Selection with Tracks 随轨道移动选区
+                  </DropdownMenuCheckboxItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSub>

@@ -38,6 +38,7 @@ vi.mock('@/engine/audioEngine', () => ({
   audioEngine: {
     setCursorChangeCallback: vi.fn(),
     setStateChangeCallback: vi.fn(),
+    seek: vi.fn(),
     getPlaybackLevels: vi.fn(() => ({ left: -Infinity, right: -Infinity })),
     getRecordingLevels: vi.fn(() => ({ left: -Infinity, right: -Infinity })),
     cacheBuffer: vi.fn(),

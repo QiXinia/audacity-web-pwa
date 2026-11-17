@@ -90,6 +90,21 @@ describe('Project loop persistence', () => {
   });
 });
 
+describe('Project cursor persistence', () => {
+  it('round-trips a moved cursor and falls back to zero for legacy or invalid records', () => {
+    const project = { ...makeProject(), cursorPosition: 5 };
+    const record = converter.projectToRecord(project);
+    expect(record.cursorPosition).toBe(5);
+    expect(converter.recordToProject(record).cursorPosition).toBe(5);
+    expect(converter.recordToProject(record).selection).toEqual({ start: 0.5, end: 1.5 });
+
+    const legacy = { ...record, cursorPosition: undefined } as unknown as ProjectRecord;
+    expect(converter.recordToProject(legacy).cursorPosition).toBe(0);
+    const invalid = { ...record, cursorPosition: Number.NaN };
+    expect(converter.recordToProject(invalid).cursorPosition).toBe(0);
+  });
+});
+
 describe('Project spectral frequency selection persistence', () => {
   it('round-trips independent time and frequency boundaries', () => {
     const record = converter.projectToRecord(makeProject());

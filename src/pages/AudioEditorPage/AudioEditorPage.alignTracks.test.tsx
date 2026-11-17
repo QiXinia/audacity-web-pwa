@@ -8,9 +8,12 @@ const mocks = vi.hoisted(() => ({
   warning: vi.fn(),
   error: vi.fn(),
   saveProject: vi.fn(),
+  getPreferences: vi.fn(() => ({ moveSelectionWithTracks: false })),
+  savePreferences: vi.fn(),
   loadChannels: vi.fn(),
   setStateChangeCallback: vi.fn(),
   setCursorChangeCallback: vi.fn(),
+  seek: vi.fn(),
 }));
 let mockProject: IProject;
 
@@ -67,6 +70,8 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    getPreferences: mocks.getPreferences,
+    savePreferences: mocks.savePreferences,
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
   },
@@ -100,7 +105,7 @@ vi.mock('@/engine/audioEngine', () => ({
     getRecordingState: vi.fn(() => 'inactive'),
     getCurrentTime: vi.fn(() => 0),
     playTracks: vi.fn(), stopPlayback: vi.fn(), pausePlayback: vi.fn(), resumePlayback: vi.fn(),
-    seek: vi.fn(), startRecording: vi.fn(), stopRecording: vi.fn(), cancelRecording: vi.fn(),
+    seek: mocks.seek, startRecording: vi.fn(), stopRecording: vi.fn(), cancelRecording: vi.fn(),
     initialize: vi.fn(), getLevel: vi.fn(() => 0), cacheBuffer: vi.fn(), evictBuffer: vi.fn(),
     getPlaybackLevels: vi.fn(() => ({ left: -Infinity, right: -Infinity })),
     getRecordingLevels: vi.fn(() => ({ left: -Infinity, right: -Infinity })),
@@ -145,6 +150,7 @@ describe('AudioEditorPage Align Tracks', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockProject = makeProject();
+    mocks.getPreferences.mockReturnValue({ moveSelectionWithTracks: false });
     mocks.saveProject.mockImplementation(async (project: IProject) => {
       mockProject = project;
     });
@@ -220,6 +226,36 @@ describe('AudioEditorPage Align Tracks', () => {
     // 800 px usable width / the new 8 s project, not the stale 6 s duration.
     await waitFor(() => expect(screen.getByText('缩放 100 px/s')).toBeInTheDocument());
     await waitFor(() => expect(viewport.scrollLeft).toBe(0));
+  });
+
+  it('persists Move Selection with Tracks and moves the saved selection, cursor, and history label', async () => {
+    mockProject.selection = { start: 6, end: 8 };
+    mockProject.cursorPosition = 2;
+    await renderEditor();
+    expect(mocks.seek).toHaveBeenCalledWith(2);
+    const onCursorChange = mocks.setCursorChangeCallback.mock.calls.at(-1)![0] as (position: number) => void;
+    act(() => onCursorChange(6));
+
+    await openAlignMenu();
+    const preference = await screen.findByRole('menuitemcheckbox', { name: /Move Selection with Tracks/ });
+    expect(preference).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(preference);
+    expect(mocks.savePreferences).toHaveBeenCalledWith({ moveSelectionWithTracks: true });
+
+    await openAlignMenu();
+    fireEvent.click(await screen.findByText('Start to Zero 起点到零'));
+
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    expect(start('late')).toBe(0);
+    expect(start('early')).toBe(1);
+    expect(savedProject().selection).toEqual({ start: 1, end: 3 });
+    expect(savedProject().cursorPosition).toBe(1);
+    expect(mocks.seek).toHaveBeenLastCalledWith(1);
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'Align/Move Start' }),
+      expect.objectContaining({ cursorPosition: 6, selection: { start: 6, end: 8 } }),
+    );
   });
 
   it('disables Align Tracks while audio is playing and for an empty project', async () => {

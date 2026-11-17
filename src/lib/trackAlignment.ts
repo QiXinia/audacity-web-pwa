@@ -13,7 +13,10 @@ export interface TrackAlignmentResult {
   tracks: ITrack[];
   /** Timeline displacement for every selected track, including empty tracks. */
   deltas: ReadonlyMap<string, number>;
-  label: 'Align End to End' | 'Align Together' | 'Align Start' | 'Align End';
+  /** DoAlign moves the time selection only for its fixed-delta commands. */
+  selectionDelta: number;
+  label: 'Align End to End' | 'Align Together'
+    | 'Align Start' | 'Align End' | 'Align/Move Start' | 'Align/Move End';
 }
 
 export function getTrackStartTime(track: ITrack): number {
@@ -26,10 +29,14 @@ export function getTrackEndTime(track: ITrack): number {
   return track.clips.reduce((end, clip) => Math.max(end, clip.startTime + clip.duration), -Infinity);
 }
 
-export function getTrackAlignLabel(mode: TrackAlignMode): TrackAlignmentResult['label'] {
+export function getTrackAlignLabel(
+  mode: TrackAlignMode,
+  moveSelectionWithTracks = false,
+): TrackAlignmentResult['label'] {
   if (mode === 'end-to-end') return 'Align End to End';
   if (mode === 'together') return 'Align Together';
-  return mode.startsWith('start-') ? 'Align Start' : 'Align End';
+  if (mode.startsWith('start-')) return moveSelectionWithTracks ? 'Align/Move Start' : 'Align Start';
+  return moveSelectionWithTracks ? 'Align/Move End' : 'Align End';
 }
 
 function moveTrack(track: ITrack, delta: number): ITrack {
@@ -46,12 +53,13 @@ export function alignTracks(
   selectedTrackIds: readonly string[],
   mode: TrackAlignMode,
   selection: { start: number; end: number } | null,
+  moveSelectionWithTracks = false,
 ): TrackAlignmentResult {
   const selected = new Set(selectedTrackIds);
   const selectedTracks = tracks.filter((track) => selected.has(track.id));
   const deltas = new Map<string, number>(selectedTracks.map((track) => [track.id, 0]));
-  const label = getTrackAlignLabel(mode);
-  if (selectedTracks.length === 0) return { tracks: [...tracks], deltas, label };
+  const label = getTrackAlignLabel(mode, moveSelectionWithTracks);
+  if (selectedTracks.length === 0) return { tracks: [...tracks], deltas, selectionDelta: 0, label };
 
   if ((mode === 'start-selection-start' || mode === 'start-selection-end'
     || mode === 'end-selection-start' || mode === 'end-selection-end') && !selection) {
@@ -86,7 +94,7 @@ export function alignTracks(
     deltas.set(track.id, delta);
     return moveTrack(track, delta);
   });
-  return { tracks: aligned, deltas, label };
+  return { tracks: aligned, deltas, selectionDelta: sharedDelta ?? 0, label };
 }
 
 /** Keep track-scoped analysis labels attached to the same timeline content. */
@@ -95,11 +103,27 @@ export function alignProjectTracks(
   selectedTrackIds: readonly string[],
   mode: TrackAlignMode,
   selection: { start: number; end: number } | null,
+  options: { moveSelectionWithTracks?: boolean } = {},
 ): IProject {
-  const result = alignTracks(project.tracks, selectedTrackIds, mode, selection);
+  const moveSelectionWithTracks = options.moveSelectionWithTracks ?? false;
+  const result = alignTracks(
+    project.tracks,
+    selectedTrackIds,
+    mode,
+    selection,
+    moveSelectionWithTracks,
+  );
+  const selectionDelta = moveSelectionWithTracks ? result.selectionDelta : 0;
   return {
     ...project,
     tracks: result.tracks,
+    cursorPosition: selectionDelta === 0
+      ? project.cursorPosition
+      : project.cursorPosition + selectionDelta,
+    selection: project.selection ? {
+      start: project.selection.start + selectionDelta,
+      end: project.selection.end + selectionDelta,
+    } : null,
     analysisLabels: project.analysisLabels?.map((label) => {
       const delta = result.deltas.get(label.trackId) ?? 0;
       return delta === 0 ? label : { ...label, start: label.start + delta, end: label.end + delta };
