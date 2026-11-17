@@ -16,7 +16,8 @@ export interface TrackAlignmentResult {
   /** DoAlign moves the time selection only for its fixed-delta commands. */
   selectionDelta: number;
   label: 'Align End to End' | 'Align Together'
-    | 'Align Start' | 'Align End' | 'Align/Move Start' | 'Align/Move End';
+    | 'Align Start' | 'Align End' | 'Align/Move Start' | 'Align/Move End'
+    | 'Align/Move End to End' | 'Align/Move Together';
 }
 
 export function getTrackStartTime(track: ITrack): number {
@@ -33,8 +34,8 @@ export function getTrackAlignLabel(
   mode: TrackAlignMode,
   moveSelectionWithTracks = false,
 ): TrackAlignmentResult['label'] {
-  if (mode === 'end-to-end') return 'Align End to End';
-  if (mode === 'together') return 'Align Together';
+  if (mode === 'end-to-end') return moveSelectionWithTracks ? 'Align/Move End to End' : 'Align End to End';
+  if (mode === 'together') return moveSelectionWithTracks ? 'Align/Move Together' : 'Align Together';
   if (mode.startsWith('start-')) return moveSelectionWithTracks ? 'Align/Move Start' : 'Align Start';
   return moveSelectionWithTracks ? 'Align/Move End' : 'Align End';
 }

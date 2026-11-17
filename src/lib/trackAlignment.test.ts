@@ -163,7 +163,11 @@ describe('Audacity DoAlign track alignment', () => {
       );
       expect(aligned.selection).toEqual(project.selection);
       expect(aligned.cursorPosition).toBe(project.cursorPosition);
-      expect(alignTracks(tracks, ['a', 'b'], mode, project.selection, true).selectionDelta).toBe(0);
+      const noSync = alignTracks(tracks, ['a', 'b'], mode, project.selection, true);
+      expect(noSync.selectionDelta).toBe(0);
+      // DoAlign still changes the short history label when moveSel is enabled,
+      // although these two modes have delta == 0 and never move the selection.
+      expect(noSync.label).toBe(mode === 'end-to-end' ? 'Align/Move End to End' : 'Align/Move Together');
     }
   });
 });

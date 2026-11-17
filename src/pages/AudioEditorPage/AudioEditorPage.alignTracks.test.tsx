@@ -208,6 +208,25 @@ describe('AudioEditorPage Align Tracks', () => {
     expect(mocks.push.mock.calls[0]![0].label).toBe('Align Together');
   });
 
+  it('uses the official Move history label for Together without moving the selection', async () => {
+    mockProject.selection = { start: 6, end: 8 };
+    mockProject.cursorPosition = 6;
+    await renderEditor();
+    await selectTwoTracks();
+    await openAlignMenu();
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: /Move Selection with Tracks/ }));
+    await openAlignMenu();
+    fireEvent.click(await screen.findByText('Align Together 对齐到一起'));
+
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    expect(start('late')).toBe(3);
+    expect(start('early')).toBe(3);
+    expect(savedProject().selection).toEqual({ start: 6, end: 8 });
+    expect(savedProject().cursorPosition).toBe(6);
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push.mock.calls[0]![0].label).toBe('Align/Move Together');
+  });
+
   it('places selected tracks end to end and zooms to the persisted project duration', async () => {
     mockProject.tracks[0]!.clips[0]!.duration = 1;
     mockProject.tracks[1]!.clips[0]!.duration = 2;
