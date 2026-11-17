@@ -1,5 +1,6 @@
 import { AudioEngine } from './audioEngine';
 import type { IClip, IEffect, ITrack } from '@/types/project';
+import { METER_PREFERENCES_STORAGE_KEY } from '@/lib/meterPreferences';
 
 function makeClip(overrides: Partial<IClip> = {}): IClip {
   return {
@@ -313,6 +314,19 @@ describe('playback level meter', () => {
       const levels = engine.getPlaybackLevels();
       expect(levels.left).toBeCloseTo(-6.0206, 3);
       expect(levels.right).toBeCloseTo(-12.0412, 3);
+
+      for (const analyser of analysers) {
+        analyser.getFloatTimeDomainData.mockImplementation((buffer: Float32Array) => {
+          buffer.fill(0);
+          buffer[0] = 0.0001;
+        });
+      }
+      expect(engine.getPlaybackLevels()).toEqual({ left: -60, right: -60 });
+      window.localStorage.setItem(METER_PREFERENCES_STORAGE_KEY, JSON.stringify({ dbRange: -96 }));
+      const lowLevels = engine.getPlaybackLevels();
+      expect(lowLevels.left).toBeCloseTo(-80, 6);
+      expect(lowLevels.right).toBeCloseTo(-80, 6);
+      window.localStorage.removeItem(METER_PREFERENCES_STORAGE_KEY);
 
       engine.stopPlayback();
       expect(splitter.disconnect).toHaveBeenCalledOnce();

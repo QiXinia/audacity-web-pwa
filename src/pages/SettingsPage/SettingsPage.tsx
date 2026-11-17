@@ -49,6 +49,13 @@ import {
   setStereoHeightsWorkspaceEnabled,
   type AsymmetricStereoHeightsPreferences,
 } from '@/lib/stereoHeights';
+import {
+  getMeterDbRange,
+  isMeterDbRange,
+  METER_DB_RANGES,
+  saveMeterDbRange,
+  type MeterDbRange,
+} from '@/lib/meterPreferences';
 
 const DEFAULT_SAMPLE_RATES = [
   { value: '22050', label: '22050 Hz (低质量)' },
@@ -57,6 +64,17 @@ const DEFAULT_SAMPLE_RATES = [
   { value: '96000', label: '96000 Hz (高清)' },
   { value: '192000', label: '192000 Hz (母带级)' },
 ];
+
+const METER_DB_RANGE_DESCRIPTIONS: Record<MeterDbRange, string> = {
+  '-36': '高振幅编辑的浅量程',
+  '-48': '8-bit PCM 范围',
+  '-60': '10-bit PCM 范围（默认）',
+  '-72': '12-bit PCM 范围',
+  '-84': '14-bit PCM 范围',
+  '-96': '16-bit PCM 范围',
+  '-120': '约为人耳听阈极限',
+  '-144': '24-bit PCM 范围',
+};
 
 export default function SettingsPage() {
   const [preferences, setPreferences] = useState<IPreferences | null>(null);
@@ -68,6 +86,7 @@ export default function SettingsPage() {
   const [isClearing, setIsClearing] = useState(false);
   const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt' | 'unsupported'>('prompt');
   const [workspaceStore] = useState(loadWorkspaceStore);
+  const [meterDbRange, setMeterDbRange] = useState<MeterDbRange>(() => getMeterDbRange());
   const [stereoHeightsPreferences, setStereoHeightsPreferences] = useState<AsymmetricStereoHeightsPreferences>(() => {
     const store = loadWorkspaceStore();
     return loadStereoHeightsPreferences(undefined, store.presets.map((preset) => preset.name));
@@ -141,6 +160,15 @@ export default function SettingsPage() {
       return;
     }
     toast.error('浏览器存储不可用，非对称声道高度偏好未保存');
+  }
+
+  function updateMeterDbRange(value: number) {
+    if (!isMeterDbRange(value)) return;
+    if (saveMeterDbRange(value)) {
+      setMeterDbRange(value);
+      return;
+    }
+    toast.error('浏览器存储不可用，电平表 dB 范围未保存');
   }
 
   async function handleClearAllData() {
@@ -257,6 +285,37 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+            </CardContent>
+          </Card>
+
+          {/* Audacity Playback Preferences: meter dB range */}
+          <Card data-testid="meter-db-range-settings">
+            <CardHeader>
+              <CardTitle>电平表 dB 范围</CardTitle>
+              <CardDescription>Meter dB range · Audacity Playback Preferences</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                同时调整录音与播放峰值表的采样下限、衰减和非线性刻度；不会改变音频本身的音量。
+              </p>
+              <div className="space-y-2">
+                <Label htmlFor="meter-db-range">dB 范围</Label>
+                <Select value={String(meterDbRange)} onValueChange={(value) => updateMeterDbRange(Number(value))}>
+                  <SelectTrigger id="meter-db-range" aria-label="dB 范围" className="w-full max-w-lg">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {METER_DB_RANGES.map((range) => (
+                      <SelectItem key={range} value={String(range)}>
+                        {range} dB · {METER_DB_RANGE_DESCRIPTIONS[range]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  默认 -60 dB；低于所选下限的峰值显示为 -∞。选择 -96 dB 可观察 16-bit 低电平信号。
+                </p>
+              </div>
             </CardContent>
           </Card>
 

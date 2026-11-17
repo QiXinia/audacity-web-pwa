@@ -17,6 +17,7 @@ import {
   silentStereoLevels,
   type StereoLevels,
 } from '@/lib/levelMeter';
+import { getMeterDbRange } from '@/lib/meterPreferences';
 import type { ITrack, IClip, IEffect } from '@/types/project';
 
 export type PlaybackState = 'stopped' | 'playing' | 'paused';
@@ -128,10 +129,11 @@ export class AudioEngine {
   }
 
   private readMeterLevels(meter: StereoMeterNodes | null): StereoLevels {
-    if (!meter) return silentStereoLevels();
+    const minDb = getMeterDbRange();
+    if (!meter) return silentStereoLevels(minDb);
     return {
-      left: readAnalyserPeakDbfs(meter.analysers[0], meter.buffers[0]),
-      right: readAnalyserPeakDbfs(meter.analysers[1], meter.buffers[1]),
+      left: readAnalyserPeakDbfs(meter.analysers[0], meter.buffers[0], minDb),
+      right: readAnalyserPeakDbfs(meter.analysers[1], meter.buffers[1], minDb),
     };
   }
 

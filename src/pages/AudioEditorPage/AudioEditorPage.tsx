@@ -470,10 +470,10 @@ import {
   decayDbfs,
   dbfsToMeterPercent,
   formatDbfs,
-  MIN_METER_DBFS,
   silentStereoLevels,
   type StereoLevels,
 } from '@/lib/levelMeter';
+import { getMeterDbRange } from '@/lib/meterPreferences';
 
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -7435,7 +7435,7 @@ export default function AudioEditorPage() {
         >
           <LevelMeter mode="recording" active={recordingState === 'recording'} />
           <LevelMeter mode="playback" active={playbackState === 'playing'} />
-          <span className="shrink-0 text-[9px] text-[#7f8992]">-60 … 0 dBFS · 峰值</span>
+          <MeterDbRangeLabel />
         </section>
 
         {/* Edit Toolbar */}
@@ -9273,18 +9273,19 @@ function TrackPanelRow({
 }
 
 function LevelMeter({ mode, active }: { mode: 'recording' | 'playback'; active: boolean }) {
-  const [levels, setLevels] = useState<StereoLevels>(silentStereoLevels);
+  const [minDb] = useState(getMeterDbRange);
+  const [levels, setLevels] = useState<StereoLevels>(() => silentStereoLevels(minDb));
   const label = mode === 'recording' ? '录音' : '播放';
 
   useEffect(() => {
     if (!active) {
-      setLevels(silentStereoLevels());
+      setLevels(silentStereoLevels(minDb));
       return;
     }
 
     let frame = 0;
     let previousTime: number | null = null;
-    let current = silentStereoLevels();
+    let current = silentStereoLevels(minDb);
     const tick = (now: number) => {
       const elapsed = previousTime === null ? 1 / 60 : Math.min(0.1, Math.max(0, (now - previousTime) / 1000));
       previousTime = now;
@@ -9292,15 +9293,15 @@ function LevelMeter({ mode, active }: { mode: 'recording' | 'playback'; active: 
         ? audioEngine.getRecordingLevels()
         : audioEngine.getPlaybackLevels();
       current = {
-        left: decayDbfs(current.left, instantaneous.left, elapsed),
-        right: decayDbfs(current.right, instantaneous.right, elapsed),
+        left: decayDbfs(current.left, instantaneous.left, elapsed, minDb),
+        right: decayDbfs(current.right, instantaneous.right, elapsed, minDb),
       };
       setLevels(current);
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [active, mode]);
+  }, [active, minDb, mode]);
 
   return (
     <div className="flex shrink-0 items-center gap-2" aria-label={`${label}电平表`} title={`${label}峰值电平 · dBFS`}>
@@ -9316,24 +9317,30 @@ function LevelMeter({ mode, active }: { mode: 'recording' | 'playback'; active: 
               <div
                 role="meter"
                 aria-label={`${label}${channelLabel}声道峰值电平`}
-                aria-valuemin={MIN_METER_DBFS}
+                aria-valuemin={minDb}
                 aria-valuemax={0}
                 aria-valuenow={Number(value.toFixed(1))}
-                aria-valuetext={`${formatDbfs(value)} dBFS`}
+                aria-valuetext={`${formatDbfs(value, minDb)} dBFS`}
                 className={`h-1.5 w-24 overflow-hidden rounded-[1px] bg-[#161b20] ${value >= -0.05 ? 'ring-1 ring-red-400' : ''}`}
               >
                 <div
+                  data-testid={`${mode}-${channel}-meter-fill`}
                   className="h-full bg-gradient-to-r from-emerald-500 via-yellow-400 to-red-500 transition-[width] duration-75"
-                  style={{ width: `${dbfsToMeterPercent(value)}%` }}
+                  style={{ width: `${dbfsToMeterPercent(value, minDb)}%` }}
                 />
               </div>
-              <span className="w-7 text-right font-mono">{formatDbfs(value)}</span>
+              <span className="w-7 text-right font-mono">{formatDbfs(value, minDb)}</span>
             </div>
           );
         })}
       </div>
     </div>
   );
+}
+
+function MeterDbRangeLabel() {
+  const [minDb] = useState(getMeterDbRange);
+  return <span className="shrink-0 text-[9px] text-[#7f8992]">{minDb} … 0 dBFS · 峰值</span>;
 }
 
 function GainKnob({ value, onChange }: { value: number; onChange: (value: number) => void }) {

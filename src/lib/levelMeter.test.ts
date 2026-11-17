@@ -61,4 +61,26 @@ describe('audio level meter', () => {
     expect(decayDbfs(-59.9, -60, 1)).toBe(-60);
     expect(decayDbfs(-6, -60, -1)).toBe(-6);
   });
+
+  it('preserves low-level samples below -60 when the configured range is deeper', () => {
+    expect(peakToDbfs(0.0001, -96)).toBeCloseTo(-80, 6);
+    expect(peakToDbfs(0.000001, -96)).toBe(-96);
+    expect(silentStereoLevels(-96)).toEqual({ left: -96, right: -96 });
+    const analyser = {
+      getFloatTimeDomainData: (buffer: Float32Array) => buffer.set([0, -0.0001, 0.00005]),
+    };
+    expect(readAnalyserPeakDbfs(analyser, new Float32Array(3), -96)).toBeCloseTo(-80, 6);
+    expect(readAnalyserPeakDbfs(analyser, new Float32Array(), -144)).toBe(-144);
+  });
+
+  it('applies the configured range to scale positions, decay, and formatting', () => {
+    expect(dbfsToMeterPercent(-80)).toBe(0);
+    expect(dbfsToMeterPercent(-80, -96)).toBe(7.5);
+    expect(dbfsToMeterPercent(-72, -96)).toBeCloseTo(11.25, 6);
+    expect(dbfsToMeterPercent(-120, -144)).toBe(7.5);
+    expect(decayDbfs(-70, -96, 0.5, -96)).toBe(-88);
+    expect(decayDbfs(-96, -80, 0, -96)).toBe(-80);
+    expect(formatDbfs(-60, -96)).toBe('-60.0');
+    expect(formatDbfs(-96, -96)).toBe('-∞');
+  });
 });
