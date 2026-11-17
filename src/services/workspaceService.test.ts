@@ -16,6 +16,7 @@ const layout: WorkspaceLayout = {
   showMixer: true,
   showClipping: true,
   viewMode: 'spectrum',
+  halfWave: true,
   horizontalZoom: 240,
   verticalZoom: 2,
 };
@@ -99,7 +100,7 @@ describe('Workspace persistence', () => {
     expect(restored.presets.find((preset) => preset.id === 'classic')?.layout.horizontalZoom).toBe(100);
   });
 
-  it('persists Waveform (dB) and rejects unknown legacy view modes', () => {
+  it('persists ruler formats and half-wave, and normalizes unknown legacy values', () => {
     const values = new Map<string, string>();
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
@@ -107,18 +108,21 @@ describe('Workspace persistence', () => {
     };
     const custom = createWorkspace(defaultWorkspaceStore(), 'db-workspace', 'dB editing', {
       ...layout,
-      viewMode: 'waveformDb',
+      viewMode: 'waveformDbLinear',
+      halfWave: true,
     });
     expect(saveWorkspaceStore(custom, storage)).toBe(true);
-    expect(loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'db-workspace')?.layout.viewMode)
-      .toBe('waveformDb');
+    const restored = loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'db-workspace')?.layout;
+    expect(restored?.viewMode).toBe('waveformDbLinear');
+    expect(restored?.halfWave).toBe(true);
 
     values.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
       activeId: 'classic',
-      presets: [{ id: 'classic', name: 'Classic', layout: { viewMode: 'logarithmic' } }],
+      presets: [{ id: 'classic', name: 'Classic', layout: { viewMode: 'logarithmic', halfWave: 'invalid' } }],
     }));
-    expect(loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'classic')?.layout.viewMode)
-      .toBe('waveform');
+    const fallback = loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'classic')?.layout;
+    expect(fallback?.viewMode).toBe('waveform');
+    expect(fallback?.halfWave).toBe(false);
   });
 
   it('reports browser storage write failures without throwing', () => {

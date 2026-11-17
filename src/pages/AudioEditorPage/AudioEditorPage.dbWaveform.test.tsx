@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject, ViewMode } from '@/types/project';
-import { loadWorkspaceStore, saveWorkspaceStore } from '@/services/workspaceService';
+import { loadWorkspaceStore, saveWorkspaceStore, WORKSPACE_STORAGE_KEY } from '@/services/workspaceService';
 import { METER_PREFERENCES_STORAGE_KEY } from '@/lib/meterPreferences';
 import {
   CHANNEL_HEIGHT_RATIO_STORAGE_PREFIX,
@@ -241,5 +241,82 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     await waitFor(() => expect(screen.queryByTestId('track-db-ruler-track-db')).not.toBeInTheDocument());
     fireEvent.mouseDown(timeline, { button: 0, clientX: 300, clientY: 20 });
     expect(audioEngine.seek).toHaveBeenLastCalledWith(2);
+  });
+
+  it('switches Linear (dB), applies half-wave, and saves both in the active Workspace', async () => {
+    setWorkspaceViewMode('waveformDb');
+    await renderProject();
+    const ruler = await screen.findByTestId('track-db-ruler-track-db');
+    expect(screen.getByTestId('db-ruler-tick-track-db-0-positive-n60')).toHaveTextContent('60');
+
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Linear (dB)' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-ruler-format', 'waveformDbLinear'));
+    expect(screen.getByTestId('waveform-canvas-clip-db')).toHaveAttribute('data-view-mode', 'waveformDbLinear');
+    expect(screen.getByTestId('db-ruler-tick-track-db-0-positive-n60')).toHaveTextContent('∞');
+    await waitFor(() => expect(mocks.drawWaveform.mock.calls.some(
+      (call) => call[10] === undefined && call[11] === false,
+    )).toBe(true));
+
+    mocks.drawWaveform.mockClear();
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Half wave' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-half-wave', 'true'));
+    expect(screen.getByTestId('waveform-canvas-clip-db')).toHaveAttribute('data-half-wave', 'true');
+    expect(screen.queryByTestId('db-ruler-tick-track-db-0-negative-n60')).not.toBeInTheDocument();
+    await waitFor(() => expect(mocks.drawWaveform.mock.calls.some(
+      (call) => call[10] === undefined && call[11] === true,
+    )).toBe(true));
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+      expect(stored.presets.find((preset: { id: string }) => preset.id === stored.activeId).layout).toMatchObject({
+        viewMode: 'waveformDbLinear',
+        halfWave: true,
+      });
+    });
+  });
+
+  it('zooms and resets from the ruler popup and returns to Linear (amp)', async () => {
+    setWorkspaceViewMode('waveformDbLinear');
+    await renderProject();
+    const ruler = await screen.findByTestId('track-db-ruler-track-db');
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '放大' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-vertical-zoom', '2'));
+
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '重置' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-vertical-zoom', '1'));
+
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Linear (amp)' }));
+    await waitFor(() => expect(screen.queryByTestId('track-db-ruler-track-db')).not.toBeInTheDocument());
+    expect(screen.getByTestId('waveform-canvas-clip-db')).toHaveAttribute('data-view-mode', 'waveform');
+
+    const linearDbTab = screen.getByRole('tab', { name: '线性 dB' });
+    fireEvent.mouseDown(linearDbTab, { button: 0, ctrlKey: false });
+    fireEvent.click(linearDbTab);
+    await waitFor(() => expect(screen.getByTestId('track-db-ruler-track-db')).toHaveAttribute(
+      'data-ruler-format',
+      'waveformDbLinear',
+    ));
+  });
+
+  it('exposes both dB formats and half-wave in the View menu', async () => {
+    await renderProject();
+    fireEvent.pointerDown(screen.getByRole('button', { name: '视图' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '波形 (线性 dB)' }));
+    const ruler = await screen.findByTestId('track-db-ruler-track-db');
+    expect(ruler).toHaveAttribute('data-ruler-format', 'waveformDbLinear');
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '视图' }));
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: '半波显示' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-half-wave', 'true'));
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '视图' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '波形 (对数 dB)' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-ruler-format', 'waveformDb'));
+    expect(ruler).toHaveAttribute('data-half-wave', 'true');
+    expect(screen.getByTestId('db-ruler-tick-track-db-0-positive-n60')).toHaveTextContent('60');
   });
 });

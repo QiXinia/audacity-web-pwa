@@ -1,7 +1,7 @@
 import type { IClip } from '@/types/project';
 import { getClipStretchRatio } from '@/lib/clipEditing';
 import { findClippedSampleRanges } from '@/lib/clippingDetection';
-import { sampleToDbWaveY } from '@/lib/dbWaveform';
+import { sampleToDbWaveY, sampleToLinearWaveY } from '@/lib/dbWaveform';
 
 /** Draw a linear waveform, or Audacity's logarithmic waveform when dbRange is supplied. */
 export function drawWaveform(
@@ -16,6 +16,7 @@ export function drawWaveform(
   alpha: number,
   showClipping = false,
   dbRange?: number,
+  halfWave = false,
 ) {
   const ratio = getClipStretchRatio(clip);
   const sourceStart = Math.max(0, clip.offset * sampleRate);
@@ -23,12 +24,17 @@ export function drawWaveform(
   const samplesPerPixel = Math.max(1, (sourceEnd - sourceStart) / width);
   const centerY = height / 2;
   const amplitude = height / 2 - 4;
+  const zeroY = halfWave
+    ? dbRange !== undefined
+      ? sampleToDbWaveY(0, height, dbRange, verticalZoom, true)
+      : sampleToLinearWaveY(0, height, verticalZoom, true)
+    : centerY;
 
   ctx.fillStyle = color;
   ctx.globalAlpha = alpha;
 
   ctx.beginPath();
-  ctx.moveTo(0, centerY);
+  ctx.moveTo(0, zeroY);
 
   for (let x = 0; x < width; x++) {
     const startSample = Math.floor(sourceStart + x * samplesPerPixel);
@@ -45,7 +51,16 @@ export function drawWaveform(
 
     let yMin: number;
     let yMax: number;
-    if (dbRange !== undefined) {
+    if (halfWave) {
+      const firstY = dbRange !== undefined
+        ? sampleToDbWaveY(max, height, dbRange, verticalZoom, true)
+        : sampleToLinearWaveY(max, height, verticalZoom, true);
+      const secondY = dbRange !== undefined
+        ? sampleToDbWaveY(min, height, dbRange, verticalZoom, true)
+        : sampleToLinearWaveY(min, height, verticalZoom, true);
+      yMin = Math.min(firstY, secondY);
+      yMax = Math.max(firstY, secondY);
+    } else if (dbRange !== undefined) {
       const firstY = sampleToDbWaveY(max, height, dbRange, verticalZoom);
       const secondY = sampleToDbWaveY(min, height, dbRange, verticalZoom);
       yMin = Math.min(firstY, secondY);
@@ -65,8 +80,8 @@ export function drawWaveform(
 
   ctx.globalAlpha = alpha * 0.3;
   ctx.beginPath();
-  ctx.moveTo(0, centerY);
-  ctx.lineTo(width, centerY);
+  ctx.moveTo(0, zeroY);
+  ctx.lineTo(width, zeroY);
   ctx.strokeStyle = color;
   ctx.lineWidth = 0.5;
   ctx.stroke();

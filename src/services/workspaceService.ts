@@ -7,6 +7,7 @@ export interface WorkspaceLayout {
   showMixer: boolean;
   showClipping: boolean;
   viewMode: ViewMode;
+  halfWave: boolean;
   horizontalZoom: number;
   verticalZoom: number;
 }
@@ -35,6 +36,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
       showMixer: false,
       showClipping: false,
       viewMode: 'waveform',
+      halfWave: false,
       horizontalZoom: 100,
       verticalZoom: 1,
     },
@@ -48,6 +50,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
       showMixer: false,
       showClipping: false,
       viewMode: 'both',
+      halfWave: false,
       horizontalZoom: 100,
       verticalZoom: 1,
     },
@@ -61,6 +64,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
       showMixer: true,
       showClipping: false,
       viewMode: 'both',
+      halfWave: false,
       horizontalZoom: 100,
       verticalZoom: 1.25,
     },
@@ -78,12 +82,13 @@ export function defaultWorkspaceStore(): WorkspaceStore {
 }
 
 function normalizeLayout(value: Partial<WorkspaceLayout> | undefined, fallback: WorkspaceLayout): WorkspaceLayout {
-  const modes: ViewMode[] = ['waveform', 'waveformDb', 'spectrum', 'both'];
+  const modes: ViewMode[] = ['waveform', 'waveformDb', 'waveformDbLinear', 'spectrum', 'both'];
   return {
     showTrackPanel: typeof value?.showTrackPanel === 'boolean' ? value.showTrackPanel : fallback.showTrackPanel,
     showMixer: typeof value?.showMixer === 'boolean' ? value.showMixer : fallback.showMixer,
     showClipping: typeof value?.showClipping === 'boolean' ? value.showClipping : fallback.showClipping,
     viewMode: modes.includes(value?.viewMode as ViewMode) ? value!.viewMode as ViewMode : fallback.viewMode,
+    halfWave: typeof value?.halfWave === 'boolean' ? value.halfWave : fallback.halfWave,
     horizontalZoom: Number.isFinite(value?.horizontalZoom)
       ? normalizeHorizontalZoom(Number(value!.horizontalZoom), fallback.horizontalZoom)
       : fallback.horizontalZoom,

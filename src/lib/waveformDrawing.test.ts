@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { drawWaveform } from '@/lib/waveformDrawing';
+import { sampleToDbDisplayValue } from '@/lib/dbWaveform';
 import type { IClip } from '@/types/project';
 
 const clip: IClip = {
@@ -58,5 +59,23 @@ describe('waveform vertical zoom', () => {
     expect(visible.moveTo.mock.calls[1]?.[1]).toBeCloseTo(44, 6);
     expect(visible.lineTo.mock.calls[0]?.[0]).toBe(0);
     expect(visible.lineTo.mock.calls[0]?.[1]).toBeCloseTo(60, 6);
+  });
+
+  it('draws half-wave against a zero lower bound and moves the zero line to the bottom', () => {
+    const linear = contextSpy();
+    const samples = new Float32Array([0.5, -0.5]);
+    drawWaveform(linear.ctx, samples, 1, 104, '#20252a', clip, 2, 1, 1, false, undefined, true);
+    expect(linear.moveTo.mock.calls[0]).toEqual([0, 100]);
+    expect(linear.moveTo.mock.calls[1]?.[1]).toBeCloseTo(52, 6);
+    expect(linear.lineTo.mock.calls[0]?.[1]).toBeCloseTo(100, 6);
+
+    const logarithmic = contextSpy();
+    drawWaveform(logarithmic.ctx, samples, 1, 104, '#20252a', clip, 2, 1, 1, false, -60, true);
+    expect(logarithmic.moveTo.mock.calls[0]).toEqual([0, 100]);
+    expect(logarithmic.moveTo.mock.calls[1]?.[1]).toBeCloseTo(
+      4 + (1 - sampleToDbDisplayValue(0.5, -60)) * 96,
+      10,
+    );
+    expect(logarithmic.lineTo.mock.calls[0]?.[1]).toBeCloseTo(100, 6);
   });
 });

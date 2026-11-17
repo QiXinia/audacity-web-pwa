@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildDbLinearRulerValues,
   buildDbRulerValues,
+  dbValueToLinearWaveY,
   dbValueToWaveY,
   sampleToDbDisplayValue,
   sampleToDbWaveY,
+  sampleToLinearWaveY,
 } from '@/lib/dbWaveform';
 
 describe('Audacity logarithmic waveform coordinates', () => {
@@ -50,5 +53,42 @@ describe('Audacity dB ruler steps', () => {
     expect(buildDbRulerValues(100, -60, 2, 20)).toEqual([-60, -45, -30]);
     expect(buildDbRulerValues(100, -96, 1, 20)).toContain(-96);
     expect(buildDbRulerValues(100, -96, 1, 20)).toContain(0);
+  });
+});
+
+describe('Audacity Linear (dB) and half-wave coordinates', () => {
+  it('maps linear samples against -1..1 or 0..1 without changing their values', () => {
+    expect(sampleToLinearWaveY(1, 76)).toBe(4);
+    expect(sampleToLinearWaveY(0, 76)).toBe(38);
+    expect(sampleToLinearWaveY(-1, 76)).toBe(72);
+    expect(sampleToLinearWaveY(0.5, 76)).toBe(21);
+    expect(sampleToLinearWaveY(1, 76, 1, true)).toBe(4);
+    expect(sampleToLinearWaveY(0.5, 76, 1, true)).toBe(38);
+    expect(sampleToLinearWaveY(0, 76, 1, true)).toBe(72);
+    expect(sampleToLinearWaveY(-0.5, 76, 1, true)).toBe(72);
+  });
+
+  it('uses the full channel height for logarithmic half-wave display', () => {
+    expect(sampleToDbWaveY(1, 76, -96, 1, true)).toBe(4);
+    expect(sampleToDbWaveY(0, 76, -96, 1, true)).toBe(72);
+    expect(sampleToDbWaveY(-1, 76, -96, 1, true)).toBe(72);
+    expect(sampleToDbWaveY(0.0001, 76, -96, 1, true)).toBeCloseTo(60.6666666667, 8);
+  });
+
+  it('converts Linear (dB) ticks to amplitude and pins the floor to zero', () => {
+    expect(dbValueToLinearWaveY(0, 76, -60)).toBe(4);
+    expect(dbValueToLinearWaveY(-60, 76, -60)).toBe(38);
+    expect(dbValueToLinearWaveY(-60, 76, -60, 1, false, true)).toBe(72);
+    expect(dbValueToLinearWaveY(-6, 76, -60)).toBeCloseTo(
+      sampleToLinearWaveY(10 ** (-6 / 20), 76),
+      10,
+    );
+  });
+
+  it('builds official-style Linear (dB) boundary and intermediate steps', () => {
+    expect(buildDbLinearRulerValues(100, -60)).toEqual([-60, -6, 0]);
+    expect(buildDbLinearRulerValues(76, -60)).toEqual([-60, 0]);
+    expect(buildDbLinearRulerValues(76, -60, 1, true)).toEqual([-60, -6, 0]);
+    expect(buildDbLinearRulerValues(76, -60, 1, false, true)).toEqual([-60, -9, -3, 0]);
   });
 });

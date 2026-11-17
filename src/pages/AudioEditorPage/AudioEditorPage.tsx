@@ -474,7 +474,13 @@ import {
   type StereoLevels,
 } from '@/lib/levelMeter';
 import { getMeterDbRange } from '@/lib/meterPreferences';
-import { buildDbRulerValues, DB_WAVE_RULER_WIDTH, dbValueToWaveY } from '@/lib/dbWaveform';
+import {
+  buildDbLinearRulerValues,
+  buildDbRulerValues,
+  DB_WAVE_RULER_WIDTH,
+  dbValueToLinearWaveY,
+  dbValueToWaveY,
+} from '@/lib/dbWaveform';
 
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -505,6 +511,7 @@ export default function AudioEditorPage() {
   const [loopRegion, setLoopRegion] = useState<LoopRegion | null>(null);
   const [loopEnabled, setLoopEnabled] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('waveform');
+  const [halfWave, setHalfWave] = useState(false);
   const [waveformDbRange] = useState(getMeterDbRange);
   const [horizontalZoom, setHorizontalZoom] = useState(50);
   const [verticalZoom, setVerticalZoom] = useState(1);
@@ -734,9 +741,10 @@ export default function AudioEditorPage() {
     showMixer,
     showClipping,
     viewMode,
+    halfWave,
     horizontalZoom,
     verticalZoom,
-  }), [showTrackPanel, showMixer, showClipping, viewMode, horizontalZoom, verticalZoom]);
+  }), [showTrackPanel, showMixer, showClipping, viewMode, halfWave, horizontalZoom, verticalZoom]);
 
   // Workspace customizations are local and automatically restored on reopen.
   useEffect(() => {
@@ -897,6 +905,7 @@ export default function AudioEditorPage() {
         const workspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
           ?? workspaceStore.presets[0];
         setViewMode(workspace.layout.viewMode);
+        setHalfWave(workspace.layout.halfWave);
         setHorizontalZoom(normalizeHorizontalZoom(workspace.layout.horizontalZoom));
         setVerticalZoom(normalizeVerticalZoom(workspace.layout.verticalZoom));
         setSnapEnabled(proj.viewState.snapEnabled ?? false);
@@ -1946,6 +1955,7 @@ export default function AudioEditorPage() {
     setShowMixer(layout.showMixer);
     setShowClipping(layout.showClipping);
     setViewMode(layout.viewMode);
+    setHalfWave(layout.halfWave);
     setHorizontalZoom(normalizeHorizontalZoom(layout.horizontalZoom));
     setVerticalZoom(normalizeVerticalZoom(layout.verticalZoom));
   }
@@ -6819,7 +6829,9 @@ export default function AudioEditorPage() {
   const timelineDuration = Math.max(projectDuration, 30);
   const pxPerSec = horizontalZoom;
   const totalWidth = Math.max(timelineDuration * pxPerSec, 1000);
-  const dbRulerWidth = viewMode === 'waveformDb' ? DB_WAVE_RULER_WIDTH : 0;
+  const dbRulerWidth = viewMode === 'waveformDb' || viewMode === 'waveformDbLinear'
+    ? DB_WAVE_RULER_WIDTH
+    : 0;
   const timelineContentWidth = totalWidth + dbRulerWidth;
   const activeWorkspaceName = activeWorkspace.name;
   const activeWorkspaceBuiltIn = activeWorkspace.builtIn;
@@ -6908,8 +6920,17 @@ export default function AudioEditorPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuItem onClick={() => setViewMode('waveform')}>波形</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setViewMode('waveformDb')}>波形 (对数 dB)</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setViewMode('waveformDbLinear')}>波形 (线性 dB)</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('spectrum')}>频谱</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setViewMode('both')}>波形与频谱</DropdownMenuItem>
+              <DropdownMenuCheckboxItem
+                checked={halfWave}
+                onClick={() => setHalfWave((current) => !current)}
+                disabled={viewMode === 'spectrum'}
+              >
+                半波显示
+              </DropdownMenuCheckboxItem>
               <DropdownMenuItem onClick={() => setShowClipping((visible) => !visible)}>
                 {showClipping ? '隐藏' : '显示'}波形削波
               </DropdownMenuItem>
@@ -7408,6 +7429,15 @@ export default function AudioEditorPage() {
                 >
                   <AudioWaveform className="size-3.5" />
                   波形 (dB)
+                </TabsTrigger>
+                <TabsTrigger
+                  value="waveformDbLinear"
+                  className="h-7 gap-1 text-xs px-2"
+                  data-testid="waveform-db-linear-tab"
+                  title="Waveform Linear (dB)"
+                >
+                  <AudioWaveform className="size-3.5" />
+                  线性 dB
                 </TabsTrigger>
                 <TabsTrigger value="spectrum" className="h-7 gap-1 text-xs px-2">
                   <BarChart3 className="size-3.5" />
@@ -8148,6 +8178,10 @@ export default function AudioEditorPage() {
                 dbRulerWidth={dbRulerWidth}
                 dbRange={waveformDbRange}
                 viewMode={viewMode}
+                halfWave={halfWave}
+                onViewModeChange={setViewMode}
+                onHalfWaveChange={setHalfWave}
+                onVerticalZoomChange={setVerticalZoom}
                 selection={selection}
                 spectralSelection={spectralSelection}
                 scrollX={scrollX}
@@ -9438,6 +9472,10 @@ function TrackTimeline({
   dbRulerWidth,
   dbRange,
   viewMode,
+  halfWave,
+  onViewModeChange,
+  onHalfWaveChange,
+  onVerticalZoomChange,
   selection,
   spectralSelection,
   scrollX,
@@ -9469,6 +9507,10 @@ function TrackTimeline({
   dbRulerWidth: number;
   dbRange: number;
   viewMode: ViewMode;
+  halfWave: boolean;
+  onViewModeChange: (mode: ViewMode) => void;
+  onHalfWaveChange: (value: boolean) => void;
+  onVerticalZoomChange: (value: number) => void;
   selection: { start: number; end: number } | null;
   spectralSelection: FrequencySelection | null;
   scrollX: number;
@@ -9553,6 +9595,11 @@ function TrackTimeline({
           trackHeight={trackHeight}
           waveformHeight={trackHeight - 24}
           dbRange={dbRange}
+          viewMode={viewMode}
+          halfWave={halfWave}
+          onViewModeChange={onViewModeChange}
+          onHalfWaveChange={onHalfWaveChange}
+          onVerticalZoomChange={onVerticalZoomChange}
           verticalZoom={verticalZoom}
           isStereo={stereoClipIds.length > 0}
           channelHeightRatio={channelHeightRatio}
@@ -9574,6 +9621,7 @@ function TrackTimeline({
           verticalZoom={verticalZoom}
           showClipping={showClipping}
           viewMode={viewMode}
+          halfWave={halfWave}
           dbRange={dbRange}
           selection={selection}
           spectralSelection={spectralSelection}
@@ -9608,6 +9656,11 @@ function TrackDbRuler({
   trackHeight,
   waveformHeight,
   dbRange,
+  viewMode,
+  halfWave,
+  onViewModeChange,
+  onHalfWaveChange,
+  onVerticalZoomChange,
   verticalZoom,
   isStereo,
   channelHeightRatio,
@@ -9619,6 +9672,11 @@ function TrackDbRuler({
   trackHeight: number;
   waveformHeight: number;
   dbRange: number;
+  viewMode: ViewMode;
+  halfWave: boolean;
+  onViewModeChange: (mode: ViewMode) => void;
+  onHalfWaveChange: (value: boolean) => void;
+  onVerticalZoomChange: (value: number) => void;
   verticalZoom: number;
   isStereo: boolean;
   channelHeightRatio: number;
@@ -9634,29 +9692,109 @@ function TrackDbRuler({
         { channel: 1, top: upperHeight, height: waveformHeight - upperHeight },
       ]
     : [{ channel: 0, top: 0, height: waveformHeight }];
+  const isLinearDb = viewMode === 'waveformDbLinear';
+  const halves = halfWave ? (['positive'] as const) : (['positive', 'negative'] as const);
 
   return (
     <div
-      className="pointer-events-none sticky left-0 z-[28] border-r border-[#59636c] bg-[#20262b] text-[#bdc6ce]"
+      className="sticky left-0 z-[28] select-none border-r border-[#59636c] bg-[#20262b] text-[#bdc6ce]"
       style={{ width, height: trackHeight }}
       data-testid={`track-db-ruler-${trackId}`}
       data-db-range={dbRange}
       data-vertical-zoom={verticalZoom}
       data-channel-count={isStereo ? 2 : 1}
       data-stereo-ratio={ratio}
-      role="img"
-      aria-label={`${trackName} dB 轨道标尺，下限 ${dbRange} dB，纵向缩放 ${verticalZoom}`}
+      data-ruler-format={viewMode}
+      data-half-wave={halfWave}
+      role="group"
+      aria-label={`${trackName} ${isLinearDb ? 'Linear (dB)' : 'Logarithmic (dB)'} 轨道标尺，下限 ${dbRange} dB，纵向缩放 ${verticalZoom}，${halfWave ? '半波' : '全波'}`}
+      onMouseDown={(event) => event.stopPropagation()}
     >
       <div className="flex h-5 items-center justify-between border-b border-[#434a50] px-1 text-[8px]">
-        <span>dB</span>
-        <span>{dbRange}</span>
+        <span>{isLinearDb ? 'dB·lin' : 'dB·log'}</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="flex size-4 items-center justify-center rounded-sm hover:bg-[#3a444d]"
+              aria-label={`${trackName} 轨道标尺设置`}
+              title="轨道标尺设置"
+              data-testid={`track-ruler-settings-${trackId}`}
+            >
+              <Settings className="size-3" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-48">
+            <DropdownMenuLabel>纵向缩放 {Math.round(verticalZoom * 100)}%</DropdownMenuLabel>
+            <DropdownMenuItem
+              onClick={() => onVerticalZoomChange(stepVerticalZoom(verticalZoom, 'in'))}
+              disabled={verticalZoom >= MAX_VERTICAL_ZOOM}
+              data-testid="ruler-zoom-in"
+            >
+              放大
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => onVerticalZoomChange(stepVerticalZoom(verticalZoom, 'out'))}
+              disabled={verticalZoom <= MIN_VERTICAL_ZOOM}
+              data-testid="ruler-zoom-out"
+            >
+              缩小
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => onVerticalZoomChange(DEFAULT_VERTICAL_ZOOM)}
+              disabled={verticalZoom === DEFAULT_VERTICAL_ZOOM}
+              data-testid="ruler-zoom-reset"
+            >
+              重置
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>标尺格式</DropdownMenuLabel>
+            <DropdownMenuCheckboxItem
+              checked={viewMode === 'waveformDb'}
+              onClick={() => onViewModeChange('waveformDb')}
+              data-testid="ruler-format-log-db"
+            >
+              Logarithmic (dB)
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={isLinearDb}
+              onClick={() => onViewModeChange('waveformDbLinear')}
+              data-testid="ruler-format-linear-db"
+            >
+              Linear (dB)
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={viewMode === 'waveform'}
+              onClick={() => onViewModeChange('waveform')}
+              data-testid="ruler-format-linear-amp"
+            >
+              Linear (amp)
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuCheckboxItem
+              checked={halfWave}
+              onClick={() => onHalfWaveChange(!halfWave)}
+              data-testid="ruler-half-wave"
+            >
+              Half wave
+            </DropdownMenuCheckboxItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
-      <div className="absolute inset-x-0 top-5" style={{ height: waveformHeight }}>
+      <div className="pointer-events-none absolute inset-x-0 top-5" style={{ height: waveformHeight }}>
         {bands.map((band) => {
-          const values = buildDbRulerValues(band.height, dbRange, verticalZoom, isStereo ? 17 : 20);
-          return (['positive', 'negative'] as const).flatMap((half) => values.map((value) => {
-            const y = band.top + dbValueToWaveY(value, band.height, dbRange, verticalZoom, half === 'negative');
-            const valueKey = String(value).replace('-', 'n');
+          const values = isLinearDb
+            ? buildDbLinearRulerValues(band.height, dbRange, verticalZoom, isStereo, halfWave)
+            : buildDbRulerValues(band.height, dbRange, verticalZoom, isStereo ? 17 : 20, halfWave);
+          return halves.flatMap((half) => values.map((value) => {
+            const y = band.top + (isLinearDb
+              ? dbValueToLinearWaveY(value, band.height, dbRange, verticalZoom, half === 'negative', halfWave)
+              : dbValueToWaveY(value, band.height, dbRange, verticalZoom, half === 'negative', halfWave));
+            const valueKey = String(value).replace('-', 'n').replace('.', 'p');
+            const isFloor = Math.abs(value + Math.abs(dbRange)) < 1e-9;
+            const label = isLinearDb
+              ? isFloor ? '∞' : Math.abs(Math.round(value))
+              : Math.abs(value);
             return (
               <div
                 key={`${band.channel}-${half}-${value}`}
@@ -9672,7 +9810,7 @@ function TrackDbRuler({
                 <span className="absolute right-0 top-0 h-px w-2 bg-[#7c8790]" />
                 {half === 'positive' && (
                   <span className="absolute left-0.5 top-0 -translate-y-1/2 bg-[#20262b]/85 pr-1 text-[7px] leading-none">
-                    {value}
+                    {label}
                   </span>
                 )}
               </div>
@@ -9695,6 +9833,7 @@ function ClipItem({
   verticalZoom,
   showClipping,
   viewMode,
+  halfWave,
   dbRange,
   selection,
   spectralSelection,
@@ -9725,6 +9864,7 @@ function ClipItem({
   verticalZoom: number;
   showClipping: boolean;
   viewMode: ViewMode;
+  halfWave: boolean;
   dbRange: number;
   selection: { start: number; end: number } | null;
   spectralSelection: FrequencySelection | null;
@@ -9840,7 +9980,7 @@ function ClipItem({
       ctx.rect(0, 0, width, bandHeight);
       ctx.clip();
 
-      if (viewMode === 'waveform' || viewMode === 'waveformDb' || viewMode === 'both') {
+      if (viewMode === 'waveform' || viewMode === 'waveformDb' || viewMode === 'waveformDbLinear' || viewMode === 'both') {
         drawWaveform(
           ctx,
           band.data,
@@ -9853,6 +9993,7 @@ function ClipItem({
           viewMode === 'both' ? 0.8 : 1,
           showClipping,
           viewMode === 'waveformDb' ? dbRange : undefined,
+          halfWave,
         );
       }
 
@@ -9873,7 +10014,7 @@ function ClipItem({
       }
       ctx.restore();
     }
-  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, isStereoClip, effectiveChannelHeightRatio]);
+  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, isStereoClip, effectiveChannelHeightRatio]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
@@ -10172,7 +10313,8 @@ function ClipItem({
         className="absolute inset-x-0 bottom-1 top-5"
         data-testid={`waveform-canvas-${clip.id}`}
         data-view-mode={viewMode}
-        data-db-range={viewMode === 'waveformDb' ? dbRange : undefined}
+        data-db-range={viewMode === 'waveformDb' || viewMode === 'waveformDbLinear' ? dbRange : undefined}
+        data-half-wave={halfWave}
         data-channel-count={audioChannels?.length ?? 0}
         data-stereo-ratio={effectiveChannelHeightRatio}
       />
