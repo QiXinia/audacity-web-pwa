@@ -481,6 +481,7 @@ import {
   dbValueToLinearWaveY,
   dbValueToWaveY,
 } from '@/lib/dbWaveform';
+import { buildLinearRulerTicks, type LinearRulerTick } from '@/lib/linearRuler';
 
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -6829,10 +6830,10 @@ export default function AudioEditorPage() {
   const timelineDuration = Math.max(projectDuration, 30);
   const pxPerSec = horizontalZoom;
   const totalWidth = Math.max(timelineDuration * pxPerSec, 1000);
-  const dbRulerWidth = viewMode === 'waveformDb' || viewMode === 'waveformDbLinear'
+  const rulerWidth = viewMode === 'waveform' || viewMode === 'waveformDb' || viewMode === 'waveformDbLinear'
     ? DB_WAVE_RULER_WIDTH
     : 0;
-  const timelineContentWidth = totalWidth + dbRulerWidth;
+  const timelineContentWidth = totalWidth + rulerWidth;
   const activeWorkspaceName = activeWorkspace.name;
   const activeWorkspaceBuiltIn = activeWorkspace.builtIn;
 
@@ -8058,7 +8059,7 @@ export default function AudioEditorPage() {
               className="au-toolbar sticky top-0 z-20 h-7 shrink-0 border-b"
               style={{ width: timelineContentWidth }}
             >
-              <div className="relative h-full" style={{ marginLeft: dbRulerWidth, width: totalWidth }}>
+              <div className="relative h-full" style={{ marginLeft: rulerWidth, width: totalWidth }}>
                 <TimeRuler duration={timelineDuration} pxPerSec={pxPerSec} />
                 <LoopRulerInteraction
                   region={loopRegion}
@@ -8076,7 +8077,7 @@ export default function AudioEditorPage() {
             {/* Playhead */}
             <div
               className="pointer-events-none absolute top-0 bottom-0 z-10 w-px bg-[#e4e5e7]"
-              style={{ left: dbRulerWidth + cursorPosition * pxPerSec }}
+              style={{ left: rulerWidth + cursorPosition * pxPerSec }}
             >
               <div className="absolute -left-1 top-7 size-2 rotate-45 bg-[#e4e5e7]" />
             </div>
@@ -8086,7 +8087,7 @@ export default function AudioEditorPage() {
               <div
                 className="au-selection pointer-events-none absolute top-7 bottom-0 z-[5]"
                 style={{
-                  left: dbRulerWidth + selection.start * pxPerSec,
+                  left: rulerWidth + selection.start * pxPerSec,
                   width: (selection.end - selection.start) * pxPerSec,
                 }}
               />
@@ -8101,7 +8102,7 @@ export default function AudioEditorPage() {
                 data-loop-end={loopRegion.end}
                 className={`pointer-events-none absolute top-7 bottom-0 z-[6] border-x ${loopEnabled ? 'border-[#8bd5a7] bg-[#8bd5a7]/10' : 'border-[#aab0b6]/60 bg-[#aab0b6]/5'}`}
                 style={{
-                  left: dbRulerWidth + loopRegion.start * pxPerSec,
+                  left: rulerWidth + loopRegion.start * pxPerSec,
                   width: (loopRegion.end - loopRegion.start) * pxPerSec,
                 }}
               >
@@ -8175,7 +8176,7 @@ export default function AudioEditorPage() {
                 sampleRate={project.sampleRate}
                 pxPerSec={pxPerSec}
                 totalWidth={totalWidth}
-                dbRulerWidth={dbRulerWidth}
+                rulerWidth={rulerWidth}
                 dbRange={waveformDbRange}
                 viewMode={viewMode}
                 halfWave={halfWave}
@@ -8211,7 +8212,7 @@ export default function AudioEditorPage() {
               tracks={project.tracks}
               pxPerSec={pxPerSec}
               totalWidth={totalWidth}
-              offsetX={dbRulerWidth}
+              offsetX={rulerWidth}
               onSelect={handleAnalysisLabelSelect}
               onEdit={() => setLabelEditorDialogOpen(true)}
             />
@@ -9469,7 +9470,7 @@ function TrackTimeline({
   sampleRate,
   pxPerSec,
   totalWidth,
-  dbRulerWidth,
+  rulerWidth,
   dbRange,
   viewMode,
   halfWave,
@@ -9504,7 +9505,7 @@ function TrackTimeline({
   sampleRate: number;
   pxPerSec: number;
   totalWidth: number;
-  dbRulerWidth: number;
+  rulerWidth: number;
   dbRange: number;
   viewMode: ViewMode;
   halfWave: boolean;
@@ -9546,7 +9547,7 @@ function TrackTimeline({
 
   function handleMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left - dbRulerWidth;
+    const x = e.clientX - rect.left - rulerWidth;
     const rawPosition = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
     const pos = onSnapTime(rawPosition, e.altKey);
     setIsDragging(true);
@@ -9557,7 +9558,7 @@ function TrackTimeline({
   function handleMouseMove(e: React.MouseEvent<HTMLDivElement>) {
     if (!isDragging) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left - dbRulerWidth;
+    const x = e.clientX - rect.left - rulerWidth;
     const rawPosition = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
     const pos = onSnapTime(rawPosition, e.altKey);
     onSelectionChange(dragStart, pos);
@@ -9572,7 +9573,7 @@ function TrackTimeline({
       className={`relative border-b border-border transition-colors ${
         isSelected ? 'bg-accent/5' : ''
       }`}
-      style={{ height: trackHeight, width: totalWidth + dbRulerWidth }}
+      style={{ height: trackHeight, width: totalWidth + rulerWidth }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -9587,11 +9588,11 @@ function TrackTimeline({
         }}
       />
 
-      {dbRulerWidth > 0 && (
-        <TrackDbRuler
+      {rulerWidth > 0 && (
+        <TrackWaveRuler
           trackId={track.id}
           trackName={track.name}
-          width={dbRulerWidth}
+          width={rulerWidth}
           trackHeight={trackHeight}
           waveformHeight={trackHeight - 24}
           dbRange={dbRange}
@@ -9608,7 +9609,7 @@ function TrackTimeline({
       )}
 
       {/* Clips */}
-      <div className="absolute inset-y-0" style={{ left: dbRulerWidth, width: totalWidth }}>
+      <div className="absolute inset-y-0" style={{ left: rulerWidth, width: totalWidth }}>
         {track.clips.map((clip) => (
         <ClipItem
           key={clip.id}
@@ -9649,7 +9650,7 @@ function TrackTimeline({
   );
 }
 
-function TrackDbRuler({
+function TrackWaveRuler({
   trackId,
   trackName,
   width,
@@ -9692,26 +9693,28 @@ function TrackDbRuler({
         { channel: 1, top: upperHeight, height: waveformHeight - upperHeight },
       ]
     : [{ channel: 0, top: 0, height: waveformHeight }];
+  const isLinearAmp = viewMode === 'waveform';
   const isLinearDb = viewMode === 'waveformDbLinear';
+  const formatLabel = isLinearAmp ? 'Linear (amp)' : isLinearDb ? 'Linear (dB)' : 'Logarithmic (dB)';
   const halves = halfWave ? (['positive'] as const) : (['positive', 'negative'] as const);
 
   return (
     <div
       className="sticky left-0 z-[28] select-none border-r border-[#59636c] bg-[#20262b] text-[#bdc6ce]"
       style={{ width, height: trackHeight }}
-      data-testid={`track-db-ruler-${trackId}`}
-      data-db-range={dbRange}
+      data-testid={`${isLinearAmp ? 'track-linear-ruler' : 'track-db-ruler'}-${trackId}`}
+      data-db-range={isLinearAmp ? undefined : dbRange}
       data-vertical-zoom={verticalZoom}
       data-channel-count={isStereo ? 2 : 1}
       data-stereo-ratio={ratio}
       data-ruler-format={viewMode}
       data-half-wave={halfWave}
       role="group"
-      aria-label={`${trackName} ${isLinearDb ? 'Linear (dB)' : 'Logarithmic (dB)'} 轨道标尺，下限 ${dbRange} dB，纵向缩放 ${verticalZoom}，${halfWave ? '半波' : '全波'}`}
+      aria-label={`${trackName} ${formatLabel} 轨道标尺${isLinearAmp ? '' : `，下限 ${dbRange} dB`}，纵向缩放 ${verticalZoom}，${halfWave ? '半波' : '全波'}`}
       onMouseDown={(event) => event.stopPropagation()}
     >
       <div className="flex h-5 items-center justify-between border-b border-[#434a50] px-1 text-[8px]">
-        <span>{isLinearDb ? 'dB·lin' : 'dB·log'}</span>
+        <span>{isLinearAmp ? 'amp' : isLinearDb ? 'dB·lin' : 'dB·log'}</span>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -9782,7 +9785,47 @@ function TrackDbRuler({
         </DropdownMenu>
       </div>
       <div className="pointer-events-none absolute inset-x-0 top-5" style={{ height: waveformHeight }}>
-        {bands.map((band) => {
+        {isLinearAmp ? bands.map((band) => {
+          const ticks = buildLinearRulerTicks({
+            height: band.height,
+            verticalZoom,
+            halfWave,
+            channel: band.channel,
+            stereo: isStereo,
+          });
+          const renderTick = (tick: LinearRulerTick, kind: 'major' | 'minor') => {
+            const valueKey = String(tick.value).replace('-', 'n').replace('.', 'p');
+            return (
+              <div
+                key={`${band.channel}-${kind}-${tick.value}`}
+                className="absolute inset-x-0 h-0"
+                style={{ top: band.top + tick.y }}
+                data-testid={`linear-ruler-${kind}-tick-${trackId}-${band.channel}-${valueKey}`}
+                data-channel={band.channel}
+                data-value={tick.value}
+                data-y={band.top + tick.y}
+                data-collapsed={ticks.collapsed}
+                data-full-width={tick.fullWidth}
+                data-negative={tick.negative}
+                data-bold={tick.bold}
+                aria-hidden="true"
+              >
+                <span className={`absolute right-0 top-0 h-px ${tick.fullWidth ? 'left-0 w-full' : kind === 'major' ? 'w-2' : 'w-1'} ${tick.bold ? 'bg-[#a3afb9]' : 'bg-[#7c8790]'}`} />
+                {kind === 'major' && (
+                  <span className={`absolute left-0.5 top-0 bg-[#20262b]/85 pr-1 text-[7px] leading-none ${tick.alignment === 'upper' ? 'translate-y-1' : tick.alignment === 'lower' ? '-translate-y-full' : '-translate-y-1/2'}`}>
+                    {tick.label}
+                  </span>
+                )}
+              </div>
+            );
+          };
+          return (
+            <div key={band.channel}>
+              {ticks.minor.map((tick) => renderTick(tick, 'minor'))}
+              {ticks.major.map((tick) => renderTick(tick, 'major'))}
+            </div>
+          );
+        }) : bands.map((band) => {
           const values = isLinearDb
             ? buildDbLinearRulerValues(band.height, dbRange, verticalZoom, isStereo, halfWave)
             : buildDbRulerValues(band.height, dbRange, verticalZoom, isStereo ? 17 : 20, halfWave);

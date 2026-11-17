@@ -161,6 +161,7 @@ describe('AudioEditorPage dB waveform and ruler', () => {
   it('switches through the real tab, passes the default range, and restores the Workspace mode', async () => {
     await renderProject();
     expect(screen.queryByTestId('track-db-ruler-track-db')).not.toBeInTheDocument();
+    expect(screen.getByTestId('track-linear-ruler-track-db')).toHaveAttribute('data-ruler-format', 'waveform');
 
     const tab = screen.getByTestId('waveform-db-tab');
     fireEvent.mouseDown(tab, { button: 0, ctrlKey: false });
@@ -221,7 +222,7 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     await waitFor(() => expect(screen.queryByTestId('track-db-ruler-track-db')).not.toBeInTheDocument());
   });
 
-  it('subtracts the dB ruler from mouse time conversion and restores linear coordinates', async () => {
+  it('subtracts the ruler width from mouse time conversion in dB and linear modes', async () => {
     mockProject = makeProject('mono');
     setWorkspaceViewMode('waveformDb');
     await renderProject();
@@ -239,7 +240,8 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     fireEvent.mouseDown(linearTab, { button: 0, ctrlKey: false });
     fireEvent.click(linearTab);
     await waitFor(() => expect(screen.queryByTestId('track-db-ruler-track-db')).not.toBeInTheDocument());
-    fireEvent.mouseDown(timeline, { button: 0, clientX: 300, clientY: 20 });
+    expect(screen.getByTestId('track-linear-ruler-track-db')).toBeInTheDocument();
+    fireEvent.mouseDown(timeline, { button: 0, clientX: 344, clientY: 20 });
     expect(audioEngine.seek).toHaveBeenLastCalledWith(2);
   });
 
@@ -291,6 +293,7 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
     fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Linear (amp)' }));
     await waitFor(() => expect(screen.queryByTestId('track-db-ruler-track-db')).not.toBeInTheDocument());
+    expect(screen.getByTestId('track-linear-ruler-track-db')).toHaveAttribute('data-ruler-format', 'waveform');
     expect(screen.getByTestId('waveform-canvas-clip-db')).toHaveAttribute('data-view-mode', 'waveform');
 
     const linearDbTab = screen.getByRole('tab', { name: '线性 dB' });
@@ -300,6 +303,56 @@ describe('AudioEditorPage dB waveform and ruler', () => {
       'data-ruler-format',
       'waveformDbLinear',
     ));
+  });
+
+  it('renders official Linear (amp) mono ticks and switches to half-wave', async () => {
+    mockProject = makeProject('mono');
+    setWorkspaceViewMode('waveform');
+    await renderProject();
+    const ruler = await screen.findByTestId('track-linear-ruler-track-db');
+    await waitFor(() => expect(ruler).toHaveAttribute('data-channel-count', '1'));
+
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-0-n1')).toHaveTextContent('1.0');
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-0-0')).toHaveTextContent('0.0');
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-0-1')).toHaveTextContent('1.0');
+    expect(screen.getByTestId('linear-ruler-minor-tick-track-db-0-n0p5')).toHaveAttribute('data-y', '55');
+    expect(screen.getByTestId('linear-ruler-minor-tick-track-db-0-0p5')).toHaveAttribute('data-y', '21');
+    expect(screen.queryByTestId('track-db-ruler-track-db')).not.toBeInTheDocument();
+
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Half wave' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-half-wave', 'true'));
+    expect(screen.queryByTestId('linear-ruler-major-tick-track-db-0-n1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-0-0')).toHaveAttribute('data-y', '72');
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-0-0p5')).toHaveTextContent('0.5');
+    expect(screen.getByTestId('waveform-canvas-clip-db')).toHaveAttribute('data-half-wave', 'true');
+  });
+
+  it('collapses short stereo channels and persists Linear (amp) zoom and half-wave', async () => {
+    setWorkspaceViewMode('waveform');
+    await renderProject();
+    const ruler = await screen.findByTestId('track-linear-ruler-track-db');
+    await waitFor(() => expect(ruler).toHaveAttribute('data-channel-count', '2'));
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-0-0')).toHaveTextContent('0.0');
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-1-0')).toHaveAttribute('data-collapsed', 'true');
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-1-0')).toHaveAttribute('data-full-width', 'true');
+    expect(screen.queryByTestId('linear-ruler-major-tick-track-db-0-n1')).not.toBeInTheDocument();
+
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '放大' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-vertical-zoom', '2'));
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Half wave' }));
+    await waitFor(() => expect(ruler).toHaveAttribute('data-half-wave', 'true'));
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-0-0p25')).toHaveTextContent('0.25');
+    expect(screen.getByTestId('linear-ruler-major-tick-track-db-1-0p25')).toHaveTextContent('0.25');
+
+    cleanup();
+    await renderProject();
+    const restored = screen.getByTestId('track-linear-ruler-track-db');
+    expect(restored).toHaveAttribute('data-ruler-format', 'waveform');
+    expect(restored).toHaveAttribute('data-vertical-zoom', '2');
+    expect(restored).toHaveAttribute('data-half-wave', 'true');
   });
 
   it('exposes both dB formats and half-wave in the View menu', async () => {
