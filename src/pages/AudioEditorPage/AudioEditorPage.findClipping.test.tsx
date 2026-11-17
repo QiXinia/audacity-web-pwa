@@ -138,6 +138,8 @@ describe('AudioEditorPage Find Clipping integration', () => {
   it('blocks non-integer thresholds without reading audio or writing the project', async () => {
     renderEditor();
     await screen.findByText('Find Clipping integration');
+    await waitFor(() => expect(projectService.loadAudioChannels).toHaveBeenCalledTimes(2));
+    vi.mocked(projectService.loadAudioChannels).mockClear();
     fireEvent.click(await openAnalysisMenu());
     const start = await screen.findByLabelText('Start threshold (samples):');
     fireEvent.change(start, { target: { value: '1.5' } });

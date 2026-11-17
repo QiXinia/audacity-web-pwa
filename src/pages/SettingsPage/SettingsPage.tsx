@@ -42,6 +42,13 @@ import { projectService } from '@/services/projectService';
 import { audioDb } from '@/db/audioDb';
 import { audioEngine } from '@/engine/audioEngine';
 import type { IPreferences } from '@/types/project';
+import { loadWorkspaceStore } from '@/services/workspaceService';
+import {
+  loadStereoHeightsPreferences,
+  saveStereoHeightsPreferences,
+  setStereoHeightsWorkspaceEnabled,
+  type AsymmetricStereoHeightsPreferences,
+} from '@/lib/stereoHeights';
 
 const DEFAULT_SAMPLE_RATES = [
   { value: '22050', label: '22050 Hz (低质量)' },
@@ -60,6 +67,11 @@ export default function SettingsPage() {
   const [clearDataDialog, setClearDataDialog] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt' | 'unsupported'>('prompt');
+  const [workspaceStore] = useState(loadWorkspaceStore);
+  const [stereoHeightsPreferences, setStereoHeightsPreferences] = useState<AsymmetricStereoHeightsPreferences>(() => {
+    const store = loadWorkspaceStore();
+    return loadStereoHeightsPreferences(undefined, store.presets.map((preset) => preset.name));
+  });
 
   useEffect(() => {
     loadPreferences();
@@ -116,6 +128,19 @@ export default function SettingsPage() {
     try {
       await projectService.savePreferences(updated);
     } catch {}
+  }
+
+  function updateStereoHeightsPreferences(next: AsymmetricStereoHeightsPreferences) {
+    const validNames = new Set(workspaceStore.presets.map((preset) => preset.name));
+    const updated = {
+      ...next,
+      workspaceNames: next.workspaceNames.filter((name) => validNames.has(name)),
+    };
+    if (saveStereoHeightsPreferences(updated)) {
+      setStereoHeightsPreferences(updated);
+      return;
+    }
+    toast.error('浏览器存储不可用，非对称声道高度偏好未保存');
   }
 
   async function handleClearAllData() {
@@ -232,6 +257,68 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+            </CardContent>
+          </Card>
+
+          {/* Audacity Edit Preferences: asymmetric stereo channel heights */}
+          <Card>
+            <CardHeader>
+              <CardTitle>非对称立体声声道高度</CardTitle>
+              <CardDescription>Asymmetric stereo heights · Audacity Edit Preferences</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                启用后，拖动立体声片段的中线可以分别调整左右声道的显示高度；不会修改音频采样或声像。
+              </p>
+              <div role="radiogroup" aria-label="非对称立体声声道高度模式" className="space-y-3">
+                {([
+                  ['always', 'Always（总是）'],
+                  ['workspace-dependent', 'Depending on workspace（取决于 Workspace）'],
+                  ['never', 'Never（从不）'],
+                ] as const).map(([mode, label]) => (
+                  <div key={mode} className="flex items-center gap-2">
+                    <input
+                      id={`stereo-heights-${mode}`}
+                      type="radio"
+                      name="stereo-heights-mode"
+                      className="size-4 accent-primary"
+                      checked={stereoHeightsPreferences.mode === mode}
+                      onChange={() => updateStereoHeightsPreferences({
+                        ...stereoHeightsPreferences,
+                        mode,
+                      })}
+                    />
+                    <Label htmlFor={`stereo-heights-${mode}`} className="cursor-pointer font-normal">
+                      {label}
+                    </Label>
+                  </div>
+                ))}
+              </div>
+              {stereoHeightsPreferences.mode === 'workspace-dependent' && (
+                <div className="ml-6 space-y-2 rounded-md border p-3" aria-label="允许非对称声道高度的 Workspace">
+                  {workspaceStore.presets.map((preset) => (
+                    <label key={preset.id} className="flex cursor-pointer items-center gap-2 text-sm font-normal">
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-primary"
+                        aria-label={`Workspace ${preset.name} 允许非对称声道高度`}
+                        checked={stereoHeightsPreferences.workspaceNames.includes(preset.name)}
+                        onChange={(event) => updateStereoHeightsPreferences(
+                          setStereoHeightsWorkspaceEnabled(
+                            stereoHeightsPreferences,
+                            preset.name,
+                            event.target.checked,
+                          ),
+                        )}
+                      />
+                      <span>{preset.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                禁用后所有轨道恢复 50% / 50% 等分；每声道至少保留 20px，过矮视图自动等分。
+              </p>
             </CardContent>
           </Card>
 

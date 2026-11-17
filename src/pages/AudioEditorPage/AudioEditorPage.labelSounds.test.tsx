@@ -153,6 +153,8 @@ describe('AudioEditorPage Label sounds integration', () => {
   it('blocks invalid durations before reading audio or writing history', async () => {
     renderEditor();
     await screen.findByText('Label sounds integration');
+    await waitFor(() => expect(projectService.loadAudioChannels).toHaveBeenCalledTimes(1));
+    vi.mocked(projectService.loadAudioChannels).mockClear();
     await openLabelSounds();
     fireEvent.change(await screen.findByLabelText('Minimum silence duration (s)'), { target: { value: '0' } });
     expect(screen.getByRole('button', { name: 'OK' })).toBeDisabled();

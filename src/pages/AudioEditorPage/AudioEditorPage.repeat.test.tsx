@@ -85,6 +85,7 @@ Object.defineProperty(navigator, 'permissions', {
 });
 HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
   clearRect: vi.fn(), scale: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+  save: vi.fn(), restore: vi.fn(), translate: vi.fn(), rect: vi.fn(), clip: vi.fn(),
   fillRect: vi.fn(), set strokeStyle(_value: string) {}, set fillStyle(_value: string) {}, set lineWidth(_value: number) {},
 })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
 Element.prototype.scrollIntoView = vi.fn();

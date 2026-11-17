@@ -110,6 +110,8 @@ describe('AudioEditorPage Contrast Analyzer integration', () => {
   it('measures one selected track twice from effective stereo PCM without project writes', async () => {
     renderEditor();
     await screen.findByText('Contrast integration');
+    await waitFor(() => expect(projectService.loadAudioChannels).toHaveBeenCalledTimes(2));
+    vi.mocked(projectService.loadAudioChannels).mockClear();
     fireEvent.click(await screen.findByRole('button', { name: /^Clip A/ }));
     fireEvent.click(await openAnalysisMenu());
 
@@ -132,6 +134,8 @@ describe('AudioEditorPage Contrast Analyzer integration', () => {
   it('rejects Shift multi-track measurement with an explicit diagnostic', async () => {
     renderEditor();
     await screen.findByText('Contrast integration');
+    await waitFor(() => expect(projectService.loadAudioChannels).toHaveBeenCalledTimes(2));
+    vi.mocked(projectService.loadAudioChannels).mockClear();
     fireEvent.click(await screen.findByRole('button', { name: /^Clip A/ }));
     fireEvent.click(screen.getByRole('button', { name: /^Clip B/ }), { shiftKey: true });
     fireEvent.click(await openAnalysisMenu());

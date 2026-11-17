@@ -387,6 +387,15 @@ import {
   type WorkspaceLayout,
   type WorkspaceStore,
 } from '@/services/workspaceService';
+import {
+  isAsymmetricStereoHeightsEnabled,
+  loadChannelHeightRatios,
+  loadStereoHeightsPreferences,
+  normalizeChannelHeightRatio,
+  resetChannelHeightRatios,
+  saveChannelHeightRatio,
+  saveStereoHeightsPreferences,
+} from '@/lib/stereoHeights';
 import type { IProject, ITrack, IClip, IEffect, IAnalysisLabel, ViewMode, EffectType, SnapMode } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
@@ -528,13 +537,21 @@ export default function AudioEditorPage() {
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const clipSelectionAnchorRef = useRef<ClipKey | null>(null);
   const [workspaceStore, setWorkspaceStore] = useState(loadWorkspaceStore);
-  const initialWorkspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
+  const activeWorkspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
     ?? workspaceStore.presets[0];
-  const [showTrackPanel, setShowTrackPanel] = useState(initialWorkspace.layout.showTrackPanel);
-  const [showMixer, setShowMixer] = useState(initialWorkspace.layout.showMixer);
-  const [showClipping, setShowClipping] = useState(initialWorkspace.layout.showClipping);
+  const [showTrackPanel, setShowTrackPanel] = useState(activeWorkspace.layout.showTrackPanel);
+  const [showMixer, setShowMixer] = useState(activeWorkspace.layout.showMixer);
+  const [showClipping, setShowClipping] = useState(activeWorkspace.layout.showClipping);
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
+  const [stereoHeightsPreferences, setStereoHeightsPreferences] = useState(() => (
+    loadStereoHeightsPreferences(undefined, workspaceStore.presets.map((preset) => preset.name))
+  ));
+  const asymmetricStereoHeightsEnabled = isAsymmetricStereoHeightsEnabled(
+    stereoHeightsPreferences,
+    activeWorkspace.name,
+  );
+  const [channelHeightRatios, setChannelHeightRatios] = useState<Record<string, number>>({});
   const [generatorDurations, setGeneratorDurations] = useState<Record<GeneratorKind, number>>(() => ({
     tone: loadGeneratorDuration('tone'),
     chirp: loadGeneratorDuration('chirp'),
@@ -690,6 +707,19 @@ export default function AudioEditorPage() {
   recordingStateRef.current = recordingState;
   const workspaceHydratedRef = useRef(false);
   const workspaceStorageWarningShownRef = useRef(false);
+  const channelHeightStorageWarningShownRef = useRef(false);
+  useEffect(() => {
+    if (!projectId) {
+      setChannelHeightRatios({});
+      return;
+    }
+    setChannelHeightRatios(loadChannelHeightRatios(projectId));
+  }, [projectId]);
+  useEffect(() => {
+    if (!projectId || asymmetricStereoHeightsEnabled) return;
+    resetChannelHeightRatios(projectId);
+    setChannelHeightRatios((current) => Object.keys(current).length > 0 ? {} : current);
+  }, [asymmetricStereoHeightsEnabled, projectId]);
   useEffect(() => {
     if (selectedClips.length === 0) {
       clipSelectionAnchorRef.current = null;
@@ -1896,6 +1926,19 @@ export default function AudioEditorPage() {
     return false;
   }
 
+  function changeChannelHeightRatio(trackId: string, ratio: number) {
+    setChannelHeightRatios((current) => ({ ...current, [trackId]: ratio }));
+  }
+
+  function commitChannelHeightRatio(trackId: string, ratio: number) {
+    if (!projectId) return;
+    changeChannelHeightRatio(trackId, ratio);
+    if (!saveChannelHeightRatio(projectId, trackId, ratio) && !channelHeightStorageWarningShownRef.current) {
+      channelHeightStorageWarningShownRef.current = true;
+      toast.error('浏览器存储不可用，声道高度仅在本次会话保留');
+    }
+  }
+
   function applyWorkspaceLayout(layout: WorkspaceLayout) {
     setShowTrackPanel(layout.showTrackPanel);
     setShowMixer(layout.showMixer);
@@ -1945,6 +1988,13 @@ export default function AudioEditorPage() {
     const updated = removeWorkspace(workspaceStore, workspaceStore.activeId);
     setWorkspaceStore(updated);
     persistWorkspaceStore(updated);
+    const validNames = new Set(updated.presets.map((candidate) => candidate.name));
+    const updatedStereoPreferences = {
+      ...stereoHeightsPreferences,
+      workspaceNames: stereoHeightsPreferences.workspaceNames.filter((name) => validNames.has(name)),
+    };
+    setStereoHeightsPreferences(updatedStereoPreferences);
+    saveStereoHeightsPreferences(updatedStereoPreferences);
     const preset = updated.presets.find((candidate) => candidate.id === updated.activeId);
     if (preset) applyWorkspaceLayout(preset.layout);
     toast.info('已删除自定义 Workspace');
@@ -6767,8 +6817,8 @@ export default function AudioEditorPage() {
   const timelineDuration = Math.max(projectDuration, 30);
   const pxPerSec = horizontalZoom;
   const totalWidth = Math.max(timelineDuration * pxPerSec, 1000);
-  const activeWorkspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
-    ?? workspaceStore.presets[0];
+  const activeWorkspaceName = activeWorkspace.name;
+  const activeWorkspaceBuiltIn = activeWorkspace.builtIn;
 
   if (isLoading) {
     return (
@@ -8098,6 +8148,10 @@ export default function AudioEditorPage() {
                 onSpectralSelectionChange={handleSpectralSelectionChange}
                 onCursorChange={handleCursorChange}
                 onSnapTime={resolveTimelineSnap}
+                channelHeightRatio={channelHeightRatios[track.id] ?? 0.5}
+                asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
+                onChannelHeightRatioChange={(ratio) => changeChannelHeightRatio(track.id, ratio)}
+                onChannelHeightRatioCommit={(ratio) => commitChannelHeightRatio(track.id, ratio)}
               />
             ))}
 
@@ -9374,6 +9428,10 @@ function TrackTimeline({
   onSpectralSelectionChange,
   onCursorChange,
   onSnapTime,
+  channelHeightRatio,
+  asymmetricStereoHeightsEnabled,
+  onChannelHeightRatioChange,
+  onChannelHeightRatioCommit,
 }: {
   track: ITrack;
   trackIndex: number;
@@ -9399,6 +9457,10 @@ function TrackTimeline({
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
   onSnapTime: (time: number, bypassSnap: boolean) => number;
+  channelHeightRatio: number;
+  asymmetricStereoHeightsEnabled: boolean;
+  onChannelHeightRatioChange: (ratio: number) => void;
+  onChannelHeightRatioCommit: (ratio: number) => void;
 }) {
   const trackHeight = 100;
   const [isDragging, setIsDragging] = useState(false);
@@ -9474,6 +9536,10 @@ function TrackTimeline({
           onSpectralSelectionChange={onSpectralSelectionChange}
           onCursorChange={onCursorChange}
           onSnapTime={onSnapTime}
+          channelHeightRatio={channelHeightRatio}
+          asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
+          onChannelHeightRatioChange={onChannelHeightRatioChange}
+          onChannelHeightRatioCommit={onChannelHeightRatioCommit}
         />
       ))}
     </div>
@@ -9505,6 +9571,10 @@ function ClipItem({
   onSpectralSelectionChange,
   onCursorChange,
   onSnapTime,
+  channelHeightRatio,
+  asymmetricStereoHeightsEnabled,
+  onChannelHeightRatioChange,
+  onChannelHeightRatioCommit,
 }: {
   clip: IClip;
   track: ITrack;
@@ -9529,9 +9599,13 @@ function ClipItem({
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
   onSnapTime: (time: number, bypassSnap: boolean) => number;
+  channelHeightRatio: number;
+  asymmetricStereoHeightsEnabled: boolean;
+  onChannelHeightRatioChange: (ratio: number) => void;
+  onChannelHeightRatioCommit: (ratio: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [audioData, setAudioData] = useState<Float32Array | null>(null);
+  const [audioChannels, setAudioChannels] = useState<Float32Array[] | null>(null);
   const [edgeDrag, setEdgeDrag] = useState<{
     edge: 'left' | 'right';
     mode: 'trim' | 'stretch';
@@ -9548,13 +9622,34 @@ function ClipItem({
     frequencyHz: number;
     moved: boolean;
   } | null>(null);
+  const splitterDragRef = useRef<{
+    pointerId: number;
+    startClientY: number;
+    startRatio: number;
+    currentRatio: number;
+  } | null>(null);
+  const canvasHeight = trackHeight - 24;
+  const isStereoClip = audioChannels?.length === 2;
+  const effectiveChannelHeightRatio = isStereoClip
+    ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, canvasHeight)
+    : 0.5;
 
   useEffect(() => {
     let mounted = true;
     async function load() {
-      const data = await projectService.loadAudioBuffer(clip.audioBufferId, sampleRate);
-      if (mounted && data) {
-        setAudioData(data);
+      setAudioChannels(null);
+      try {
+        let channels: Float32Array[] | null = null;
+        if (typeof projectService.loadAudioChannels === 'function') {
+          channels = await projectService.loadAudioChannels(clip.audioBufferId, sampleRate) ?? null;
+        } else {
+          // Keep older integrations that only provide the mono buffer loader.
+          const firstChannel = await projectService.loadAudioBuffer(clip.audioBufferId, sampleRate);
+          channels = firstChannel ? [firstChannel] : null;
+        }
+        if (mounted) setAudioChannels(channels && channels.length > 0 ? channels : null);
+      } catch {
+        if (mounted) setAudioChannels(null);
       }
     }
     load();
@@ -9565,11 +9660,11 @@ function ClipItem({
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !audioData) return;
+    if (!canvas || !audioChannels || audioChannels.length === 0) return;
 
     const dpr = window.devicePixelRatio || 1;
     const width = Math.max(1, Math.floor(clip.duration * pxPerSec));
-    const height = trackHeight - 24;
+    const height = canvasHeight;
 
     canvas.width = width * dpr;
     canvas.height = height * dpr;
@@ -9583,28 +9678,44 @@ function ClipItem({
     ctx.clearRect(0, 0, width, height);
 
     const stretchRatio = getClipStretchRatio(clip);
+    const firstChannelHeight = isStereoClip ? height * effectiveChannelHeightRatio : height;
+    const channelBands = isStereoClip
+      ? [
+          { data: audioChannels[0]!, top: 0, height: firstChannelHeight },
+          { data: audioChannels[1]!, top: firstChannelHeight, height: height - firstChannelHeight },
+        ]
+      : [{ data: audioChannels[0]!, top: 0, height }];
 
-    // Draw waveform or spectrum based on view mode
-    if (viewMode === 'waveform' || viewMode === 'both') {
-      drawWaveform(ctx, audioData, width, height, '#20252a', clip, sampleRate, verticalZoom, viewMode === 'both' ? 0.8 : 1, showClipping);
-    }
+    for (const band of channelBands) {
+      const bandHeight = Math.max(1, band.height);
+      ctx.save();
+      ctx.translate(0, band.top);
+      ctx.beginPath();
+      ctx.rect(0, 0, width, bandHeight);
+      ctx.clip();
 
-    if (viewMode === 'spectrum' || viewMode === 'both') {
-      const sourceStart = Math.max(0, Math.floor(clip.offset * sampleRate));
-      const sourceEnd = Math.min(
-        audioData.length,
-        Math.floor((clip.offset + clip.duration * stretchRatio) * sampleRate),
-      );
-      drawSpectrumMini(
-        ctx,
-        audioData.subarray(sourceStart, Math.max(sourceStart + 1, sourceEnd)),
-        width,
-        height,
-        sampleRate,
-        viewMode === 'both' ? 0.5 : 1,
-      );
+      if (viewMode === 'waveform' || viewMode === 'both') {
+        drawWaveform(ctx, band.data, width, bandHeight, '#20252a', clip, sampleRate, verticalZoom, viewMode === 'both' ? 0.8 : 1, showClipping);
+      }
+
+      if (viewMode === 'spectrum' || viewMode === 'both') {
+        const sourceStart = Math.max(0, Math.floor(clip.offset * sampleRate));
+        const sourceEnd = Math.min(
+          band.data.length,
+          Math.floor((clip.offset + clip.duration * stretchRatio) * sampleRate),
+        );
+        drawSpectrumMini(
+          ctx,
+          band.data.subarray(sourceStart, Math.max(sourceStart + 1, sourceEnd)),
+          width,
+          bandHeight,
+          sampleRate,
+          viewMode === 'both' ? 0.5 : 1,
+        );
+      }
+      ctx.restore();
     }
-  }, [audioData, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, trackColor, trackHeight, sampleRate, verticalZoom, showClipping]);
+  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, isStereoClip, effectiveChannelHeightRatio]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
@@ -9629,6 +9740,59 @@ function ClipItem({
       ? { left: rectLeft, width: rectRight - rectLeft, top, height: bottom - top }
       : null;
   })() : null;
+
+  function handleChannelSplitterStart(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!asymmetricStereoHeightsEnabled || !isStereoClip) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    splitterDragRef.current = {
+      pointerId: e.pointerId,
+      startClientY: e.clientY,
+      startRatio: effectiveChannelHeightRatio,
+      currentRatio: effectiveChannelHeightRatio,
+    };
+  }
+
+  function handleChannelSplitterMove(e: React.PointerEvent<HTMLButtonElement>) {
+    const drag = splitterDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId || canvasHeight <= 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const next = normalizeChannelHeightRatio(
+      drag.startRatio + (e.clientY - drag.startClientY) / canvasHeight,
+      canvasHeight,
+    );
+    drag.currentRatio = next;
+    onChannelHeightRatioChange(next);
+  }
+
+  function handleChannelSplitterEnd(e: React.PointerEvent<HTMLButtonElement>) {
+    const drag = splitterDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    splitterDragRef.current = null;
+    onChannelHeightRatioCommit(drag.currentRatio);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }
+
+  function handleChannelSplitterKeyDown(e: React.KeyboardEvent<HTMLButtonElement>) {
+    if (!asymmetricStereoHeightsEnabled || !isStereoClip) return;
+    let requested: number;
+    if (e.key === 'ArrowUp') requested = effectiveChannelHeightRatio - (e.shiftKey ? 0.1 : 0.02);
+    else if (e.key === 'ArrowDown') requested = effectiveChannelHeightRatio + (e.shiftKey ? 0.1 : 0.02);
+    else if (e.key === 'Home') requested = 0;
+    else if (e.key === 'End') requested = 1;
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+    const next = normalizeChannelHeightRatio(requested, canvasHeight);
+    onChannelHeightRatioChange(next);
+    onChannelHeightRatioCommit(next);
+  }
 
   function boundedEdgeDelta(edge: 'left' | 'right', mode: 'trim' | 'stretch', rawDelta: number) {
     const ratio = getClipStretchRatio(clip);
@@ -9846,6 +10010,44 @@ function ClipItem({
 
       {/* Waveform canvas */}
       <canvas ref={canvasRef} className="absolute inset-x-0 bottom-1 top-5" />
+      {isStereoClip && (
+        <button
+          type="button"
+          role="slider"
+          aria-label={`${clip.name} 立体声声道高度`}
+          aria-orientation="vertical"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(effectiveChannelHeightRatio * 100)}
+          aria-valuetext={`左声道 ${Math.round(effectiveChannelHeightRatio * 100)}%，右声道 ${Math.round((1 - effectiveChannelHeightRatio) * 100)}%`}
+          data-testid={`stereo-channel-splitter-${clip.id}`}
+          data-channel-ratio={effectiveChannelHeightRatio}
+          disabled={!asymmetricStereoHeightsEnabled}
+          tabIndex={asymmetricStereoHeightsEnabled ? 0 : -1}
+          title={asymmetricStereoHeightsEnabled
+            ? '拖动调整左右声道高度；方向键微调，Home/End 到边界'
+            : '在设置中启用非对称立体声声道高度后可拖动'}
+          className={`absolute inset-x-0 z-[25] h-[9px] -translate-y-1/2 touch-none ${
+            asymmetricStereoHeightsEnabled ? 'cursor-row-resize' : 'cursor-default'
+          }`}
+          style={{ top: 20 + effectiveChannelHeightRatio * canvasHeight }}
+          onPointerDown={handleChannelSplitterStart}
+          onPointerMove={handleChannelSplitterMove}
+          onPointerUp={handleChannelSplitterEnd}
+          onPointerCancel={handleChannelSplitterEnd}
+          onKeyDown={handleChannelSplitterKeyDown}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onDragStart={(e) => e.preventDefault()}
+        >
+          <span className={`pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-[#20252a]/30 ${
+            asymmetricStereoHeightsEnabled ? '' : 'opacity-40'
+          }`} />
+        </button>
+      )}
 
       {(viewMode === 'spectrum' || viewMode === 'both') && (
         <div
