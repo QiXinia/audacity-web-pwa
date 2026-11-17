@@ -202,17 +202,24 @@ describe('AudioEditorPage Align Tracks', () => {
     expect(mocks.push.mock.calls[0]![0].label).toBe('Align Together');
   });
 
-  it('places selected tracks end to end in project order', async () => {
+  it('places selected tracks end to end and zooms to the persisted project duration', async () => {
+    mockProject.tracks[0]!.clips[0]!.duration = 1;
+    mockProject.tracks[1]!.clips[0]!.duration = 2;
     await renderEditor();
+    const viewport = await screen.findByTestId('timeline-viewport');
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 800 });
     await selectTwoTracks();
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Align End to End 首尾相接'));
 
     await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
     expect(start('late')).toBe(5);
-    expect(start('early')).toBeCloseTo(5.01, 10);
+    expect(start('early')).toBe(6);
     expect(start('early-2')).toBe(1);
     expect(mocks.push.mock.calls[0]![0].label).toBe('Align End to End');
+    // 800 px usable width / the new 8 s project, not the stale 6 s duration.
+    await waitFor(() => expect(screen.getByText('缩放 100 px/s')).toBeInTheDocument());
+    await waitFor(() => expect(viewport.scrollLeft).toBe(0));
   });
 
   it('disables Align Tracks while audio is playing and for an empty project', async () => {

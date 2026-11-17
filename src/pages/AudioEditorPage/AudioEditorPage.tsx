@@ -1442,6 +1442,11 @@ export default function AudioEditorPage() {
       const persisted = await projectService.getProject(project.id);
       if (!persisted) throw new Error('轨道对齐后无法重新加载工程');
       setProject(persisted);
+      if (mode === 'end-to-end') {
+        // Audacity's DoAlign calls ZoomFitHorizontally after Align End to End.
+        // Use the persisted project so the fit includes the newly aligned clip end.
+        fitProjectToWidth(getProjectDuration(persisted));
+      }
       pushHistoryCmd({
         id: generateId(),
         label,
@@ -5181,10 +5186,10 @@ export default function AudioEditorPage() {
   }
 
   // Helpers
-  function getProjectDuration(): number {
-    if (!project) return 0;
+  function getProjectDuration(source: IProject | null = project): number {
+    if (!source) return 0;
     let maxEnd = 0;
-    for (const track of project.tracks) {
+    for (const track of source.tracks) {
       for (const clip of track.clips) {
         const end = clip.startTime + clip.duration;
         if (end > maxEnd) maxEnd = end;
@@ -6536,9 +6541,9 @@ export default function AudioEditorPage() {
     scrollTimelineTo(selection.start, nextZoom);
   }
 
-  function fitProjectToWidth() {
+  function fitProjectToWidth(duration = getProjectDuration()) {
     const nextZoom = horizontalZoomForDuration(
-      projectDuration,
+      duration,
       timelineRef.current?.clientWidth ?? 0,
     );
     if (nextZoom === null) return;
@@ -6672,7 +6677,7 @@ export default function AudioEditorPage() {
               >
                 缩放至选区 (Ctrl+E)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={fitProjectToWidth} disabled={projectDuration <= 0}>
+              <DropdownMenuItem onClick={() => fitProjectToWidth()} disabled={projectDuration <= 0}>
                 适应宽度 (Ctrl+F)
               </DropdownMenuItem>
               <DropdownMenuSeparator />
