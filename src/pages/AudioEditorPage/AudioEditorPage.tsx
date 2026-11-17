@@ -166,6 +166,7 @@ import {
   type GeneratorSelection,
 } from '@/lib/generatorEditing';
 import { resolveMixAndRenderTrackIds } from '@/lib/mixAndRenderEffect';
+import { resolveRemoveTrackFocus } from '@/lib/trackRemoval';
 import {
   measureContrastSelection as measureContrastPcm,
   type ContrastClip,
@@ -475,6 +476,7 @@ export default function AudioEditorPage() {
   const [isResampling, setIsResampling] = useState(false);
   const [isMutingTracks, setIsMutingTracks] = useState(false);
   const [isPanningTracks, setIsPanningTracks] = useState(false);
+  const [isRemovingTracks, setIsRemovingTracks] = useState(false);
   const [exportFormat, setExportFormat] = useState('wav');
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [effectsPanelTrackId, setEffectsPanelTrackId] = useState<string | null>(null);
@@ -1311,6 +1313,63 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? error.message : '轨道声像保存失败');
     } finally {
       setIsPanningTracks(false);
+    }
+  }
+
+  async function removeSelectedTracks(): Promise<void> {
+    if (!project || isRemovingTracks) return;
+    if (playbackState !== 'stopped' || recordingState === 'recording') {
+      toast.warning('请先停止播放或录音');
+      return;
+    }
+    const targetTrackIds = resolveMixAndRenderTrackIds(
+      project.tracks.map((track) => track.id),
+      selectedTrackId,
+      selectedClips.map((clip) => clip.trackId),
+    );
+    if (targetTrackIds.length === 0) {
+      toast.warning('请先选择要移除的轨道');
+      return;
+    }
+
+    const targets = new Set(targetTrackIds);
+    const focusedTrackId = resolveRemoveTrackFocus(
+      project.tracks.map((track) => track.id),
+      targetTrackIds,
+    );
+    const before = structuredClone(project);
+    const updated: IProject = {
+      ...project,
+      tracks: project.tracks.filter((track) => !targets.has(track.id)),
+      analysisLabels: project.analysisLabels?.filter((label) => !targets.has(label.trackId)),
+    };
+    setIsRemovingTracks(true);
+    try {
+      // Keep clip buffers intact so the single Remove Track history step can
+      // restore both track metadata and playable audio without orphaned undo data.
+      await projectService.saveProject(updated);
+      const persisted = await projectService.getProject(project.id);
+      if (!persisted) throw new Error('轨道移除后无法重新加载工程');
+      setProject(persisted);
+      setSelectedTrackId(
+        focusedTrackId && persisted.tracks.some((track) => track.id === focusedTrackId)
+          ? focusedTrackId
+          : persisted.tracks[0]?.id ?? null,
+      );
+      setSelectedClips((current) => current.filter((key) => !targets.has(key.trackId)));
+      setEffectsPanelTrackId((current) => current && targets.has(current) ? null : current);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Remove Track',
+        execute: () => persisted,
+        undo: () => before,
+      });
+      toast.success(`已移除 ${targetTrackIds.length} 条选中轨道`);
+    } catch (error) {
+      logger.error('Remove Tracks failed', error);
+      toast.error(error instanceof Error ? error.message : '选中轨道移除失败');
+    } finally {
+      setIsRemovingTracks(false);
     }
   }
 
@@ -6638,6 +6697,13 @@ export default function AudioEditorPage() {
                 onClick={() => setResampleDialogOpen(true)}
               >
                 Resample… 重采样…
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={mixAndRenderTrackIds.length === 0 || isRemovingTracks
+                  || playbackState !== 'stopped' || recordingState === 'recording'}
+                onClick={() => void removeSelectedTracks()}
+              >
+                Remove Tracks 移除轨道
               </DropdownMenuItem>
               <DropdownMenuItem onClick={convertStereoTracksToMono}>Stereo To Mono 立体声转单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={splitStereoTracksToMono}>Split Stereo To Mono 立体声拆分为单声道</DropdownMenuItem>
