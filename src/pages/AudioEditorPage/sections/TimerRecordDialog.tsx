@@ -12,18 +12,24 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   createTimerRecordSchedule,
+  loadTimerRecordAdvancedOptions,
+  normalizeTimerRecordExportFilename,
   parseDateTimeLocalValue,
   parseTimerDurationParts,
+  persistTimerRecordAdvancedOptions,
   timerDurationBetween,
   timerDurationToParts,
   toDateTimeLocalValue,
+  type TimerRecordAdvancedOptions,
+  type TimerRecordPostAction,
   type TimerRecordSchedule,
 } from '@/lib/timerRecord';
 
 interface TimerRecordDialogProps {
   open: boolean;
+  projectName: string;
   onOpenChange: (open: boolean) => void;
-  onSchedule: (schedule: TimerRecordSchedule) => void;
+  onSchedule: (schedule: TimerRecordSchedule, options: TimerRecordAdvancedOptions) => void;
 }
 
 interface DurationText {
@@ -52,6 +58,7 @@ function durationText(durationSeconds: number): DurationText {
 
 export default function TimerRecordDialog({
   open,
+  projectName,
   onOpenChange,
   onSchedule,
 }: TimerRecordDialogProps) {
@@ -60,21 +67,32 @@ export default function TimerRecordDialog({
   const [durationTextParts, setDurationTextParts] = useState<DurationText>({
     hours: '1', minutes: '0', seconds: '0',
   });
+  const [automaticSave, setAutomaticSave] = useState(false);
+  const [automaticExport, setAutomaticExport] = useState(false);
+  const [exportFilename, setExportFilename] = useState('untitled.wav');
+  const [postAction, setPostAction] = useState<TimerRecordPostAction>('nothing');
 
   useEffect(() => {
     if (!open) return;
     const startAt = Date.now();
+    const advanced = loadTimerRecordAdvancedOptions(projectName);
     setStartText(toDateTimeLocalValue(startAt));
     setEndText(toDateTimeLocalValue(startAt + 3600_000));
     setDurationTextParts({ hours: '1', minutes: '0', seconds: '0' });
-  }, [open]);
+    setAutomaticSave(advanced.automaticSave);
+    setAutomaticExport(advanced.automaticExport);
+    setExportFilename(advanced.exportFilename);
+    setPostAction(advanced.postAction);
+  }, [open, projectName]);
 
   const startAt = parseDateTimeLocalValue(startText);
   const endAt = parseDateTimeLocalValue(endText);
   const durationSeconds = parseTimerDurationParts(numericParts(durationTextParts));
   const validDuration = durationSeconds !== null && durationSeconds > 0;
   const validEnd = startAt !== null && endAt !== null && endAt > startAt;
-  const valid = startAt !== null && validDuration && validEnd;
+  const normalizedExportFilename = normalizeTimerRecordExportFilename(exportFilename);
+  const validExport = !automaticExport || normalizedExportFilename !== null;
+  const valid = startAt !== null && validDuration && validEnd && validExport;
 
   function updateStart(value: string) {
     setStartText(value);
@@ -104,12 +122,20 @@ export default function TimerRecordDialog({
   function submit(event: FormEvent) {
     event.preventDefault();
     if (!valid || startAt === null || durationSeconds === null) return;
-    onSchedule(createTimerRecordSchedule(startAt, durationSeconds));
+    if (automaticExport && normalizedExportFilename === null) return;
+    const options: TimerRecordAdvancedOptions = {
+      automaticSave,
+      automaticExport,
+      exportFilename: normalizedExportFilename ?? 'untitled.wav',
+      postAction: automaticSave || automaticExport ? postAction : 'nothing',
+    };
+    persistTimerRecordAdvancedOptions(options);
+    onSchedule(createTimerRecordSchedule(startAt, durationSeconds), options);
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-testid="timer-record-dialog" className="max-w-[520px]">
+      <DialogContent data-testid="timer-record-dialog" className="max-h-[90vh] max-w-[680px] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Timer Record… 定时录音…</DialogTitle>
           <DialogDescription>
@@ -181,11 +207,87 @@ export default function TimerRecordDialog({
             </div>
           </fieldset>
 
+          <div className="grid gap-4 md:grid-cols-2">
+            <fieldset className="space-y-3 rounded-md border border-border p-3">
+              <legend className="px-1 text-sm font-medium">Automatic Save 自动保存</legend>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-[#84b5ff]"
+                  checked={automaticSave}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setAutomaticSave(checked);
+                    if (!checked && !automaticExport) setPostAction('nothing');
+                  }}
+                />
+                Enable Automatic Save? 启用自动保存
+              </label>
+              <div className="grid gap-1.5">
+                <Label htmlFor="timer-record-save-target">Save Project As 保存工程位置</Label>
+                <Input
+                  id="timer-record-save-target"
+                  value="Current Project 当前工程（IndexedDB）"
+                  readOnly
+                  disabled={!automaticSave}
+                />
+              </div>
+            </fieldset>
+
+            <fieldset className="space-y-3 rounded-md border border-border p-3">
+              <legend className="px-1 text-sm font-medium">Automatic Export 自动导出</legend>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-[#84b5ff]"
+                  checked={automaticExport}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setAutomaticExport(checked);
+                    if (!checked && !automaticSave) setPostAction('nothing');
+                  }}
+                />
+                Enable Automatic Export? 启用自动导出
+              </label>
+              <div className="grid gap-1.5">
+                <Label htmlFor="timer-record-export-filename">Export Project As WAV 文件名</Label>
+                <Input
+                  id="timer-record-export-filename"
+                  value={exportFilename}
+                  disabled={!automaticExport}
+                  aria-invalid={automaticExport && normalizedExportFilename === null}
+                  onChange={(event) => setExportFilename(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">PCM 16-bit 立体声；保存到浏览器下载目录。</p>
+              </div>
+            </fieldset>
+          </div>
+
+          <fieldset className="space-y-2 rounded-md border border-border p-3">
+            <legend className="px-1 text-sm font-medium">Options 完成后动作</legend>
+            <Label htmlFor="timer-record-post-action">After Recording completes 录音完成后</Label>
+            <select
+              id="timer-record-post-action"
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              value={postAction}
+              disabled={!automaticSave && !automaticExport}
+              onChange={(event) => setPostAction(event.target.value as TimerRecordPostAction)}
+            >
+              <option value="nothing">Do nothing 无操作</option>
+              <option value="close-project">Close project 关闭工程并返回列表（Web）</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Web 版不执行系统重启或关机；保存或导出失败时不会关闭工程。
+            </p>
+          </fieldset>
+
           {!valid && (
             <p role="alert" className="text-sm text-destructive">
               {durationSeconds === 0
                 ? 'Duration is zero. Nothing will be recorded. 时长为零，不会录音。'
-                : '请输入有效的开始、结束时间和正整数秒时长；分钟和秒钟须为 0–59。'}
+                : !validExport
+                  ? 'Automatic Export path is invalid. 请输入不含路径分隔符的 WAV 文件名。'
+                  : '请输入有效的开始、结束时间和正整数秒时长；分钟和秒钟须为 0–59。'}
             </p>
           )}
           <DialogFooter>

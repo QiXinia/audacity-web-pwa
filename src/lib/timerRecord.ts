@@ -9,7 +9,147 @@ export interface TimerDurationParts {
   seconds: number;
 }
 
-export type TimerRecordPhase = 'waiting' | 'recording';
+export type TimerRecordPhase = 'waiting' | 'recording' | 'finalizing';
+export type TimerRecordPostAction = 'nothing' | 'close-project';
+
+export interface TimerRecordAdvancedOptions {
+  automaticSave: boolean;
+  automaticExport: boolean;
+  exportFilename: string;
+  postAction: TimerRecordPostAction;
+}
+
+export interface TimerRecordCompletionResult {
+  saveSucceeded: boolean | null;
+  exportSucceeded: boolean | null;
+  shouldCloseProject: boolean;
+  saveError?: unknown;
+  exportError?: unknown;
+}
+
+export interface TimerRecordCompletionActions {
+  saveProject: () => void | Promise<void>;
+  exportWav: () => void | Promise<void>;
+}
+
+type TimerRecordStorage = Pick<Storage, 'getItem' | 'setItem'>;
+
+export const TIMER_RECORD_PREFERENCES_KEY = 'audacity.timerRecord.advanced.v1';
+
+const INVALID_FILENAME_CHARACTERS = /[<>:"/\\|?*]/;
+
+function hasControlCharacters(value: string): boolean {
+  return Array.from(value).some((character) => character.charCodeAt(0) <= 31);
+}
+
+function replaceInvalidFilenameCharacters(value: string): string {
+  return Array.from(value, (character) => (
+    INVALID_FILENAME_CHARACTERS.test(character) || character.charCodeAt(0) <= 31 ? '_' : character
+  )).join('');
+}
+
+export function defaultTimerRecordExportFilename(projectName: string): string {
+  const base = replaceInvalidFilenameCharacters(projectName.trim());
+  return normalizeTimerRecordExportFilename(base) ?? 'untitled.wav';
+}
+
+export function normalizeTimerRecordExportFilename(value: string): string | null {
+  const filename = value.trim();
+  if (!filename || filename === '.' || filename === '..'
+    || INVALID_FILENAME_CHARACTERS.test(filename) || hasControlCharacters(filename)) {
+    return null;
+  }
+  return filename.toLowerCase().endsWith('.wav') ? filename : `${filename}.wav`;
+}
+
+export function defaultTimerRecordAdvancedOptions(projectName: string): TimerRecordAdvancedOptions {
+  return {
+    automaticSave: false,
+    automaticExport: false,
+    exportFilename: defaultTimerRecordExportFilename(projectName),
+    postAction: 'nothing',
+  };
+}
+
+export function loadTimerRecordAdvancedOptions(
+  projectName: string,
+  storage?: TimerRecordStorage,
+): TimerRecordAdvancedOptions {
+  const defaults = defaultTimerRecordAdvancedOptions(projectName);
+  try {
+    const store = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage);
+    const raw = store?.getItem(TIMER_RECORD_PREFERENCES_KEY);
+    if (!raw) return defaults;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return defaults;
+    const preferences = parsed as Partial<TimerRecordAdvancedOptions>;
+    const automaticSave = preferences.automaticSave === true;
+    const automaticExport = preferences.automaticExport === true;
+    return {
+      ...defaults,
+      automaticSave,
+      automaticExport,
+      postAction: (automaticSave || automaticExport) && preferences.postAction === 'close-project'
+        ? 'close-project'
+        : 'nothing',
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+export function persistTimerRecordAdvancedOptions(
+  options: TimerRecordAdvancedOptions,
+  storage?: TimerRecordStorage,
+): boolean {
+  try {
+    const store = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage);
+    if (!store) return false;
+    store.setItem(TIMER_RECORD_PREFERENCES_KEY, JSON.stringify({
+      automaticSave: options.automaticSave,
+      automaticExport: options.automaticExport,
+      postAction: options.postAction,
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function executeTimerRecordCompletion(
+  options: TimerRecordAdvancedOptions,
+  actions: TimerRecordCompletionActions,
+): Promise<TimerRecordCompletionResult> {
+  const result: TimerRecordCompletionResult = {
+    saveSucceeded: options.automaticSave ? false : null,
+    exportSucceeded: options.automaticExport ? false : null,
+    shouldCloseProject: false,
+  };
+
+  // Match Audacity: both actions are attempted even when the first one fails.
+  if (options.automaticSave) {
+    try {
+      await actions.saveProject();
+      result.saveSucceeded = true;
+    } catch (error) {
+      result.saveError = error;
+    }
+  }
+  if (options.automaticExport) {
+    try {
+      await actions.exportWav();
+      result.exportSucceeded = true;
+    } catch (error) {
+      result.exportError = error;
+    }
+  }
+
+  result.shouldCloseProject = options.postAction === 'close-project'
+    && (options.automaticSave || options.automaticExport)
+    && result.saveSucceeded !== false
+    && result.exportSucceeded !== false;
+  return result;
+}
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 type SetTimer = (callback: () => void, delay: number) => TimerHandle;
@@ -19,7 +159,7 @@ interface TimerRecordControllerOptions {
   onStart: () => void | Promise<void>;
   onStop: () => void | Promise<void>;
   onPhaseChange: (phase: TimerRecordPhase) => void;
-  onComplete: () => void;
+  onComplete: () => void | Promise<void>;
   onError: (error: unknown) => void;
   now?: () => number;
   setTimer?: SetTimer;
@@ -160,7 +300,10 @@ export function createTimerRecordController({
       if (!await waitUntil(schedule.endAt)) return;
 
       await onStop();
-      if (!cancelled) onComplete();
+      if (!cancelled) {
+        onPhaseChange('finalizing');
+        await onComplete();
+      }
     } catch (error) {
       if (!cancelled || started) onError(error);
     } finally {

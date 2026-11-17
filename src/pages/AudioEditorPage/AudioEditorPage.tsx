@@ -403,6 +403,8 @@ import ResampleDialog from './sections/ResampleDialog';
 import TimerRecordDialog from './sections/TimerRecordDialog';
 import {
   createTimerRecordController,
+  executeTimerRecordCompletion,
+  type TimerRecordAdvancedOptions,
   type TimerRecordController,
   type TimerRecordPhase,
   type TimerRecordSchedule,
@@ -464,6 +466,17 @@ import {
   type StereoLevels,
 } from '@/lib/levelMeter';
 
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default function AudioEditorPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -474,7 +487,7 @@ export default function AudioEditorPage() {
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [timerRecordDialogOpen, setTimerRecordDialogOpen] = useState(false);
   const [timerRecordSession, setTimerRecordSession] = useState<
-    (TimerRecordSchedule & { phase: TimerRecordPhase }) | null
+    (TimerRecordSchedule & { phase: TimerRecordPhase; options: TimerRecordAdvancedOptions }) | null
   >(null);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
@@ -672,7 +685,7 @@ export default function AudioEditorPage() {
   const recordingSampleRateRef = useRef(44100);
   const recordingStateRef = useRef<RecordingState>('idle');
   const startRecordingRef = useRef<() => Promise<boolean>>(async () => false);
-  const stopRecordingRef = useRef<() => Promise<void>>(async () => undefined);
+  const stopRecordingRef = useRef<() => Promise<IProject | null>>(async () => null);
   const timerRecordControllerRef = useRef<TimerRecordController | null>(null);
   recordingStateRef.current = recordingState;
   const workspaceHydratedRef = useRef(false);
@@ -981,23 +994,23 @@ export default function AudioEditorPage() {
   }
 
   // Recording
-  async function stopRecording(): Promise<void> {
-    if (recordingStateRef.current !== 'recording') return;
+  async function stopRecording(): Promise<IProject | null> {
+    if (recordingStateRef.current !== 'recording') return null;
     try {
       const data = await audioEngine.stopRecording();
       if (!data || data.length === 0 || data[0].length === 0) {
         toast.warning('未采集到音频，请检查麦克风输入');
-        return;
+        return null;
       }
       if (!project) {
         toast.warning('工程已关闭，无法保存录音');
-        return;
+        return null;
       }
 
       const targetTrack = project.tracks.find((t) => t.armed) ?? project.tracks[0];
       if (!targetTrack) {
         toast.warning('没有可用于录音的轨道');
-        return;
+        return null;
       }
 
       // Web Audio 使用设备采样率；统一重采样到工程采样率，避免导出时长和播放速度偏移。
@@ -1015,19 +1028,20 @@ export default function AudioEditorPage() {
       if (!clip) throw new Error('Recording clip could not be created');
 
       const updated = await projectService.getProject(project.id);
-      if (updated) {
-        setProject(updated);
-        pushHistoryCmd({
-          id: generateId(),
-          label: '录音',
-          execute: () => updated,
-          undo: () => before,
-        });
-      }
+      if (!updated) throw new Error('Recorded project could not be reloaded');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: '录音',
+        execute: () => updated,
+        undo: () => before,
+      });
       toast.success(`录音已添加到「${targetTrack.name}」`);
+      return updated;
     } catch (error) {
       logger.error('保存录音失败:', String(error));
       toast.error('录音保存失败');
+      return null;
     } finally {
       recordingStateRef.current = 'idle';
       setRecordingState('idle');
@@ -1057,38 +1071,108 @@ export default function AudioEditorPage() {
   startRecordingRef.current = startRecording;
   stopRecordingRef.current = stopRecording;
 
+  async function finalizeTimerRecord(
+    options: TimerRecordAdvancedOptions,
+    recordedProject: IProject,
+    wasStopped = false,
+  ): Promise<boolean> {
+    if (!options.automaticSave && !options.automaticExport) return false;
+    let exportMuted = false;
+    const effectiveOptions = wasStopped ? { ...options, postAction: 'nothing' as const } : options;
+    const result = await executeTimerRecordCompletion(effectiveOptions, {
+      saveProject: async () => {
+        await projectService.saveProject(recordedProject);
+        setProject({ ...recordedProject });
+      },
+      exportWav: async () => {
+        const hasAudibleAudio = recordedProject.tracks.some((track) =>
+          !track.muted && track.clips.some((clip) => clip.duration > 0),
+        );
+        if (!hasAudibleAudio) {
+          exportMuted = true;
+          return;
+        }
+        const duration = getProjectDuration(recordedProject);
+        if (duration <= 0) throw new Error('没有可导出的音频内容');
+        const blob = await audioEngine.exportWav(
+          recordedProject.tracks,
+          duration,
+          recordedProject.sampleRate,
+          16,
+        );
+        triggerBlobDownload(blob, options.exportFilename);
+      },
+    });
+
+    const successes: string[] = [];
+    const failures: string[] = [];
+    if (result.saveSucceeded === true) successes.push('工程已自动保存');
+    if (result.exportSucceeded === true && !exportMuted) successes.push(`WAV 已导出为 ${options.exportFilename}`);
+    if (result.saveSucceeded === false) failures.push('自动保存失败');
+    if (result.exportSucceeded === false) failures.push('自动导出失败');
+
+    if (failures.length > 0) {
+      const details = [...successes, ...failures].join('，');
+      toast.error(`定时录音完成：${details}${options.postAction === 'close-project' ? '；已取消关闭工程' : ''}`);
+      return false;
+    }
+    if (wasStopped && options.postAction === 'close-project') {
+      toast.info('已手动停止定时录音；已取消关闭工程');
+    }
+    if (exportMuted) toast.warning('所有音频均静音，未生成导出文件');
+    if (successes.length > 0) toast.success(`定时录音完成：${successes.join('，')}`);
+    return result.shouldCloseProject;
+  }
+
   async function handleRecord() {
     if (recordingStateRef.current === 'recording') {
+      const activeSession = timerRecordSession;
       timerRecordControllerRef.current?.cancel();
       timerRecordControllerRef.current = null;
       setTimerRecordSession(null);
-      await stopRecordingRef.current();
+      const recordedProject = await stopRecordingRef.current();
+      if (activeSession?.phase === 'recording' && recordedProject) {
+        await finalizeTimerRecord(activeSession.options, recordedProject, true);
+      }
       return;
     }
     if (timerRecordSession) {
-      toast.warning('请先取消等待中的定时录音');
+      toast.warning(timerRecordSession.phase === 'finalizing'
+        ? '正在完成定时录音，请稍候'
+        : '请先取消等待中的定时录音');
       return;
     }
     await startRecordingRef.current();
   }
 
-  function scheduleTimerRecord(schedule: TimerRecordSchedule) {
+  function scheduleTimerRecord(schedule: TimerRecordSchedule, options: TimerRecordAdvancedOptions) {
     if (recordingStateRef.current === 'recording' || timerRecordSession) {
       toast.warning('请先停止当前录音或取消已有定时录音');
       return;
     }
     setTimerRecordDialogOpen(false);
+    let completedProject: IProject | null = null;
     const controller = createTimerRecordController({
       onStart: async () => {
         if (!await startRecordingRef.current()) throw new Error('无法启动录音');
       },
-      onStop: () => stopRecordingRef.current(),
+      onStop: async () => {
+        completedProject = await stopRecordingRef.current();
+        if (!completedProject) throw new Error('录音保存失败，未执行自动保存或导出');
+      },
       onPhaseChange: (phase) => {
         setTimerRecordSession((current) => current ? { ...current, phase } : current);
       },
-      onComplete: () => {
-        timerRecordControllerRef.current = null;
-        setTimerRecordSession(null);
+      onComplete: async () => {
+        let shouldCloseProject = false;
+        try {
+          if (!completedProject) throw new Error('无法读取定时录音工程');
+          shouldCloseProject = await finalizeTimerRecord(options, completedProject);
+        } finally {
+          timerRecordControllerRef.current = null;
+          setTimerRecordSession(null);
+        }
+        if (shouldCloseProject) navigate('/');
       },
       onError: (error) => {
         timerRecordControllerRef.current = null;
@@ -1097,7 +1181,7 @@ export default function AudioEditorPage() {
       },
     });
     timerRecordControllerRef.current = controller;
-    setTimerRecordSession({ ...schedule, phase: 'waiting' });
+    setTimerRecordSession({ ...schedule, phase: 'waiting', options });
     controller.start(schedule);
     toast.info(schedule.startAt <= Date.now()
       ? '定时录音即将开始…'
@@ -1105,6 +1189,10 @@ export default function AudioEditorPage() {
   }
 
   async function cancelTimerRecord() {
+    if (timerRecordSession?.phase === 'finalizing') {
+      toast.warning('正在保存或导出定时录音，请稍候');
+      return;
+    }
     timerRecordControllerRef.current?.cancel();
     timerRecordControllerRef.current = null;
     setTimerRecordSession(null);
@@ -2501,16 +2589,7 @@ export default function AudioEditorPage() {
         blob = await audioEngine.exportMp3(project.tracks, duration, project.sampleRate, 128);
       }
 
-      // Trigger download
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-
+      triggerBlobDownload(blob, filename);
       toast.success(`已导出 ${filename}`);
       setExportDialogOpen(false);
     } catch (e) {
@@ -6980,7 +7059,7 @@ export default function AudioEditorPage() {
               </DropdownMenuCheckboxItem>
               <DropdownMenuItem onClick={convertStereoTracksToMono}>Stereo To Mono 立体声转单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={splitStereoTracksToMono}>Split Stereo To Mono 立体声拆分为单声道</DropdownMenuItem>
-              <DropdownMenuItem onClick={handleRecord} disabled={timerRecordSession?.phase === 'waiting'}>
+              <DropdownMenuItem onClick={handleRecord} disabled={timerRecordSession?.phase === 'waiting' || timerRecordSession?.phase === 'finalizing'}>
                 {recordingState === 'recording' ? '停止录音' : '开始录音'}
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -6997,8 +7076,13 @@ export default function AudioEditorPage() {
                 Timer Record… 定时录音…
               </DropdownMenuItem>
               {timerRecordSession && (
-                <DropdownMenuItem onClick={() => void cancelTimerRecord()}>
-                  {timerRecordSession.phase === 'waiting' ? '取消定时录音' : '停止定时录音'}
+                <DropdownMenuItem
+                  onClick={() => void cancelTimerRecord()}
+                  disabled={timerRecordSession.phase === 'finalizing'}
+                >
+                  {timerRecordSession.phase === 'waiting'
+                    ? '取消定时录音'
+                    : timerRecordSession.phase === 'finalizing' ? '正在完成定时录音' : '停止定时录音'}
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>
@@ -7192,7 +7276,7 @@ export default function AudioEditorPage() {
                 variant={recordingState === 'recording' ? 'destructive' : 'ghost'}
                 size="icon"
                 onClick={handleRecord}
-                disabled={timerRecordSession?.phase === 'waiting'}
+                disabled={timerRecordSession?.phase === 'waiting' || timerRecordSession?.phase === 'finalizing'}
                 className={`size-8 ${recordingState === 'recording' ? 'animate-pulse' : ''}`}
                 aria-label={recordingState === 'recording' ? '停止录音' : '开始录音'}
                 title={recordingState === 'recording' ? '停止录音' : '开始录音'}
@@ -8225,15 +8309,20 @@ export default function AudioEditorPage() {
                 <span data-testid="timer-record-status" className="text-[#8bd5a7]">
                   {timerRecordSession.phase === 'waiting'
                     ? `定时等待 ${new Date(timerRecordSession.startAt).toLocaleTimeString()}`
-                    : `定时录音至 ${new Date(timerRecordSession.endAt).toLocaleTimeString()}`}
+                    : timerRecordSession.phase === 'recording'
+                      ? `定时录音至 ${new Date(timerRecordSession.endAt).toLocaleTimeString()}`
+                      : '正在保存或导出定时录音…'}
                 </span>
                 <Button
                   variant="secondary"
                   size="sm"
                   className="h-4 px-2 text-[10px]"
+                  disabled={timerRecordSession.phase === 'finalizing'}
                   onClick={() => void cancelTimerRecord()}
                 >
-                  {timerRecordSession.phase === 'waiting' ? '取消定时录音' : '停止定时录音'}
+                  {timerRecordSession.phase === 'waiting'
+                    ? '取消定时录音'
+                    : timerRecordSession.phase === 'finalizing' ? '正在完成…' : '停止定时录音'}
                 </Button>
               </>
             )}
@@ -8477,6 +8566,7 @@ export default function AudioEditorPage() {
 
         <TimerRecordDialog
           open={timerRecordDialogOpen}
+          projectName={project?.name ?? 'untitled'}
           onOpenChange={setTimerRecordDialogOpen}
           onSchedule={scheduleTimerRecord}
         />

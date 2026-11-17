@@ -2,10 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createTimerRecordController,
   createTimerRecordSchedule,
+  defaultTimerRecordExportFilename,
+  executeTimerRecordCompletion,
+  loadTimerRecordAdvancedOptions,
   MAX_TIMER_DELAY_MS,
+  normalizeTimerRecordExportFilename,
   parseTimerDurationParts,
+  persistTimerRecordAdvancedOptions,
   timerDurationBetween,
   timerDurationToParts,
+  type TimerRecordAdvancedOptions,
 } from './timerRecord';
 
 describe('Timer Record schedule', () => {
@@ -68,7 +74,9 @@ describe('Timer Record controller', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(callbacks.onStop).toHaveBeenCalledTimes(1);
     expect(callbacks.onComplete).toHaveBeenCalledTimes(1);
-    expect(callbacks.onPhaseChange.mock.calls.map(([phase]) => phase)).toEqual(['waiting', 'recording']);
+    expect(callbacks.onPhaseChange.mock.calls.map(([phase]) => phase)).toEqual([
+      'waiting', 'recording', 'finalizing',
+    ]);
   });
 
   it('chunks delays above the browser timer limit', async () => {
@@ -136,5 +144,127 @@ describe('Timer Record controller', () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(callbacks.onStop).not.toHaveBeenCalled();
     expect(callbacks.onComplete).not.toHaveBeenCalled();
+  });
+
+  it('awaits completion actions and reports their failures', async () => {
+    const callbacks = makeCallbacks();
+    callbacks.onComplete.mockRejectedValue(new Error('export failed'));
+    const controller = createTimerRecordController(callbacks);
+    controller.start({ startAt: 0, endAt: 1_000 });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(callbacks.onComplete).toHaveBeenCalledTimes(1);
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'export failed' }));
+    expect(callbacks.onPhaseChange).toHaveBeenLastCalledWith('finalizing');
+  });
+});
+
+function advancedOptions(
+  overrides: Partial<TimerRecordAdvancedOptions> = {},
+): TimerRecordAdvancedOptions {
+  return {
+    automaticSave: false,
+    automaticExport: false,
+    exportFilename: 'recording.wav',
+    postAction: 'nothing',
+    ...overrides,
+  };
+}
+
+describe('Timer Record advanced preferences', () => {
+  it('validates browser download filenames and derives a safe project default', () => {
+    expect(normalizeTimerRecordExportFilename('take-1')).toBe('take-1.wav');
+    expect(normalizeTimerRecordExportFilename('take-1.WAV')).toBe('take-1.WAV');
+    expect(normalizeTimerRecordExportFilename('folder/take.wav')).toBeNull();
+    expect(normalizeTimerRecordExportFilename('bad?.wav')).toBeNull();
+    expect(normalizeTimerRecordExportFilename('bad\u0001.wav')).toBeNull();
+    expect(normalizeTimerRecordExportFilename(' ')).toBeNull();
+    expect(defaultTimerRecordExportFilename('My/Project')).toBe('My_Project.wav');
+    expect(defaultTimerRecordExportFilename('My\u0001Project')).toBe('My_Project.wav');
+    expect(defaultTimerRecordExportFilename(' ')).toBe('untitled.wav');
+  });
+
+  it('persists only supported options and recovers from corrupt storage', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: vi.fn((key: string) => values.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => { values.set(key, value); }),
+    };
+    expect(persistTimerRecordAdvancedOptions(advancedOptions({
+      automaticSave: true,
+      automaticExport: true,
+      postAction: 'close-project',
+    }), storage)).toBe(true);
+    expect(loadTimerRecordAdvancedOptions('My/Project', storage)).toEqual({
+      automaticSave: true,
+      automaticExport: true,
+      exportFilename: 'My_Project.wav',
+      postAction: 'close-project',
+    });
+
+    values.set('audacity.timerRecord.advanced.v1', '{broken');
+    expect(loadTimerRecordAdvancedOptions('Fallback', storage)).toEqual(advancedOptions({
+      exportFilename: 'Fallback.wav',
+    }));
+  });
+});
+
+describe('Timer Record completion actions', () => {
+  it('runs save and export and permits closing only after both succeed', async () => {
+    const actions = { saveProject: vi.fn(), exportWav: vi.fn() };
+    const result = await executeTimerRecordCompletion(advancedOptions({
+      automaticSave: true,
+      automaticExport: true,
+      postAction: 'close-project',
+    }), actions);
+
+    expect(actions.saveProject).toHaveBeenCalledTimes(1);
+    expect(actions.exportWav).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      saveSucceeded: true,
+      exportSucceeded: true,
+      shouldCloseProject: true,
+    });
+  });
+
+  it('still exports after a save failure but blocks the post action', async () => {
+    const actions = {
+      saveProject: vi.fn().mockRejectedValue(new Error('disk full')),
+      exportWav: vi.fn().mockResolvedValue(undefined),
+    };
+    const result = await executeTimerRecordCompletion(advancedOptions({
+      automaticSave: true,
+      automaticExport: true,
+      postAction: 'close-project',
+    }), actions);
+
+    expect(actions.exportWav).toHaveBeenCalledTimes(1);
+    expect(result.saveSucceeded).toBe(false);
+    expect(result.exportSucceeded).toBe(true);
+    expect(result.shouldCloseProject).toBe(false);
+    expect(result.saveError).toEqual(expect.objectContaining({ message: 'disk full' }));
+  });
+
+  it('blocks closing after an export failure and skips unrequested actions', async () => {
+    const actions = {
+      saveProject: vi.fn(),
+      exportWav: vi.fn().mockRejectedValue(new Error('encoder failed')),
+    };
+    const failed = await executeTimerRecordCompletion(advancedOptions({
+      automaticExport: true,
+      postAction: 'close-project',
+    }), actions);
+    expect(failed.shouldCloseProject).toBe(false);
+    expect(failed.exportSucceeded).toBe(false);
+    expect(actions.saveProject).not.toHaveBeenCalled();
+
+    const idle = await executeTimerRecordCompletion(advancedOptions({
+      postAction: 'close-project',
+    }), actions);
+    expect(idle).toMatchObject({
+      saveSucceeded: null,
+      exportSucceeded: null,
+      shouldCloseProject: false,
+    });
   });
 });

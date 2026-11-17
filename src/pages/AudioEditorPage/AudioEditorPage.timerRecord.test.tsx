@@ -12,8 +12,18 @@ const mocks = vi.hoisted(() => ({
   startRecording: vi.fn(),
   stopRecording: vi.fn(),
   addRecordingToTrack: vi.fn(),
+  saveProject: vi.fn(),
+  exportWav: vi.fn(),
+  createObjectURL: vi.fn(),
+  revokeObjectURL: vi.fn(),
+  anchorClick: vi.fn(),
+  navigate: vi.fn(),
 }));
 let mockProject: IProject;
+
+Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: mocks.createObjectURL });
+Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: mocks.revokeObjectURL });
+Object.defineProperty(HTMLAnchorElement.prototype, 'click', { configurable: true, value: mocks.anchorClick });
 
 function makeProject(): IProject {
   return {
@@ -41,6 +51,7 @@ vi.mock('@/services/projectService', () => ({
     loadAudioChannels: vi.fn(async () => [new Float32Array(10)]),
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
     addRecordingToTrack: mocks.addRecordingToTrack,
+    saveProject: mocks.saveProject,
   },
 }));
 vi.mock('@/services/historyService', () => ({
@@ -71,6 +82,7 @@ vi.mock('@/engine/audioEngine', () => ({
     getCurrentTime: vi.fn(() => 0),
     playTracks: vi.fn(), stopPlayback: vi.fn(), pausePlayback: vi.fn(), resumePlayback: vi.fn(),
     seek: vi.fn(), startRecording: mocks.startRecording, stopRecording: mocks.stopRecording,
+    exportWav: mocks.exportWav,
     cancelRecording: vi.fn(), ensureContext: vi.fn(async () => undefined),
     getSampleRate: vi.fn(() => 1000), getRecordingMode: vi.fn(() => 'worklet'),
     initialize: vi.fn(), getLevel: vi.fn(() => 0), cacheBuffer: vi.fn(), evictBuffer: vi.fn(),
@@ -82,7 +94,10 @@ vi.mock('@/engine/audioEngine', () => ({
   },
 }));
 vi.mock('@/wasm/processor', () => ({ isWasmAvailable: vi.fn(() => false), wasmProcessor: {} }));
-vi.mock('react-router-dom', () => ({ useParams: () => ({ projectId: 'timer-record-project' }), useNavigate: () => vi.fn() }));
+vi.mock('react-router-dom', () => ({
+  useParams: () => ({ projectId: 'timer-record-project' }),
+  useNavigate: () => mocks.navigate,
+}));
 vi.mock('sonner', () => ({ toast: { success: mocks.success, warning: mocks.warning, error: mocks.error, info: mocks.info } }));
 vi.mock('@/utils/logger', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), log: vi.fn() } }));
 
@@ -108,7 +123,11 @@ function submitTimerRecord(): void {
 describe('AudioEditorPage Timer Record', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem('audacity.timerRecord.advanced.v1');
     mockProject = makeProject();
+    mocks.createObjectURL.mockReturnValue('blob:timer-record');
+    mocks.saveProject.mockImplementation(async (project: IProject) => { mockProject = project; });
+    mocks.exportWav.mockResolvedValue(new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' }));
     mocks.startRecording.mockResolvedValue(undefined);
     mocks.stopRecording.mockResolvedValue([Float32Array.from([0.1, 0.2, 0.3, 0.4])]);
     mocks.addRecordingToTrack.mockImplementation(async (
@@ -203,5 +222,108 @@ describe('AudioEditorPage Timer Record', () => {
     await waitFor(() => expect(mocks.stopRecording).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByTestId('timer-record-status')).not.toBeInTheDocument());
     expect(mocks.addRecordingToTrack).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
+  it('links advanced controls and rejects an invalid automatic export filename', async () => {
+    render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    const postAction = screen.getByLabelText('After Recording completes 录音完成后');
+    expect(postAction).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Export/ }));
+    expect(postAction).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Export Project As WAV 文件名'), {
+      target: { value: 'bad/name.wav' },
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Automatic Export path is invalid.');
+    expect(screen.getByRole('button', { name: 'Start Timer Recording 开始定时录音' })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Export Project As WAV 文件名'), {
+      target: { value: 'valid-name' },
+    });
+    fireEvent.change(postAction, { target: { value: 'close-project' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Export/ }));
+    expect(postAction).toBeDisabled();
+    expect(postAction).toHaveValue('nothing');
+    expect(mocks.startRecording).not.toHaveBeenCalled();
+  });
+
+  it('saves and exports the newly recorded project before closing it', async () => {
+    render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Save/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Export/ }));
+    fireEvent.change(screen.getByLabelText('Export Project As WAV 文件名'), {
+      target: { value: 'advanced-proof' },
+    });
+    fireEvent.change(screen.getByLabelText('After Recording completes 录音完成后'), {
+      target: { value: 'close-project' },
+    });
+    setDuration('0', '0', '1');
+    submitTimerRecord();
+
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1), { timeout: 4000 });
+    await waitFor(() => expect(mocks.exportWav).toHaveBeenCalledTimes(1));
+    const savedProject = mocks.saveProject.mock.calls[0][0] as IProject;
+    expect(savedProject.tracks[0].clips).toHaveLength(1);
+    expect(savedProject.tracks[0].clips[0].id).toBe('recorded-clip');
+    expect(mocks.exportWav).toHaveBeenCalledWith(savedProject.tracks, 0.004, 1000, 16);
+    expect(mocks.createObjectURL).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/'));
+    expect(mocks.success).toHaveBeenCalledWith(expect.stringContaining('advanced-proof.wav'));
+  }, 10_000);
+
+  it('still exports after save failure but never closes the project', async () => {
+    mocks.saveProject.mockRejectedValueOnce(new Error('disk full'));
+    render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Save/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Export/ }));
+    fireEvent.change(screen.getByLabelText('After Recording completes 录音完成后'), {
+      target: { value: 'close-project' },
+    });
+    setDuration('0', '0', '1');
+    submitTimerRecord();
+
+    await waitFor(() => expect(mocks.exportWav).toHaveBeenCalledTimes(1), { timeout: 4000 });
+    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining('自动保存失败')));
+    expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining('已取消关闭工程'));
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it('manual stop performs automatic actions but suppresses closing', async () => {
+    render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Save/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Export/ }));
+    fireEvent.change(screen.getByLabelText('After Recording completes 录音完成后'), {
+      target: { value: 'close-project' },
+    });
+    setDuration('0', '1', '0');
+    submitTimerRecord();
+
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    fireEvent.click(screen.getByRole('button', { name: '停止录音' }));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.exportWav).toHaveBeenCalledTimes(1));
+    expect(mocks.info).toHaveBeenCalledWith('已手动停止定时录音；已取消关闭工程');
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it('does not run advanced actions when the recording cannot be persisted', async () => {
+    mocks.addRecordingToTrack.mockResolvedValueOnce(null);
+    render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Save/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Export/ }));
+    setDuration('0', '0', '1');
+    submitTimerRecord();
+
+    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith(
+      expect.stringContaining('录音保存失败，未执行自动保存或导出'),
+    ), { timeout: 4000 });
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+    expect(mocks.exportWav).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
   }, 10_000);
 });
