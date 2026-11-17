@@ -253,6 +253,22 @@ import {
   type CrossfadeSettings,
 } from '@/lib/crossfadeTracksEffect';
 import { processCrossfadeClipChannels } from '@/lib/crossfadeClipsEffect';
+import {
+  renderMixAndRenderTracks,
+  type MixAndRenderTrackInput,
+} from '@/lib/mixAndRenderEffect';
+
+export type MixAndRenderClipAudio = EchoClipAudio;
+export type MixAndRenderTrackAudio = EchoTrackAudio;
+export interface MixAndRenderResult {
+  trackId: string;
+  clipId: string;
+  trackName: string;
+  inputTrackCount: number;
+  channelCount: number;
+  startTime: number;
+  endTime: number;
+}
 
 type EffectType = IEffect['type'];
 
@@ -2580,6 +2596,141 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return changedClips;
+  }
+
+  /**
+   * Audacity 4.0.2 MixAndRender: render selected wave tracks into one track.
+   * Replace mode removes only the inputs; To New Track preserves them. Both
+   * modes insert immediately after the last input and commit exactly once.
+   */
+  async mixAndRenderOnTracks(
+    projectId: string,
+    targets: readonly MixAndRenderTrackAudio[],
+    toNewTrack: boolean,
+  ): Promise<MixAndRenderResult> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    if (targets.length === 0) throw new Error('没有可混音渲染的选中轨道');
+
+    const targetByTrack = new Map<string, MixAndRenderTrackAudio>();
+    for (const target of targets) {
+      if (targetByTrack.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      targetByTrack.set(target.trackId, target);
+    }
+    const selectedTracks = project.tracks.filter((track) => targetByTrack.has(track.id));
+    if (selectedTracks.length !== targets.length) throw new Error('目标轨道不可用');
+
+    const renderInputs: MixAndRenderTrackInput[] = selectedTracks.map((track) => {
+      const target = targetByTrack.get(track.id)!;
+      const inputByClip = new Map<string, EchoClipAudio>();
+      for (const input of target.clips) {
+        if (inputByClip.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        inputByClip.set(input.clipId, input);
+      }
+      if (inputByClip.size !== track.clips.length) {
+        throw new Error(`轨道 ${track.id} 的片段覆盖不完整`);
+      }
+      return {
+        trackId: track.id,
+        gain: track.gain,
+        pan: track.pan,
+        clips: track.clips.map((clip) => {
+          const input = inputByClip.get(clip.id);
+          if (!input) throw new Error(`轨道 ${track.id} 的片段覆盖不完整`);
+          return {
+            clipId: clip.id,
+            startTime: clip.startTime,
+            duration: clip.duration,
+            sourceOffset: input.sourceOffset,
+            gain: clip.gain,
+            fadeIn: clip.fadeIn,
+            fadeOut: clip.fadeOut,
+            sampleData: input.sampleData,
+          };
+        }),
+      };
+    });
+
+    // Pure validation and rendering finishes before staging any persistent write.
+    const rendered = renderMixAndRenderTracks(renderInputs, project.sampleRate);
+    const selectedIds = new Set(selectedTracks.map((track) => track.id));
+    const lastInputIndex = project.tracks.reduce(
+      (last, track, index) => selectedIds.has(track.id) ? index : last,
+      -1,
+    );
+    const anchorTrackId = project.tracks[lastInputIndex + 1]?.id;
+
+    const usedNames = new Set(project.tracks.map((track) => track.name));
+    let trackName = selectedTracks[0]!.name;
+    if (selectedTracks.length > 1) {
+      trackName = 'Mix';
+      let suffix = 2;
+      while (usedNames.has(trackName)) trackName = `Mix ${suffix++}`;
+    }
+
+    const trackId = generateId();
+    const clipId = generateId();
+    const bufferId = generateId();
+    const outputTrack: ITrack = {
+      id: trackId,
+      name: trackName,
+      type: 'audio',
+      gain: 0,
+      pan: 0,
+      muted: false,
+      solo: false,
+      armed: false,
+      color: selectedTracks[0]!.color,
+      effects: [],
+      clips: [{
+        id: clipId,
+        audioBufferId: bufferId,
+        startTime: rendered.startTime,
+        offset: 0,
+        duration: rendered.duration,
+        originalDuration: rendered.duration,
+        stretchRatio: 1,
+        gain: 0,
+        fadeIn: 0,
+        fadeOut: 0,
+        name: trackName,
+      }],
+    };
+    const nextTracks = toNewTrack
+      ? [...project.tracks]
+      : project.tracks.filter((track) => !selectedIds.has(track.id));
+    const anchorIndex = anchorTrackId
+      ? nextTracks.findIndex((track) => track.id === anchorTrackId)
+      : -1;
+    if (anchorIndex >= 0) nextTracks.splice(anchorIndex, 0, outputTrack);
+    else nextTracks.push(outputTrack);
+
+    const updatedProject: IProject = {
+      ...project,
+      tracks: nextTracks,
+      analysisLabels: toNewTrack
+        ? project.analysisLabels
+        : project.analysisLabels?.map((label) => selectedIds.has(label.trackId)
+          ? { ...label, trackId, channelIndex: undefined }
+          : label),
+    };
+    await this.commitPendingAudioBuffers(projectId, [{
+      id: bufferId,
+      sampleRate: project.sampleRate,
+      sampleData: rendered.channels,
+    }], updatedProject);
+
+    return {
+      trackId,
+      clipId,
+      trackName,
+      inputTrackCount: selectedTracks.length,
+      channelCount: rendered.channels.length,
+      startTime: rendered.startTime,
+      endTime: rendered.startTime + rendered.duration,
+    };
   }
 
   /** Convert complete stereo tracks to mono in one atomic project commit. */

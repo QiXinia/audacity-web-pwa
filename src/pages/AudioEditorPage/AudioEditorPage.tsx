@@ -58,6 +58,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   DropdownMenuLabel,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from '@/components/ui/dropdown-menu';
 import {
   Select,
@@ -92,7 +95,12 @@ import {
 import { audioEngine, type PlaybackState, type RecordingState } from '@/engine/audioEngine';
 import { audioDb } from '@/db/audioDb';
 import { getMp3SampleRate } from '@/engine/mp3Encoder';
-import { projectService, type EchoTrackAudio, type RepairTrackAudio } from '@/services/projectService';
+import {
+  projectService,
+  type EchoTrackAudio,
+  type MixAndRenderTrackAudio,
+  type RepairTrackAudio,
+} from '@/services/projectService';
 import { historyManager } from '@/services/historyService';
 import {
   parseAudioClipboard,
@@ -157,6 +165,7 @@ import {
   resolveGeneratorTrackIds,
   type GeneratorSelection,
 } from '@/lib/generatorEditing';
+import { resolveMixAndRenderTrackIds } from '@/lib/mixAndRenderEffect';
 import {
   measureContrastSelection as measureContrastPcm,
   type ContrastClip,
@@ -460,6 +469,7 @@ export default function AudioEditorPage() {
   const [scrollX, setScrollX] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isMixingAndRendering, setIsMixingAndRendering] = useState(false);
   const [exportFormat, setExportFormat] = useState('wav');
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [effectsPanelTrackId, setEffectsPanelTrackId] = useState<string | null>(null);
@@ -615,6 +625,13 @@ export default function AudioEditorPage() {
       && quantizedGeneratorSelection.start < clip.startTime + clip.duration
     ))).map((track) => ({ id: track.id, name: track.name }))
     : [];
+  const mixAndRenderTrackIds = project
+    ? resolveMixAndRenderTrackIds(
+      project.tracks.map((track) => track.id),
+      selectedTrackId,
+      selectedClips.map((clip) => clip.trackId),
+    )
+    : [];
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -694,7 +711,10 @@ export default function AudioEditorPage() {
       const key = event.key.toLowerCase();
       const modified = event.ctrlKey || event.metaKey;
       const contrastShortcut = event.shiftKey && key === 't' && (modified || event.altKey);
-      if (contrastShortcut && quantizedGeneratorSelection
+      if (modified && event.shiftKey && key === 'm') {
+        event.preventDefault();
+        void mixAndRenderSelectedTracks(true);
+      } else if (contrastShortcut && quantizedGeneratorSelection
         && playbackState !== 'playing' && recordingState !== 'recording') {
         event.preventDefault();
         setContrastDialogOpen(true);
@@ -756,6 +776,7 @@ export default function AudioEditorPage() {
     verticalZoom,
     playbackState,
     recordingState,
+    isMixingAndRendering,
     scrollX,
     viewMode,
   ]);
@@ -1009,6 +1030,66 @@ export default function AudioEditorPage() {
         execute: () => updated,
         undo: () => before,
       });
+    }
+  }
+
+  async function mixAndRenderSelectedTracks(toNewTrack: boolean) {
+    if (!project || isMixingAndRendering) return;
+    if (playbackState === 'playing' || recordingState === 'recording') {
+      toast.warning('请先停止播放或录音');
+      return;
+    }
+    const targetTrackIds = resolveMixAndRenderTrackIds(
+      project.tracks.map((track) => track.id),
+      selectedTrackId,
+      selectedClips.map((clip) => clip.trackId),
+    );
+    if (targetTrackIds.length === 0) {
+      toast.warning('请先选择要混音的轨道');
+      return;
+    }
+
+    const before = project;
+    setIsMixingAndRendering(true);
+    try {
+      const targets: MixAndRenderTrackAudio[] = [];
+      for (const track of project.tracks) {
+        if (!targetTrackIds.includes(track.id)) continue;
+        const clips: MixAndRenderTrackAudio['clips'] = [];
+        for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!effective) throw new Error(`无法读取片段“${clip.name ?? clip.id}”`);
+          clips.push({
+            clipId: clip.id,
+            sampleData: effective.channels,
+            sourceOffset: effective.sourceOffset,
+          });
+        }
+        targets.push({ trackId: track.id, clips });
+      }
+
+      const result = await projectService.mixAndRenderOnTracks(project.id, targets, toNewTrack);
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('混音结果不可用');
+      setProject(updated);
+      if (!toNewTrack) {
+        setSelectedTrackId(result.trackId);
+        setSelectedClips([{ trackId: result.trackId, clipId: result.clipId }]);
+      }
+      pushHistoryCmd({
+        id: generateId(),
+        label: result.inputTrackCount === 1 ? 'Render' : 'Mix and Render',
+        execute: () => updated,
+        undo: () => before,
+      });
+      toast.success(toNewTrack
+        ? `已混音渲染到新轨道「${result.trackName}」`
+        : `已混音渲染为「${result.trackName}」`);
+    } catch (error) {
+      logger.error('Mix and Render failed', error);
+      toast.error(error instanceof Error ? error.message : '混音渲染失败');
+    } finally {
+      setIsMixingAndRendering(false);
     }
   }
 
@@ -6344,6 +6425,29 @@ export default function AudioEditorPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuItem onClick={addTrack}>添加单声道轨道</DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger
+                  disabled={mixAndRenderTrackIds.length === 0 || isMixingAndRendering
+                    || playbackState === 'playing' || recordingState === 'recording'}
+                >
+                  Mix 混音
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuItem
+                    disabled={isMixingAndRendering}
+                    onClick={() => void mixAndRenderSelectedTracks(false)}
+                  >
+                    Mix and Render 混音并渲染
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={isMixingAndRendering}
+                    onClick={() => void mixAndRenderSelectedTracks(true)}
+                  >
+                    Mix and Render to New Track 混音并渲染到新轨道
+                    <span className="ml-auto text-xs text-muted-foreground">Ctrl+Shift+M</span>
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuItem onClick={convertStereoTracksToMono}>Stereo To Mono 立体声转单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={splitStereoTracksToMono}>Split Stereo To Mono 立体声拆分为单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={handleRecord}>
