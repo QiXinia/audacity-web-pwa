@@ -1,6 +1,6 @@
 // EXPORTS: IProjectSummary, IProject, ITrack, IClip, IEffect, IPreferences, ViewMode, ProjectStatus, EffectType, TrackType
 
-export type ViewMode = 'waveform' | 'spectrum' | 'both';
+export type ViewMode = 'waveform' | 'waveformDb' | 'spectrum' | 'both';
 export type ProjectStatus = 'active' | 'deleted';
 export type EffectType = 'eq' | 'compressor' | 'reverb' | 'delay' | 'noiseGate' | 'gain' | 'highPass' | 'lowPass';
 export type TrackType = 'audio';

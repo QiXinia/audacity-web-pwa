@@ -5,6 +5,7 @@ export function ClippingLabelTimeline({
   tracks,
   pxPerSec,
   totalWidth,
+  offsetX = 0,
   onSelect,
   onEdit,
 }: {
@@ -12,6 +13,7 @@ export function ClippingLabelTimeline({
   tracks: readonly Pick<ITrack, 'id' | 'name'>[];
   pxPerSec: number;
   totalWidth: number;
+  offsetX?: number;
   onSelect: (label: IAnalysisLabel) => void;
   onEdit: () => void;
 }) {
@@ -21,7 +23,7 @@ export function ClippingLabelTimeline({
     <div
       aria-label="标签轨"
       className="relative h-10 shrink-0 border-b border-[#434a50] bg-[#20262b]"
-      style={{ width: totalWidth }}
+      style={{ width: totalWidth + offsetX }}
     >
       {labels.map((label) => {
         const trackName = trackNames.get(label.trackId) ?? label.trackId;
@@ -36,7 +38,7 @@ export function ClippingLabelTimeline({
             title={`${title}；双击编辑标签`}
             className="absolute top-1 flex h-8 items-center overflow-hidden whitespace-nowrap rounded-sm border border-[#d3a64f] bg-[#6b5328]/90 px-1.5 text-left text-[10px] text-[#fff3d4] shadow-sm hover:bg-[#806434] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f0c56d]"
             style={{
-              left: label.start * pxPerSec,
+              left: offsetX + label.start * pxPerSec,
               width: Math.max(2, (label.end - label.start) * pxPerSec),
             }}
             onClick={() => onSelect(label)}

@@ -1,8 +1,9 @@
 import type { IClip } from '@/types/project';
 import { getClipStretchRatio } from '@/lib/clipEditing';
 import { findClippedSampleRanges } from '@/lib/clippingDetection';
+import { sampleToDbWaveY } from '@/lib/dbWaveform';
 
-/** Draw one linearly scaled waveform, matching Audacity's vertical display bounds. */
+/** Draw a linear waveform, or Audacity's logarithmic waveform when dbRange is supplied. */
 export function drawWaveform(
   ctx: CanvasRenderingContext2D,
   data: Float32Array,
@@ -14,6 +15,7 @@ export function drawWaveform(
   verticalZoom: number,
   alpha: number,
   showClipping = false,
+  dbRange?: number,
 ) {
   const ratio = getClipStretchRatio(clip);
   const sourceStart = Math.max(0, clip.offset * sampleRate);
@@ -41,8 +43,17 @@ export function drawWaveform(
       if (v > max) max = v;
     }
 
-    const yMin = centerY - Math.min(1, Math.abs(max * verticalZoom)) * amplitude;
-    const yMax = centerY + Math.min(1, Math.abs(min * verticalZoom)) * amplitude;
+    let yMin: number;
+    let yMax: number;
+    if (dbRange !== undefined) {
+      const firstY = sampleToDbWaveY(max, height, dbRange, verticalZoom);
+      const secondY = sampleToDbWaveY(min, height, dbRange, verticalZoom);
+      yMin = Math.min(firstY, secondY);
+      yMax = Math.max(firstY, secondY);
+    } else {
+      yMin = centerY - Math.min(1, Math.abs(max * verticalZoom)) * amplitude;
+      yMax = centerY + Math.min(1, Math.abs(min * verticalZoom)) * amplitude;
+    }
 
     ctx.moveTo(x, yMin);
     ctx.lineTo(x, yMax);

@@ -44,4 +44,19 @@ describe('waveform vertical zoom', () => {
     expect(moveTo.mock.calls[1]).toEqual([0, 4]);
     expect(lineTo.mock.calls[0]).toEqual([0, 100]);
   });
+
+  it('draws low-level samples only when the dB preference exposes them', () => {
+    const hidden = contextSpy();
+    const samples = new Float32Array([0.0001, -0.0001]);
+    drawWaveform(hidden.ctx, samples, 1, 104, '#20252a', clip, 2, 1, 1, false, -60);
+    expect(hidden.moveTo.mock.calls[1]).toEqual([0, 52]);
+    expect(hidden.lineTo.mock.calls[0]).toEqual([0, 52]);
+
+    const visible = contextSpy();
+    drawWaveform(visible.ctx, samples, 1, 104, '#20252a', clip, 2, 1, 1, false, -96);
+    expect(visible.moveTo.mock.calls[1]?.[0]).toBe(0);
+    expect(visible.moveTo.mock.calls[1]?.[1]).toBeCloseTo(44, 6);
+    expect(visible.lineTo.mock.calls[0]?.[0]).toBe(0);
+    expect(visible.lineTo.mock.calls[0]?.[1]).toBeCloseTo(60, 6);
+  });
 });

@@ -99,6 +99,28 @@ describe('Workspace persistence', () => {
     expect(restored.presets.find((preset) => preset.id === 'classic')?.layout.horizontalZoom).toBe(100);
   });
 
+  it('persists Waveform (dB) and rejects unknown legacy view modes', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const custom = createWorkspace(defaultWorkspaceStore(), 'db-workspace', 'dB editing', {
+      ...layout,
+      viewMode: 'waveformDb',
+    });
+    expect(saveWorkspaceStore(custom, storage)).toBe(true);
+    expect(loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'db-workspace')?.layout.viewMode)
+      .toBe('waveformDb');
+
+    values.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
+      activeId: 'classic',
+      presets: [{ id: 'classic', name: 'Classic', layout: { viewMode: 'logarithmic' } }],
+    }));
+    expect(loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'classic')?.layout.viewMode)
+      .toBe('waveform');
+  });
+
   it('reports browser storage write failures without throwing', () => {
     const storage = {
       setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },

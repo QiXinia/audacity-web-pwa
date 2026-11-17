@@ -474,6 +474,7 @@ import {
   type StereoLevels,
 } from '@/lib/levelMeter';
 import { getMeterDbRange } from '@/lib/meterPreferences';
+import { buildDbRulerValues, DB_WAVE_RULER_WIDTH, dbValueToWaveY } from '@/lib/dbWaveform';
 
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -504,6 +505,7 @@ export default function AudioEditorPage() {
   const [loopRegion, setLoopRegion] = useState<LoopRegion | null>(null);
   const [loopEnabled, setLoopEnabled] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('waveform');
+  const [waveformDbRange] = useState(getMeterDbRange);
   const [horizontalZoom, setHorizontalZoom] = useState(50);
   const [verticalZoom, setVerticalZoom] = useState(1);
   const [snapEnabled, setSnapEnabled] = useState(false);
@@ -6817,6 +6819,8 @@ export default function AudioEditorPage() {
   const timelineDuration = Math.max(projectDuration, 30);
   const pxPerSec = horizontalZoom;
   const totalWidth = Math.max(timelineDuration * pxPerSec, 1000);
+  const dbRulerWidth = viewMode === 'waveformDb' ? DB_WAVE_RULER_WIDTH : 0;
+  const timelineContentWidth = totalWidth + dbRulerWidth;
   const activeWorkspaceName = activeWorkspace.name;
   const activeWorkspaceBuiltIn = activeWorkspace.builtIn;
 
@@ -7395,6 +7399,15 @@ export default function AudioEditorPage() {
                 <TabsTrigger value="waveform" className="h-7 gap-1 text-xs px-2">
                   <Waves className="size-3.5" />
                   波形
+                </TabsTrigger>
+                <TabsTrigger
+                  value="waveformDb"
+                  className="h-7 gap-1 text-xs px-2"
+                  data-testid="waveform-db-tab"
+                  title="Waveform (dB)"
+                >
+                  <AudioWaveform className="size-3.5" />
+                  波形 (dB)
                 </TabsTrigger>
                 <TabsTrigger value="spectrum" className="h-7 gap-1 text-xs px-2">
                   <BarChart3 className="size-3.5" />
@@ -8013,25 +8026,27 @@ export default function AudioEditorPage() {
             {/* Time Ruler */}
             <div
               className="au-toolbar sticky top-0 z-20 h-7 shrink-0 border-b"
-              style={{ width: totalWidth }}
+              style={{ width: timelineContentWidth }}
             >
-              <TimeRuler duration={timelineDuration} pxPerSec={pxPerSec} />
-              <LoopRulerInteraction
-                region={loopRegion}
-                enabled={loopEnabled}
-                pxPerSec={pxPerSec}
-                maxTime={totalWidth / pxPerSec}
-                disabled={playbackState !== 'stopped'}
-                onSnapTime={resolveTimelineSnap}
-                onChange={changeLoopRegion}
-                onToggle={toggleLoopEnabled}
-              />
+              <div className="relative h-full" style={{ marginLeft: dbRulerWidth, width: totalWidth }}>
+                <TimeRuler duration={timelineDuration} pxPerSec={pxPerSec} />
+                <LoopRulerInteraction
+                  region={loopRegion}
+                  enabled={loopEnabled}
+                  pxPerSec={pxPerSec}
+                  maxTime={totalWidth / pxPerSec}
+                  disabled={playbackState !== 'stopped'}
+                  onSnapTime={resolveTimelineSnap}
+                  onChange={changeLoopRegion}
+                  onToggle={toggleLoopEnabled}
+                />
+              </div>
             </div>
 
             {/* Playhead */}
             <div
               className="pointer-events-none absolute top-0 bottom-0 z-10 w-px bg-[#e4e5e7]"
-              style={{ left: cursorPosition * pxPerSec }}
+              style={{ left: dbRulerWidth + cursorPosition * pxPerSec }}
             >
               <div className="absolute -left-1 top-7 size-2 rotate-45 bg-[#e4e5e7]" />
             </div>
@@ -8041,7 +8056,7 @@ export default function AudioEditorPage() {
               <div
                 className="au-selection pointer-events-none absolute top-7 bottom-0 z-[5]"
                 style={{
-                  left: selection.start * pxPerSec,
+                  left: dbRulerWidth + selection.start * pxPerSec,
                   width: (selection.end - selection.start) * pxPerSec,
                 }}
               />
@@ -8056,7 +8071,7 @@ export default function AudioEditorPage() {
                 data-loop-end={loopRegion.end}
                 className={`pointer-events-none absolute top-7 bottom-0 z-[6] border-x ${loopEnabled ? 'border-[#8bd5a7] bg-[#8bd5a7]/10' : 'border-[#aab0b6]/60 bg-[#aab0b6]/5'}`}
                 style={{
-                  left: loopRegion.start * pxPerSec,
+                  left: dbRulerWidth + loopRegion.start * pxPerSec,
                   width: (loopRegion.end - loopRegion.start) * pxPerSec,
                 }}
               >
@@ -8130,6 +8145,8 @@ export default function AudioEditorPage() {
                 sampleRate={project.sampleRate}
                 pxPerSec={pxPerSec}
                 totalWidth={totalWidth}
+                dbRulerWidth={dbRulerWidth}
+                dbRange={waveformDbRange}
                 viewMode={viewMode}
                 selection={selection}
                 spectralSelection={spectralSelection}
@@ -8160,6 +8177,7 @@ export default function AudioEditorPage() {
               tracks={project.tracks}
               pxPerSec={pxPerSec}
               totalWidth={totalWidth}
+              offsetX={dbRulerWidth}
               onSelect={handleAnalysisLabelSelect}
               onEdit={() => setLabelEditorDialogOpen(true)}
             />
@@ -9417,6 +9435,8 @@ function TrackTimeline({
   sampleRate,
   pxPerSec,
   totalWidth,
+  dbRulerWidth,
+  dbRange,
   viewMode,
   selection,
   spectralSelection,
@@ -9446,6 +9466,8 @@ function TrackTimeline({
   sampleRate: number;
   pxPerSec: number;
   totalWidth: number;
+  dbRulerWidth: number;
+  dbRange: number;
   viewMode: ViewMode;
   selection: { start: number; end: number } | null;
   spectralSelection: FrequencySelection | null;
@@ -9472,10 +9494,17 @@ function TrackTimeline({
   const trackHeight = 100;
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState(0);
+  const [stereoClipIds, setStereoClipIds] = useState<string[]>([]);
+  const handleAudioChannelsChange = useCallback((clipId: string, isStereo: boolean) => {
+    setStereoClipIds((current) => {
+      if (isStereo) return current.includes(clipId) ? current : [...current, clipId];
+      return current.filter((id) => id !== clipId);
+    });
+  }, []);
 
   function handleMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = e.clientX - rect.left - dbRulerWidth;
     const rawPosition = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
     const pos = onSnapTime(rawPosition, e.altKey);
     setIsDragging(true);
@@ -9486,7 +9515,7 @@ function TrackTimeline({
   function handleMouseMove(e: React.MouseEvent<HTMLDivElement>) {
     if (!isDragging) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = e.clientX - rect.left - dbRulerWidth;
     const rawPosition = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
     const pos = onSnapTime(rawPosition, e.altKey);
     onSelectionChange(dragStart, pos);
@@ -9501,7 +9530,7 @@ function TrackTimeline({
       className={`relative border-b border-border transition-colors ${
         isSelected ? 'bg-accent/5' : ''
       }`}
-      style={{ height: trackHeight, width: totalWidth }}
+      style={{ height: trackHeight, width: totalWidth + dbRulerWidth }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -9516,8 +9545,24 @@ function TrackTimeline({
         }}
       />
 
+      {dbRulerWidth > 0 && (
+        <TrackDbRuler
+          trackId={track.id}
+          trackName={track.name}
+          width={dbRulerWidth}
+          trackHeight={trackHeight}
+          waveformHeight={trackHeight - 24}
+          dbRange={dbRange}
+          verticalZoom={verticalZoom}
+          isStereo={stereoClipIds.length > 0}
+          channelHeightRatio={channelHeightRatio}
+          asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
+        />
+      )}
+
       {/* Clips */}
-      {track.clips.map((clip) => (
+      <div className="absolute inset-y-0" style={{ left: dbRulerWidth, width: totalWidth }}>
+        {track.clips.map((clip) => (
         <ClipItem
           key={clip.id}
           clip={clip}
@@ -9529,6 +9574,7 @@ function TrackTimeline({
           verticalZoom={verticalZoom}
           showClipping={showClipping}
           viewMode={viewMode}
+          dbRange={dbRange}
           selection={selection}
           spectralSelection={spectralSelection}
           isSelected={selectedClips.some((key) => key.trackId === track.id && key.clipId === clip.id)}
@@ -9543,12 +9589,97 @@ function TrackTimeline({
           onSpectralSelectionChange={onSpectralSelectionChange}
           onCursorChange={onCursorChange}
           onSnapTime={onSnapTime}
+          onAudioChannelsChange={handleAudioChannelsChange}
           channelHeightRatio={channelHeightRatio}
           asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
           onChannelHeightRatioChange={onChannelHeightRatioChange}
           onChannelHeightRatioCommit={onChannelHeightRatioCommit}
         />
-      ))}
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TrackDbRuler({
+  trackId,
+  trackName,
+  width,
+  trackHeight,
+  waveformHeight,
+  dbRange,
+  verticalZoom,
+  isStereo,
+  channelHeightRatio,
+  asymmetricStereoHeightsEnabled,
+}: {
+  trackId: string;
+  trackName: string;
+  width: number;
+  trackHeight: number;
+  waveformHeight: number;
+  dbRange: number;
+  verticalZoom: number;
+  isStereo: boolean;
+  channelHeightRatio: number;
+  asymmetricStereoHeightsEnabled: boolean;
+}) {
+  const ratio = isStereo
+    ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, waveformHeight)
+    : 0.5;
+  const upperHeight = isStereo ? Math.round(waveformHeight * ratio) : waveformHeight;
+  const bands = isStereo
+    ? [
+        { channel: 0, top: 0, height: upperHeight },
+        { channel: 1, top: upperHeight, height: waveformHeight - upperHeight },
+      ]
+    : [{ channel: 0, top: 0, height: waveformHeight }];
+
+  return (
+    <div
+      className="pointer-events-none sticky left-0 z-[28] border-r border-[#59636c] bg-[#20262b] text-[#bdc6ce]"
+      style={{ width, height: trackHeight }}
+      data-testid={`track-db-ruler-${trackId}`}
+      data-db-range={dbRange}
+      data-vertical-zoom={verticalZoom}
+      data-channel-count={isStereo ? 2 : 1}
+      data-stereo-ratio={ratio}
+      role="img"
+      aria-label={`${trackName} dB 轨道标尺，下限 ${dbRange} dB，纵向缩放 ${verticalZoom}`}
+    >
+      <div className="flex h-5 items-center justify-between border-b border-[#434a50] px-1 text-[8px]">
+        <span>dB</span>
+        <span>{dbRange}</span>
+      </div>
+      <div className="absolute inset-x-0 top-5" style={{ height: waveformHeight }}>
+        {bands.map((band) => {
+          const values = buildDbRulerValues(band.height, dbRange, verticalZoom, isStereo ? 17 : 20);
+          return (['positive', 'negative'] as const).flatMap((half) => values.map((value) => {
+            const y = band.top + dbValueToWaveY(value, band.height, dbRange, verticalZoom, half === 'negative');
+            const valueKey = String(value).replace('-', 'n');
+            return (
+              <div
+                key={`${band.channel}-${half}-${value}`}
+                className="absolute inset-x-0 h-0"
+                style={{ top: y }}
+                data-testid={`db-ruler-tick-${trackId}-${band.channel}-${half}-${valueKey}`}
+                data-channel={band.channel}
+                data-half={half}
+                data-db={value}
+                data-y={y}
+                aria-hidden="true"
+              >
+                <span className="absolute right-0 top-0 h-px w-2 bg-[#7c8790]" />
+                {half === 'positive' && (
+                  <span className="absolute left-0.5 top-0 -translate-y-1/2 bg-[#20262b]/85 pr-1 text-[7px] leading-none">
+                    {value}
+                  </span>
+                )}
+              </div>
+            );
+          }));
+        })}
+      </div>
     </div>
   );
 }
@@ -9564,6 +9695,7 @@ function ClipItem({
   verticalZoom,
   showClipping,
   viewMode,
+  dbRange,
   selection,
   spectralSelection,
   isSelected,
@@ -9578,6 +9710,7 @@ function ClipItem({
   onSpectralSelectionChange,
   onCursorChange,
   onSnapTime,
+  onAudioChannelsChange,
   channelHeightRatio,
   asymmetricStereoHeightsEnabled,
   onChannelHeightRatioChange,
@@ -9592,6 +9725,7 @@ function ClipItem({
   verticalZoom: number;
   showClipping: boolean;
   viewMode: ViewMode;
+  dbRange: number;
   selection: { start: number; end: number } | null;
   spectralSelection: FrequencySelection | null;
   isSelected: boolean;
@@ -9606,6 +9740,7 @@ function ClipItem({
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
   onSnapTime: (time: number, bypassSnap: boolean) => number;
+  onAudioChannelsChange: (clipId: string, isStereo: boolean) => void;
   channelHeightRatio: number;
   asymmetricStereoHeightsEnabled: boolean;
   onChannelHeightRatioChange: (ratio: number) => void;
@@ -9640,6 +9775,10 @@ function ClipItem({
   const effectiveChannelHeightRatio = isStereoClip
     ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, canvasHeight)
     : 0.5;
+
+  useEffect(() => {
+    onAudioChannelsChange(clip.id, isStereoClip);
+  }, [clip.id, isStereoClip, onAudioChannelsChange]);
 
   useEffect(() => {
     let mounted = true;
@@ -9701,8 +9840,20 @@ function ClipItem({
       ctx.rect(0, 0, width, bandHeight);
       ctx.clip();
 
-      if (viewMode === 'waveform' || viewMode === 'both') {
-        drawWaveform(ctx, band.data, width, bandHeight, '#20252a', clip, sampleRate, verticalZoom, viewMode === 'both' ? 0.8 : 1, showClipping);
+      if (viewMode === 'waveform' || viewMode === 'waveformDb' || viewMode === 'both') {
+        drawWaveform(
+          ctx,
+          band.data,
+          width,
+          bandHeight,
+          '#20252a',
+          clip,
+          sampleRate,
+          verticalZoom,
+          viewMode === 'both' ? 0.8 : 1,
+          showClipping,
+          viewMode === 'waveformDb' ? dbRange : undefined,
+        );
       }
 
       if (viewMode === 'spectrum' || viewMode === 'both') {
@@ -9722,7 +9873,7 @@ function ClipItem({
       }
       ctx.restore();
     }
-  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, isStereoClip, effectiveChannelHeightRatio]);
+  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, isStereoClip, effectiveChannelHeightRatio]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
@@ -10016,7 +10167,15 @@ function ClipItem({
       </div>
 
       {/* Waveform canvas */}
-      <canvas ref={canvasRef} className="absolute inset-x-0 bottom-1 top-5" />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-x-0 bottom-1 top-5"
+        data-testid={`waveform-canvas-${clip.id}`}
+        data-view-mode={viewMode}
+        data-db-range={viewMode === 'waveformDb' ? dbRange : undefined}
+        data-channel-count={audioChannels?.length ?? 0}
+        data-stereo-ratio={effectiveChannelHeightRatio}
+      />
       {isStereoClip && (
         <button
           type="button"

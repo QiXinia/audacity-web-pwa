@@ -78,7 +78,7 @@ export function defaultWorkspaceStore(): WorkspaceStore {
 }
 
 function normalizeLayout(value: Partial<WorkspaceLayout> | undefined, fallback: WorkspaceLayout): WorkspaceLayout {
-  const modes: ViewMode[] = ['waveform', 'spectrum', 'both'];
+  const modes: ViewMode[] = ['waveform', 'waveformDb', 'spectrum', 'both'];
   return {
     showTrackPanel: typeof value?.showTrackPanel === 'boolean' ? value.showTrackPanel : fallback.showTrackPanel,
     showMixer: typeof value?.showMixer === 'boolean' ? value.showMixer : fallback.showMixer,
