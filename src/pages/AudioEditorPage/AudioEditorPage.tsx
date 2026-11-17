@@ -489,6 +489,9 @@ export default function AudioEditorPage() {
   const [moveSelectionWithTracks, setMoveSelectionWithTracks] = useState(
     () => projectService.getPreferences?.()?.moveSelectionWithTracks ?? false,
   );
+  const [syncLockTracks, setSyncLockTracks] = useState(
+    () => projectService.getPreferences?.()?.syncLockTracks ?? false,
+  );
   const [exportFormat, setExportFormat] = useState('wav');
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [effectsPanelTrackId, setEffectsPanelTrackId] = useState<string | null>(null);
@@ -1431,6 +1434,14 @@ export default function AudioEditorPage() {
     }
   }
 
+  function setSyncLockPreference(enabled: boolean): void {
+    setSyncLockTracks(enabled);
+    const preferences = projectService.getPreferences?.();
+    if (preferences) {
+      projectService.savePreferences?.({ ...preferences, syncLockTracks: enabled });
+    }
+  }
+
   async function alignSelectedTracks(mode: TrackAlignMode): Promise<void> {
     if (!project || isAligningTracks) return;
     if (playbackState !== 'stopped' || recordingState === 'recording') {
@@ -1455,7 +1466,7 @@ export default function AudioEditorPage() {
       targetTrackIds,
       mode,
       activeSelection,
-      { moveSelectionWithTracks },
+      { moveSelectionWithTracks, syncLockTracks },
     );
     const label = getTrackAlignLabel(mode, moveSelectionWithTracks);
     setIsAligningTracks(true);
@@ -6872,6 +6883,13 @@ export default function AudioEditorPage() {
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+              <DropdownMenuSeparator />
+              <DropdownMenuCheckboxItem
+                checked={syncLockTracks}
+                onCheckedChange={setSyncLockPreference}
+              >
+                Keep tracks synchronized (Sync-Lock) 保持轨道同步
+              </DropdownMenuCheckboxItem>
               <DropdownMenuItem onClick={convertStereoTracksToMono}>Stereo To Mono 立体声转单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={splitStereoTracksToMono}>Split Stereo To Mono 立体声拆分为单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={handleRecord}>

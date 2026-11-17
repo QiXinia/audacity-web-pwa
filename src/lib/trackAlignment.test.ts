@@ -134,6 +134,42 @@ describe('Audacity DoAlign track alignment', () => {
       .toBe('Align/Move Start');
   });
 
+  it('propagates only fixed-delta alignment to sync-lock grouped tracks and their labels', () => {
+    const tracks = [makeTrack('a', [[5, 1]]), makeTrack('b', [[10, 1]]), makeTrack('c', [[20, 1]])];
+    const project = {
+      tracks,
+      cursorPosition: 12,
+      selection: { start: 12, end: 14 },
+      analysisLabels: [
+        { id: 'a-label', kind: 'manual', trackId: 'a', start: 5.5, end: 5.75, text: 'A' },
+        { id: 'c-label', kind: 'manual', trackId: 'c', start: 20.5, end: 20.75, text: 'C' },
+      ],
+    } as IProject;
+    const moved = alignProjectTracks(project, ['b'], 'start-zero', project.selection, {
+      moveSelectionWithTracks: true,
+      syncLockTracks: true,
+    });
+    expect(starts(moved, 'a')).toEqual([-5]);
+    expect(starts(moved, 'b')).toEqual([0]);
+    expect(starts(moved, 'c')).toEqual([10]);
+    expect(moved.selection).toEqual({ start: 2, end: 4 });
+    expect(moved.cursorPosition).toBe(2);
+    expect(moved.analysisLabels!.map((label) => [label.start, label.end]))
+      .toEqual([[-4.5, -4.25], [10.5, 10.75]]);
+
+    const withoutSync = alignTracks(tracks, ['b'], 'start-zero', null);
+    expect(starts(withoutSync, 'a')).toEqual([5]);
+    expect(starts(withoutSync, 'c')).toEqual([20]);
+    const together = alignTracks(tracks, ['a', 'b'], 'together', null, false, true);
+    expect(starts(together, 'a')).toEqual([7.5]);
+    expect(starts(together, 'b')).toEqual([7.5]);
+    expect(starts(together, 'c')).toEqual([20]);
+    const endToEnd = alignTracks(tracks, ['a', 'b'], 'end-to-end', null, false, true);
+    expect(starts(endToEnd, 'a')).toEqual([5]);
+    expect(starts(endToEnd, 'b')).toEqual([6]);
+    expect(starts(endToEnd, 'c')).toEqual([20]);
+  });
+
   it('preserves official negative selection bounds and never moves selection for no-sync modes', () => {
     const tracks = [makeTrack('a', [[5, 1]]), makeTrack('b', [[3, 4]])];
     const project = {

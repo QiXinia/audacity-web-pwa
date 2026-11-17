@@ -389,6 +389,7 @@ const DEFAULT_PREFS: IPreferences = {
   maxRecordingDuration: 600,
   useWasm: true,
   moveSelectionWithTracks: false,
+  syncLockTracks: false,
 };
 
 class ProjectService {

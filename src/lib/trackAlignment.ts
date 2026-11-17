@@ -48,6 +48,36 @@ function moveTrack(track: ITrack, delta: number): ITrack {
   };
 }
 
+/**
+ * SyncLock::IsSyncLockSelected for the currently supported track types.
+ * Audio tracks form maximal contiguous groups; a group is sync-lock selected
+ * when any of its members is selected. Future separator track types extend
+ * the else branch without changing the alignment algorithm.
+ */
+export function getSyncLockSelectedTrackIds(
+  tracks: readonly ITrack[],
+  selectedTrackIds: readonly string[],
+  syncLockTracks: boolean,
+): ReadonlySet<string> {
+  const selected = new Set(selectedTrackIds);
+  const syncSelected = new Set<string>();
+  if (!syncLockTracks || selected.size === 0) return syncSelected;
+
+  let group: ITrack[] = [];
+  const flushGroup = () => {
+    if (group.some((track) => selected.has(track.id))) {
+      for (const track of group) syncSelected.add(track.id);
+    }
+    group = [];
+  };
+  for (const track of tracks) {
+    if (track.type === 'audio') group.push(track);
+    else flushGroup();
+  }
+  flushGroup();
+  return syncSelected;
+}
+
 /** Mirror TrackMenus.cpp DoAlign without mutating tracks, clips, or their order. */
 export function alignTracks(
   tracks: readonly ITrack[],
@@ -55,6 +85,7 @@ export function alignTracks(
   mode: TrackAlignMode,
   selection: { start: number; end: number } | null,
   moveSelectionWithTracks = false,
+  syncLockTracks = false,
 ): TrackAlignmentResult {
   const selected = new Set(selectedTrackIds);
   const selectedTracks = tracks.filter((track) => selected.has(track.id));
@@ -95,7 +126,18 @@ export function alignTracks(
     deltas.set(track.id, delta);
     return moveTrack(track, delta);
   });
-  return { tracks: aligned, deltas, selectionDelta: sharedDelta ?? 0, label };
+  let resultTracks = aligned;
+  if (sharedDelta !== null && sharedDelta !== 0 && syncLockTracks) {
+    // DoAlign moves every selected or sync-lock selected track by one shared
+    // delta. No-sync modes deliberately never enter this branch.
+    const syncSelected = getSyncLockSelectedTrackIds(tracks, selectedTrackIds, true);
+    resultTracks = aligned.map((track, index) => {
+      if (selected.has(track.id) || !syncSelected.has(track.id)) return track;
+      deltas.set(track.id, sharedDelta);
+      return moveTrack(tracks[index]!, sharedDelta);
+    });
+  }
+  return { tracks: resultTracks, deltas, selectionDelta: sharedDelta ?? 0, label };
 }
 
 /** Keep track-scoped analysis labels attached to the same timeline content. */
@@ -104,7 +146,7 @@ export function alignProjectTracks(
   selectedTrackIds: readonly string[],
   mode: TrackAlignMode,
   selection: { start: number; end: number } | null,
-  options: { moveSelectionWithTracks?: boolean } = {},
+  options: { moveSelectionWithTracks?: boolean; syncLockTracks?: boolean } = {},
 ): IProject {
   const moveSelectionWithTracks = options.moveSelectionWithTracks ?? false;
   const result = alignTracks(
@@ -113,6 +155,7 @@ export function alignProjectTracks(
     mode,
     selection,
     moveSelectionWithTracks,
+    options.syncLockTracks ?? false,
   );
   const selectionDelta = moveSelectionWithTracks ? result.selectionDelta : 0;
   return {

@@ -110,4 +110,6 @@ export interface IPreferences {
   useWasm: boolean;
   /** Audacity /GUI/MoveSelectionWithTracks; defaults to false. */
   moveSelectionWithTracks: boolean;
+  /** Audacity /GUI/SyncLockTracks; defaults to false. */
+  syncLockTracks: boolean;
 }

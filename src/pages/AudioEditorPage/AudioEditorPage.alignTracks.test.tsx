@@ -277,6 +277,28 @@ describe('AudioEditorPage Align Tracks', () => {
     );
   });
 
+  it('persists Sync-Lock and moves unselected group members for fixed-delta alignment', async () => {
+    await renderEditor();
+    fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
+    const syncLock = await screen.findByRole('menuitemcheckbox', { name: /Keep tracks synchronized/ });
+    expect(syncLock).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(syncLock);
+    expect(mocks.savePreferences).toHaveBeenCalledWith({
+      moveSelectionWithTracks: false,
+      syncLockTracks: true,
+    });
+
+    await openAlignMenu();
+    fireEvent.click(await screen.findByText('Start to Zero 起点到零'));
+
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    expect(start('late')).toBe(0);
+    expect(start('early')).toBe(-4);
+    expect(start('early-2')).toBe(-4);
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push.mock.calls[0]![0].label).toBe('Align Start');
+  });
+
   it('disables Align Tracks while audio is playing and for an empty project', async () => {
     await renderEditor();
     const onPlaybackStateChange = mocks.setStateChangeCallback.mock.calls.at(-1)![0] as (state: string) => void;
