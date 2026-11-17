@@ -167,6 +167,7 @@ import {
 } from '@/lib/generatorEditing';
 import { resolveMixAndRenderTrackIds } from '@/lib/mixAndRenderEffect';
 import { resolveRemoveTrackFocus } from '@/lib/trackRemoval';
+import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
 import {
   measureContrastSelection as measureContrastPcm,
   type ContrastClip,
@@ -477,6 +478,7 @@ export default function AudioEditorPage() {
   const [isMutingTracks, setIsMutingTracks] = useState(false);
   const [isPanningTracks, setIsPanningTracks] = useState(false);
   const [isRemovingTracks, setIsRemovingTracks] = useState(false);
+  const [isSortingTracks, setIsSortingTracks] = useState(false);
   const [exportFormat, setExportFormat] = useState('wav');
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [effectsPanelTrackId, setEffectsPanelTrackId] = useState<string | null>(null);
@@ -1370,6 +1372,41 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? error.message : '选中轨道移除失败');
     } finally {
       setIsRemovingTracks(false);
+    }
+  }
+
+  async function sortTracks(mode: TrackSortMode): Promise<void> {
+    if (!project || isSortingTracks) return;
+    if (project.tracks.length === 0) {
+      toast.warning('工程中没有可排序的轨道');
+      return;
+    }
+
+    const before = structuredClone(project);
+    const updated: IProject = {
+      ...project,
+      tracks: sortTrackList(project.tracks, mode),
+    };
+    const label = mode === 'time' ? 'Sort by Time' : 'Sort by Name';
+    setIsSortingTracks(true);
+    try {
+      // Audacity sorts every track, independent of the current track selection.
+      await projectService.saveProject(updated);
+      const persisted = await projectService.getProject(project.id);
+      if (!persisted) throw new Error('轨道排序后无法重新加载工程');
+      setProject(persisted);
+      pushHistoryCmd({
+        id: generateId(),
+        label,
+        execute: () => persisted,
+        undo: () => before,
+      });
+      toast.success(`已按${mode === 'time' ? '开始时间' : '名称'}排序 ${persisted.tracks.length} 条轨道`);
+    } catch (error) {
+      logger.error('Sort Tracks failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道排序保存失败');
+    } finally {
+      setIsSortingTracks(false);
     }
   }
 
@@ -6705,6 +6742,19 @@ export default function AudioEditorPage() {
               >
                 Remove Tracks 移除轨道
               </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger disabled={project.tracks.length === 0 || isSortingTracks}>
+                  Sort Tracks 轨道排序
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuItem disabled={isSortingTracks} onClick={() => void sortTracks('time')}>
+                    By Start Time 按开始时间
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isSortingTracks} onClick={() => void sortTracks('name')}>
+                    By Name 按名称
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuItem onClick={convertStereoTracksToMono}>Stereo To Mono 立体声转单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={splitStereoTracksToMono}>Split Stereo To Mono 立体声拆分为单声道</DropdownMenuItem>
               <DropdownMenuItem onClick={handleRecord}>
