@@ -208,6 +208,11 @@ import {
   type SampleDataExportSettings,
 } from '@/lib/sampleDataExport';
 import {
+  parseSampleDataImport,
+  type SampleDataImportChannelCount,
+  type SampleDataInvalidDataHandling,
+} from '@/lib/sampleDataImport';
+import {
   createRegularIntervalLabels,
   type RegularIntervalLabelsSettings,
 } from '@/lib/regularIntervalLabels';
@@ -384,6 +389,7 @@ import PlotSpectrumDialog from './sections/PlotSpectrumDialog';
 import { ContrastAnalysisDialog } from './sections/ContrastAnalysisDialog';
 import MeasureRmsDialog, { type MeasureRmsTrackResult } from './sections/MeasureRmsDialog';
 import SampleDataExportDialog from './sections/SampleDataExportDialog';
+import SampleDataImportDialog, { type SampleDataImportCompletion } from './sections/SampleDataImportDialog';
 import FindClippingDialog from './sections/FindClippingDialog';
 import LabelSoundsDialog from './sections/LabelSoundsDialog';
 import BeatFinderDialog from './sections/BeatFinderDialog';
@@ -516,6 +522,9 @@ export default function AudioEditorPage() {
   const [sampleDataExportDialogOpen, setSampleDataExportDialogOpen] = useState(false);
   const [isExportingSampleData, setIsExportingSampleData] = useState(false);
   const sampleDataExportOperationRef = useRef(0);
+  const [sampleDataImportDialogOpen, setSampleDataImportDialogOpen] = useState(false);
+  const [isImportingSampleData, setIsImportingSampleData] = useState(false);
+  const sampleDataImportOperationRef = useRef(0);
   const [findClippingDialogOpen, setFindClippingDialogOpen] = useState(false);
   const [isFindingClipping, setIsFindingClipping] = useState(false);
   const [labelSoundsDialogOpen, setLabelSoundsDialogOpen] = useState(false);
@@ -1813,6 +1822,90 @@ export default function AudioEditorPage() {
       toast.error(`生成静默失败：${message}`);
     } finally {
       setIsGeneratingSilence(false);
+    }
+  }
+
+  function handleSampleDataImportDialogChange(open: boolean): void {
+    if (!open) {
+      sampleDataImportOperationRef.current += 1;
+      setIsImportingSampleData(false);
+    }
+    setSampleDataImportDialogOpen(open);
+  }
+
+  async function handleSampleDataImport(
+    file: File,
+    invalidDataHandling: SampleDataInvalidDataHandling,
+  ): Promise<SampleDataImportCompletion> {
+    if (!project) throw new Error('工程尚未加载');
+    const trackIds = resolveGeneratorTrackIds(project.tracks, selectedTrackId, selectedClips);
+    if (trackIds.length === 0) throw new Error('请先添加一个音频轨道');
+
+    const operation = ++sampleDataImportOperationRef.current;
+    const beforeProject = structuredClone(project);
+    setIsImportingSampleData(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (operation !== sampleDataImportOperationRef.current) throw new Error('导入已取消');
+
+      const targets: { trackId: string; sampleData: Float32Array[] }[] = [];
+      let invalidValueCount = 0;
+      let paddedRightSample = false;
+      for (const trackId of trackIds) {
+        const track = project.tracks.find((candidate) => candidate.id === trackId);
+        if (!track) throw new Error(`目标轨道不可用：${trackId}`);
+        let channelCount: SampleDataImportChannelCount = 1;
+        let inspectedClip = false;
+        for (const clip of track.clips) {
+          const channels = await projectService.loadAudioChannels(clip.audioBufferId);
+          if (operation !== sampleDataImportOperationRef.current) throw new Error('导入已取消');
+          if (!channels || (channels.length !== 1 && channels.length !== 2)) {
+            throw new Error(`无法确定目标轨「${track.name}」的声道布局`);
+          }
+          if (inspectedClip && channels.length !== channelCount) {
+            throw new Error(`目标轨「${track.name}」包含不一致的声道布局，无法导入`);
+          }
+          channelCount = channels.length;
+          inspectedClip = true;
+        }
+
+        const parsed = parseSampleDataImport(bytes, { channelCount, invalidDataHandling });
+        targets.push({ trackId, sampleData: parsed.channels });
+        invalidValueCount += parsed.invalidValueCount;
+        paddedRightSample ||= parsed.paddedRightSample;
+      }
+      if (operation !== sampleDataImportOperationRef.current) throw new Error('导入已取消');
+
+      const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
+      const replacementSelection = activeSelection
+        ? { ...activeSelection, allowDurationChange: true }
+        : undefined;
+      const clips = await projectService.addGeneratedAudioToTracks(
+        project.id,
+        targets,
+        project.sampleRate,
+        activeSelection?.start ?? cursorPosition,
+        file.name.replace(/\.[^.]+$/, '') || 'Sample Data Import',
+        replacementSelection,
+      );
+      if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
+
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('工程保存后无法重新加载');
+      if (operation !== sampleDataImportOperationRef.current) throw new Error('导入已取消');
+      setProject(updated);
+      setSelectedTrackId(trackIds[0]!);
+      setSelectedClips(clips.map((clip, index) => ({ trackId: trackIds[index]!, clipId: clip.id })));
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Sample Data Import',
+        execute: () => updated,
+        undo: () => beforeProject,
+      });
+      toast.success(`已从 ${file.name} 导入到 ${trackIds.length} 条轨道${invalidValueCount > 0 ? `，${invalidValueCount} 个无效值按零读取` : ''}`);
+      return { trackCount: trackIds.length, invalidValueCount, paddedRightSample };
+    } finally {
+      if (operation === sampleDataImportOperationRef.current) setIsImportingSampleData(false);
     }
   }
 
@@ -6143,6 +6236,7 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setRissetDialogOpen(true)}>Risset Drum…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setNoiseDialogOpen(true)}>噪声…</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setSilenceDialogOpen(true)}>静默…</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSampleDataImportDialogOpen(true)}>Sample Data Import… 采样数据导入…</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <DropdownMenu>
@@ -7467,6 +7561,13 @@ export default function AudioEditorPage() {
           selectionActive={Boolean(quantizedGeneratorSelection)}
           isGenerating={isGeneratingSilence}
           onGenerate={handleGenerateSilence}
+        />
+
+        <SampleDataImportDialog
+          open={sampleDataImportDialogOpen}
+          onOpenChange={handleSampleDataImportDialogChange}
+          isImporting={isImportingSampleData}
+          onImport={handleSampleDataImport}
         />
 
         <PlotSpectrumDialog
