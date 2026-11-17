@@ -3,10 +3,11 @@ import { deserializeAnalysisLabels, serializeAnalysisLabels } from './analysisLa
 import type { IAnalysisLabel } from '@/types/project';
 
 describe('analysis label persistence', () => {
-  it('round-trips manual and clipping labels without inventing channel metadata', () => {
+  it('round-trips manual, clipping and negative Sync-Lock labels without inventing channel metadata', () => {
     const labels: IAnalysisLabel[] = [
       { id: 'manual-1', kind: 'manual', trackId: 'track-a', start: 1, end: 2, text: '' },
       { id: 'clip-1', kind: 'clipping', trackId: 'track-b', channelIndex: 1, start: 0, end: 0.025, text: '3 of 3' },
+      { id: 'negative-sync', kind: 'manual', trackId: 'track-c', start: -0.75, end: -0.5, text: 'Sync-Lock' },
     ];
     expect(deserializeAnalysisLabels(serializeAnalysisLabels(labels))).toEqual(labels);
     expect(deserializeAnalysisLabels(serializeAnalysisLabels(labels))[0]).not.toHaveProperty('channelIndex');

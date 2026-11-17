@@ -10,7 +10,7 @@ function validateDraft(draft: readonly IAnalysisLabel[], tracks: readonly ITrack
   const trackIds = new Set(tracks.map((track) => track.id));
   for (const [index, label] of draft.entries()) {
     if (!trackIds.has(label.trackId)) return `第 ${index + 1} 行的轨道已不存在，请重新选择`;
-    if (!Number.isFinite(label.start) || label.start < 0) return `第 ${index + 1} 行开始时间必须是不小于 0 的有限秒数`;
+    if (!Number.isFinite(label.start)) return `第 ${index + 1} 行开始时间必须是有限秒数`;
     if (!Number.isFinite(label.end) || label.end < label.start) return `第 ${index + 1} 行结束时间不能早于开始时间`;
   }
   return null;
@@ -145,7 +145,7 @@ export default function LabelEditorDialog({
                     <td className="border-t px-2 py-1.5">
                       <Input
                         aria-label={`开始时间 ${index + 1}`}
-                        type="number" min={0} step={0.001}
+                        type="number" step={0.001}
                         value={Number.isFinite(label.start) ? label.start : ''}
                         disabled={isApplying}
                         onFocus={() => setSelectedRow(index)}
@@ -158,7 +158,7 @@ export default function LabelEditorDialog({
                     <td className="border-t px-2 py-1.5">
                       <Input
                         aria-label={`结束时间 ${index + 1}`}
-                        type="number" min={0} step={0.001}
+                        type="number" step={0.001}
                         value={Number.isFinite(label.end) ? label.end : ''}
                         disabled={isApplying}
                         onFocus={() => setSelectedRow(index)}

@@ -11,13 +11,14 @@ export function deserializeAnalysisLabels(data: string | null | undefined): IAna
     const parsed: unknown = JSON.parse(data);
     if (!Array.isArray(parsed)) return [];
     return parsed.flatMap((value): IAnalysisLabel[] => {
+      // Audacity LabelTrack::MoveTo shifts selectedRegion without clamping to zero.
       if (!value || typeof value !== 'object') return [];
       const label = value as Partial<IAnalysisLabel>;
       if (
         (label.kind !== 'clipping' && label.kind !== 'manual')
         || typeof label.id !== 'string' || label.id.length === 0
         || typeof label.trackId !== 'string' || label.trackId.length === 0
-        || !Number.isFinite(label.start) || (label.start ?? -1) < 0
+        || !Number.isFinite(label.start)
         || !Number.isFinite(label.end) || (label.end ?? -1) < (label.start ?? 0)
         || typeof label.text !== 'string'
       ) return [];

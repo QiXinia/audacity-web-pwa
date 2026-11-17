@@ -72,7 +72,18 @@ describe('LabelEditorDialog', () => {
     expect(onApply).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('开始时间 1'), { target: { value: '' } });
     expect(screen.getByRole('button', { name: 'OK' })).toBeDisabled();
-    expect(screen.getByRole('alert')).toHaveTextContent('开始时间必须是不小于 0 的有限秒数');
+    expect(screen.getByRole('alert')).toHaveTextContent('开始时间必须是有限秒数');
+  });
+
+  it('keeps negative Sync-Lock labels editable after persistence', () => {
+    const negative: IAnalysisLabel = {
+      id: 'negative-sync', kind: 'manual', trackId: 'track-a', start: -0.75, end: -0.5, text: 'L3',
+    };
+    const { onApply } = renderDialog({ labels: [negative] });
+    expect(screen.getByRole('button', { name: 'OK' })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('标签文本 1'), { target: { value: 'L3 edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+    expect(onApply).toHaveBeenCalledWith([{ ...negative, text: 'L3 edited' }]);
   });
 
   it('offers one unsaved manual row when no labels exist', () => {
