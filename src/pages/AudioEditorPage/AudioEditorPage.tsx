@@ -473,6 +473,7 @@ export default function AudioEditorPage() {
   const [isMixingAndRendering, setIsMixingAndRendering] = useState(false);
   const [resampleDialogOpen, setResampleDialogOpen] = useState(false);
   const [isResampling, setIsResampling] = useState(false);
+  const [isMutingTracks, setIsMutingTracks] = useState(false);
   const [exportFormat, setExportFormat] = useState('wav');
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [effectsPanelTrackId, setEffectsPanelTrackId] = useState<string | null>(null);
@@ -721,6 +722,9 @@ export default function AudioEditorPage() {
         && playbackState !== 'playing' && recordingState !== 'recording') {
         event.preventDefault();
         setContrastDialogOpen(true);
+      } else if (modified && key === 'u') {
+        event.preventDefault();
+        void setTracksMute(!event.shiftKey, event.altKey);
       } else if (modified && key === 'i') {
         event.preventDefault();
         void splitClipsAtCursor();
@@ -780,6 +784,7 @@ export default function AudioEditorPage() {
     playbackState,
     recordingState,
     isMixingAndRendering,
+    isMutingTracks,
     scrollX,
     viewMode,
   ]);
@@ -1217,6 +1222,54 @@ export default function AudioEditorPage() {
     } catch (error) {
       logger.error('Split Stereo To Mono failed', error);
       toast.error(error instanceof Error ? error.message : '立体声拆分失败');
+    }
+  }
+
+  async function setTracksMute(muted: boolean, selectedOnly: boolean): Promise<void> {
+    if (!project || isMutingTracks) return;
+    const targetTrackIds = selectedOnly
+      ? resolveMixAndRenderTrackIds(
+        project.tracks.map((track) => track.id),
+        selectedTrackId,
+        selectedClips.map((clip) => clip.trackId),
+      )
+      : project.tracks.map((track) => track.id);
+    if (targetTrackIds.length === 0) {
+      toast.warning('请先选择要静音或取消静音的轨道');
+      return;
+    }
+
+    const targets = new Set(targetTrackIds);
+    const before = structuredClone(project);
+    const updated: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => targets.has(track.id)
+        // This editor implements Audacity's Simple solo behavior: either mute
+        // command clears solo on every track it targets, including no-op mute states.
+        ? { ...track, muted, solo: false }
+        : track),
+    };
+    const label = muted
+      ? (selectedOnly ? 'Mute Tracks' : 'Mute All Tracks')
+      : (selectedOnly ? 'Unmute Tracks' : 'Unmute All Tracks');
+    setIsMutingTracks(true);
+    try {
+      await projectService.saveProject(updated);
+      const persisted = await projectService.getProject(project.id);
+      if (!persisted) throw new Error('轨道状态保存后无法重新加载');
+      setProject(persisted);
+      pushHistoryCmd({
+        id: generateId(),
+        label,
+        execute: () => persisted,
+        undo: () => before,
+      });
+      toast.success(`${muted ? '已静音' : '已取消静音'} ${targetTrackIds.length} 条${selectedOnly ? '选中' : ''}轨道`);
+    } catch (error) {
+      logger.error('Mute/Unmute tracks failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道静音状态保存失败');
+    } finally {
+      setIsMutingTracks(false);
     }
   }
 
@@ -6471,6 +6524,35 @@ export default function AudioEditorPage() {
             <DropdownMenuContent>
               <DropdownMenuItem onClick={addTrack}>添加单声道轨道</DropdownMenuItem>
               <DropdownMenuSub>
+                <DropdownMenuSubTrigger disabled={project.tracks.length === 0 || isMutingTracks}>
+                  Mute/Unmute 静音/取消静音
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuItem disabled={isMutingTracks} onClick={() => void setTracksMute(true, false)}>
+                    Mute All Tracks 静音所有轨道
+                    <span className="ml-auto text-xs text-muted-foreground">Ctrl+U</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isMutingTracks} onClick={() => void setTracksMute(false, false)}>
+                    Unmute All Tracks 取消静音所有轨道
+                    <span className="ml-auto text-xs text-muted-foreground">Ctrl+Shift+U</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={mixAndRenderTrackIds.length === 0 || isMutingTracks}
+                    onClick={() => void setTracksMute(true, true)}
+                  >
+                    Mute Tracks 静音选中轨道
+                    <span className="ml-auto text-xs text-muted-foreground">Ctrl+Alt+U</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={mixAndRenderTrackIds.length === 0 || isMutingTracks}
+                    onClick={() => void setTracksMute(false, true)}
+                  >
+                    Unmute Tracks 取消静音选中轨道
+                    <span className="ml-auto text-xs text-muted-foreground">Ctrl+Alt+Shift+U</span>
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
                 <DropdownMenuSubTrigger
                   disabled={mixAndRenderTrackIds.length === 0 || isMixingAndRendering
                     || playbackState === 'playing' || recordingState === 'recording'}
@@ -8545,7 +8627,7 @@ function TrackPanelRow({
           <Button
             variant={track.muted ? 'destructive' : 'secondary'}
             size="icon"
-            className="au-secondary size-6 min-h-6 p-0 text-[10px]"
+            className={track.muted ? 'size-6 min-h-6 p-0 text-[10px]' : 'au-secondary size-6 min-h-6 p-0 text-[10px]'}
             onClick={(e) => {
               e.stopPropagation();
               onMute();
@@ -8559,7 +8641,7 @@ function TrackPanelRow({
           <Button
             variant={track.solo ? 'default' : 'secondary'}
             size="icon"
-            className="au-secondary size-6 min-h-6 p-0 text-[10px]"
+            className={track.solo ? 'size-6 min-h-6 p-0 text-[10px]' : 'au-secondary size-6 min-h-6 p-0 text-[10px]'}
             onClick={(e) => {
               e.stopPropagation();
               onSolo();
