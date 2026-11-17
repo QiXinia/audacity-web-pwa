@@ -169,6 +169,11 @@ import { resolveMixAndRenderTrackIds } from '@/lib/mixAndRenderEffect';
 import { resolveRemoveTrackFocus } from '@/lib/trackRemoval';
 import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
 import {
+  alignProjectTracks,
+  getTrackAlignLabel,
+  type TrackAlignMode,
+} from '@/lib/trackAlignment';
+import {
   measureContrastSelection as measureContrastPcm,
   type ContrastClip,
   type ContrastMeasurement,
@@ -479,6 +484,7 @@ export default function AudioEditorPage() {
   const [isPanningTracks, setIsPanningTracks] = useState(false);
   const [isRemovingTracks, setIsRemovingTracks] = useState(false);
   const [isSortingTracks, setIsSortingTracks] = useState(false);
+  const [isAligningTracks, setIsAligningTracks] = useState(false);
   const [exportFormat, setExportFormat] = useState('wav');
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [effectsPanelTrackId, setEffectsPanelTrackId] = useState<string | null>(null);
@@ -1407,6 +1413,47 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? error.message : '轨道排序保存失败');
     } finally {
       setIsSortingTracks(false);
+    }
+  }
+
+  async function alignSelectedTracks(mode: TrackAlignMode): Promise<void> {
+    if (!project || isAligningTracks) return;
+    if (playbackState !== 'stopped' || recordingState === 'recording') {
+      toast.warning('请先停止播放或录音');
+      return;
+    }
+    const targetTrackIds = resolveMixAndRenderTrackIds(
+      project.tracks.map((track) => track.id),
+      selectedTrackId,
+      selectedClips.map((clip) => clip.trackId),
+    );
+    if (targetTrackIds.length === 0) {
+      toast.warning('请先选择要对齐的轨道');
+      return;
+    }
+
+    const before = structuredClone(project);
+    const activeSelection = selection ?? { start: cursorPosition, end: cursorPosition };
+    const updated = alignProjectTracks(project, targetTrackIds, mode, activeSelection);
+    const label = getTrackAlignLabel(mode);
+    setIsAligningTracks(true);
+    try {
+      await projectService.saveProject(updated);
+      const persisted = await projectService.getProject(project.id);
+      if (!persisted) throw new Error('轨道对齐后无法重新加载工程');
+      setProject(persisted);
+      pushHistoryCmd({
+        id: generateId(),
+        label,
+        execute: () => persisted,
+        undo: () => before,
+      });
+      toast.success(`已对齐 ${targetTrackIds.length} 条选中轨道`);
+    } catch (error) {
+      logger.error('Align Tracks failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道对齐保存失败');
+    } finally {
+      setIsAligningTracks(false);
     }
   }
 
@@ -6742,6 +6789,37 @@ export default function AudioEditorPage() {
               >
                 Remove Tracks 移除轨道
               </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger
+                  disabled={mixAndRenderTrackIds.length === 0 || isAligningTracks
+                    || playbackState !== 'stopped' || recordingState === 'recording'}
+                >
+                  Align Tracks 对齐轨道
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuItem disabled={isAligningTracks} onClick={() => void alignSelectedTracks('end-to-end')}>
+                    Align End to End 首尾相接
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isAligningTracks} onClick={() => void alignSelectedTracks('together')}>
+                    Align Together 对齐到一起
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isAligningTracks} onClick={() => void alignSelectedTracks('start-zero')}>
+                    Start to Zero 起点到零
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isAligningTracks} onClick={() => void alignSelectedTracks('start-selection-start')}>
+                    Start to Cursor/Selection Start 起点到光标/选区起点
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isAligningTracks} onClick={() => void alignSelectedTracks('start-selection-end')}>
+                    Start to Selection End 起点到选区终点
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isAligningTracks} onClick={() => void alignSelectedTracks('end-selection-start')}>
+                    End to Cursor/Selection Start 终点到光标/选区起点
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isAligningTracks} onClick={() => void alignSelectedTracks('end-selection-end')}>
+                    End to Selection End 终点到选区终点
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger disabled={project.tracks.length === 0 || isSortingTracks}>
                   Sort Tracks 轨道排序
