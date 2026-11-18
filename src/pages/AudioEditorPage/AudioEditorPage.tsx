@@ -542,6 +542,7 @@ import {
   updateTrackSpectrogramSettings,
 } from '@/lib/spectrogramSettings';
 import { getSpectrogramFftLength } from '@/lib/spectrogramAlgorithm';
+import { getSpectrogramFrameColorValues } from '@/lib/spectrogramDisplay';
 import { CLIP_COLORS, getClipColor, getClipColorIndex, setClipColor } from '@/lib/clipColor';
 import { renameClipTitle } from '@/lib/clipTitle';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -11102,7 +11103,7 @@ function TrackSpectrumRuler({
       aria-label={`${trackName} 频率标尺，${settings.scale}，${settings.minFreq}–${settings.maxFreq} Hz`}
       onMouseDown={(event) => event.stopPropagation()}
     >
-      {showHeader && (
+      {showHeader ? (
         <div className="flex h-5 items-center justify-between gap-0.5 border-b border-[#59636c] px-1 text-[8px] font-medium">
           <span className="truncate">{trackName}</span>
           <span className="flex shrink-0 items-center gap-0.5 text-[#8f9aa3]">
@@ -11119,6 +11120,17 @@ function TrackSpectrumRuler({
             </button>
           </span>
         </div>
+      ) : (
+        <button
+          type="button"
+          data-testid={`track-spectrogram-settings-${trackId}`}
+          aria-label={`${trackName} Spectrogram settings`}
+          title="Spectrogram settings"
+          className="absolute right-0.5 top-0.5 z-[2] grid size-4 place-items-center rounded-sm bg-[#20262b]/85 text-[#8f9aa3] hover:bg-[#434a50] hover:text-white"
+          onClick={(event) => { event.stopPropagation(); onOpenSettings(); }}
+        >
+          <Settings className="size-2.5" />
+        </button>
       )}
       <div className={`pointer-events-none absolute inset-x-0 ${showHeader ? 'top-5' : 'top-0'}`} style={{ height: waveformHeight }}>
         {bands.map((band) => getSpectrumRulerTicks(band.height, sampleRate, settings).map((tick, index) => {
@@ -11434,6 +11446,8 @@ function ClipItem({
 
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
+    delete canvas.dataset.spectrogramError;
+    canvas.dataset.spectrogramCompletedFrames = '0';
 
     const stretchRatio = getClipStretchRatio(clip);
     const firstChannelHeight = isStereoClip ? paneHeight * effectiveChannelHeightRatio : paneHeight;
@@ -11452,6 +11466,8 @@ function ClipItem({
         : []),
     ]);
 
+    const spectrumCleanups: Array<() => void> = [];
+    const spectrumRenderTracker: SpectrogramRenderTracker = { pending: 0, completedFrames: 0, failed: false };
     for (const band of renderBands) {
       const bandHeight = Math.max(1, band.height);
       ctx.save();
@@ -11482,7 +11498,7 @@ function ClipItem({
           band.data.length,
           Math.floor((clip.offset + clip.duration * stretchRatio) * sampleRate),
         );
-        drawSpectrumMini(
+        const cleanup = drawSpectrumMini(
           ctx,
           band.data.subarray(sourceStart, Math.max(sourceStart + 1, sourceEnd)),
           width,
@@ -11490,10 +11506,16 @@ function ClipItem({
           sampleRate,
           1,
           spectrogramSettings,
+          band.top,
+          spectrumRenderTracker,
         );
+        if (cleanup) spectrumCleanups.push(cleanup);
       }
       ctx.restore();
     }
+    return () => {
+      spectrumCleanups.forEach((cleanup) => cleanup());
+    };
   }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, showRMS, isStereoClip, effectiveChannelHeightRatio, isMultiView, paneHeight, spectrogramSettings.scale, spectrogramSettings.minFreq, spectrogramSettings.maxFreq, spectrogramSettings.gainDb, spectrogramSettings.rangeDb, spectrogramSettings.highBoostDbPerDec, spectrogramSettings.colorScheme, spectrogramSettings.algorithm, spectrogramSettings.windowType, spectrogramSettings.windowSize, spectrogramSettings.zeroPaddingFactor]);
 
   const left = clip.startTime * pxPerSec;
@@ -12356,6 +12378,104 @@ function formatAudacityTime(seconds: number): string {
     .padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}s`;
 }
 
+const SPECTROGRAM_WORKER_CELL_THRESHOLD = 4_000_000;
+
+interface SpectrogramRenderTracker {
+  pending: number;
+  completedFrames: number;
+  failed: boolean;
+}
+
+type SpectrogramWorkerMessage =
+  | { type: 'chunk'; startFrame: number; completedFrames: number; values: Float32Array }
+  | { type: 'done'; frameCount: number }
+  | { type: 'error'; message: string };
+
+function paintSpectrogramChunk(
+  ctx: CanvasRenderingContext2D,
+  values: Float32Array,
+  startFrame: number,
+  totalFrameCount: number,
+  width: number,
+  height: number,
+  settings: ISpectrogramSettings,
+) {
+  const pxPerFrame = width / totalFrameCount;
+  const chunkFrameCount = Math.floor(values.length / height);
+  for (let localFrame = 0; localFrame < chunkFrameCount; localFrame++) {
+    const x = (startFrame + localFrame) * pxPerFrame;
+    for (let pixelY = 0; pixelY < height; pixelY++) {
+      const [red, green, blue] = getSpectrogramRgb(values[localFrame * height + pixelY]!, settings.colorScheme);
+      ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
+      ctx.fillRect(Math.floor(x), pixelY, Math.ceil(pxPerFrame), 1);
+    }
+  }
+}
+
+function drawSpectrumMiniWorker(
+  ctx: CanvasRenderingContext2D,
+  data: Float32Array,
+  width: number,
+  height: number,
+  sampleRate: number,
+  alpha: number,
+  settings: ISpectrogramSettings,
+  totalFrameCount: number,
+  offsetY: number,
+  tracker: SpectrogramRenderTracker,
+): () => void {
+  const worker = new Worker(new URL('../../lib/spectrogram.worker.ts', import.meta.url), { type: 'module' });
+  let cancelled = false;
+  ctx.globalAlpha = alpha;
+  tracker.pending += 1;
+  ctx.canvas.dataset.spectrogramState = 'pending';
+  ctx.canvas.dataset.spectrogramCompletedFrames = String(tracker.completedFrames);
+  worker.onmessage = ({ data: message }: MessageEvent<SpectrogramWorkerMessage>) => {
+    if (cancelled) return;
+    if (message.type === 'chunk') {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(0, offsetY);
+      ctx.beginPath();
+      ctx.rect(0, 0, width, height);
+      ctx.clip();
+      paintSpectrogramChunk(ctx, message.values, message.startFrame, totalFrameCount, width, height, settings);
+      ctx.restore();
+      tracker.completedFrames += Math.floor(message.values.length / height);
+      ctx.canvas.dataset.spectrogramCompletedFrames = String(tracker.completedFrames);
+      return;
+    }
+    ctx.globalAlpha = 1;
+    tracker.pending = Math.max(0, tracker.pending - 1);
+    if (message.type === 'error') {
+      tracker.failed = true;
+      ctx.canvas.dataset.spectrogramError = message.message;
+    }
+    if (tracker.pending === 0) {
+      ctx.canvas.dataset.spectrogramState = tracker.failed ? 'error' : 'done';
+    }
+    worker.terminate();
+  };
+  worker.onerror = (event) => {
+    if (cancelled) return;
+    ctx.globalAlpha = 1;
+    tracker.pending = Math.max(0, tracker.pending - 1);
+    tracker.failed = true;
+    ctx.canvas.dataset.spectrogramError = event.message;
+    if (tracker.pending === 0) ctx.canvas.dataset.spectrogramState = 'error';
+    worker.terminate();
+  };
+  const input = data.slice();
+  worker.postMessage({ data: input, width, height, sampleRate, settings }, [input.buffer]);
+  return () => {
+    cancelled = true;
+    worker.onmessage = null;
+    worker.onerror = null;
+    worker.terminate();
+    ctx.globalAlpha = 1;
+  };
+}
+
 function drawSpectrumMini(
   ctx: CanvasRenderingContext2D,
   data: Float32Array,
@@ -12364,61 +12484,40 @@ function drawSpectrumMini(
   sampleRate: number,
   alpha: number,
   settings: ISpectrogramSettings,
-) {
-  if (width <= 0 || height <= 0) return;
+  offsetY = 0,
+  tracker?: SpectrogramRenderTracker,
+): (() => void) | undefined {
+  if (width <= 0 || height <= 0) return undefined;
   const fftLength = getSpectrogramFftLength(settings);
   const hopSize = Math.floor(data.length / width) || 1;
-  const specData = wasmProcessor.spectrogram(data, settings.windowSize, hopSize, settings);
   const specLen = fftLength / 2;
-  const frameCount = Math.floor(specData.length / specLen);
-  if (frameCount <= 0) return;
-
-  ctx.globalAlpha = alpha;
-  const pxPerFrame = width / frameCount;
-  const hzPerBin = sampleRate / fftLength;
-  const maxBin = Math.min(specLen - 1, Math.floor(settings.maxFreq / hzPerBin));
-
-  // Audacity findValue: Frequencies/Reassignment use dB; Pitch uses its autocorrelation values directly.
-  for (let frame = 0; frame < frameCount; frame++) {
-    const x = frame * pxPerFrame;
-    const frameStart = frame * specLen;
-    for (let pixelY = 0; pixelY < height; pixelY++) {
-      const highHz = spectrumYToFrequency(pixelY, height, sampleRate, settings);
-      const lowHz = spectrumYToFrequency(pixelY + 1, height, sampleRate, settings);
-      let value: number;
-      if (settings.algorithm === 'pitch') {
-        const bin0 = lowHz / hzPerBin;
-        const bin1 = highHz / hzPerBin;
-        let index = Math.trunc(Math.max(0, Math.min(specLen - 1,
-          (specLen - 1) - (2 * specLen) / Math.max(1, bin0))));
-        const limitIndex = Math.trunc(Math.max(0, Math.min(specLen - 1,
-          (specLen - 1) - (2 * specLen) / Math.max(1, bin1))));
-        let maximum = Number.isFinite(specData[frameStart + index]) ? specData[frameStart + index]! : 0;
-        while (++index < limitIndex) {
-          const sample = specData[frameStart + index];
-          if (Number.isFinite(sample)) maximum = Math.max(maximum, sample!);
-        }
-        value = Math.max(0, Math.min(1, maximum));
-      } else {
-        const firstBin = Math.max(0, Math.min(maxBin, Math.floor(lowHz / hzPerBin + 0.5)));
-        const limitBin = Math.min(maxBin + 1, Math.max(firstBin + 1, Math.floor(highHz / hzPerBin + 0.5)));
-        let maximumDb = -Infinity;
-        for (let bin = firstBin; bin < limitBin; bin++) {
-          const magnitude = specData[frameStart + bin];
-          if (!Number.isFinite(magnitude)) continue;
-          const db = 20 * Math.log10(Math.max(magnitude, 1e-10))
-            + getSpectrogramHighBoostDb(bin, fftLength, sampleRate, settings.highBoostDbPerDec);
-          maximumDb = Math.max(maximumDb, db);
-        }
-        value = getSpectrogramColorValue(maximumDb, settings);
-      }
-      const [red, green, blue] = getSpectrogramRgb(value, settings.colorScheme);
-      ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
-      ctx.fillRect(Math.floor(x), pixelY, Math.ceil(pxPerFrame), 1);
-    }
+  const estimatedFrames = Math.max(1, Math.ceil(data.length / hopSize));
+  const renderTracker = tracker ?? { pending: 0, completedFrames: 0, failed: false };
+  if (typeof Worker !== 'undefined' && estimatedFrames * specLen > SPECTROGRAM_WORKER_CELL_THRESHOLD) {
+    return drawSpectrumMiniWorker(ctx, data, width, height, sampleRate, alpha, settings, estimatedFrames, offsetY, renderTracker);
   }
 
+  const specData = wasmProcessor.spectrogram(data, settings.windowSize, hopSize, settings);
+  const frameCount = Math.floor(specData.length / specLen);
+  if (frameCount <= 0) return undefined;
+
+  ctx.globalAlpha = alpha;
+  for (let frame = 0; frame < frameCount; frame++) {
+    const frameStart = frame * specLen;
+    const values = getSpectrogramFrameColorValues(
+      specData.subarray(frameStart, frameStart + specLen),
+      fftLength,
+      height,
+      sampleRate,
+      settings,
+    );
+    paintSpectrogramChunk(ctx, values, frame, frameCount, width, height, settings);
+  }
   ctx.globalAlpha = 1;
+  renderTracker.completedFrames += frameCount;
+  ctx.canvas.dataset.spectrogramCompletedFrames = String(renderTracker.completedFrames);
+  if (renderTracker.pending === 0) ctx.canvas.dataset.spectrogramState = 'done';
+  return undefined;
 }
 
 // Time Ruler Component

@@ -454,6 +454,10 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     expect(combined).toHaveAttribute('data-spectrum-height', '38');
     expect(screen.getByTestId('track-linear-ruler-track-db')).toBeInTheDocument();
     expect(screen.getByTestId('track-spectrum-ruler-track-db')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('track-spectrogram-settings-track-db'));
+    expect(await screen.findByTestId('track-spectrogram-settings-dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('spectrogram-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('track-spectrogram-settings-dialog')).not.toBeInTheDocument());
     const canvas = screen.getByTestId('waveform-canvas-clip-db');
     expect(canvas).toHaveAttribute('data-layout', 'split');
     expect(canvas).toHaveAttribute('data-waveform-pane-height', '38');

@@ -212,6 +212,72 @@ function computePitchFrame(frame: Float64Array, type: SpectrogramWindowType): Fl
   return result;
 }
 
+export interface DirectSpectrogramComputer {
+  fftLength: number;
+  numBins: number;
+  numFrames: number;
+  computeFrame: (frame: number) => Float32Array;
+}
+
+/**
+ * Prepare a Frequencies/Pitch computer once, then render one visible column at
+ * a time. This keeps large browser jobs from retaining frames × bins in memory.
+ */
+export function createAudacityDirectSpectrogramComputer(
+  input: Float32Array,
+  settings: SpectrogramAlgorithmOptions,
+  hopSize: number,
+): DirectSpectrogramComputer {
+  if (settings.algorithm === 'reassignment') throw new Error('Use the full Reassignment accumulator');
+  const fftLength = getSpectrogramFftLength(settings);
+  const numBins = fftLength / 2;
+  const numFrames = Math.max(1, Math.ceil(input.length / hopSize));
+
+  if (settings.algorithm === 'pitch') {
+    return {
+      fftLength,
+      numBins,
+      numFrames,
+      computeFrame(frame) {
+        return new Float32Array(computePitchFrame(
+          fillCenteredFrame(input, frame * hopSize, settings.windowSize, settings.windowSize, 0),
+          settings.windowType,
+        ));
+      },
+    };
+  }
+
+  const factor = settings.zeroPaddingFactor;
+  const padding = settings.windowSize * (factor - 1) / 2;
+  const extra = padding > 0;
+  const samples = getSpectrogramWindowSamples(
+    settings.windowType,
+    settings.windowSize + (extra ? 1 : 0),
+    extra,
+  );
+  let sum = 0;
+  for (const value of samples.values) sum += value;
+  const scale = sum > 0 ? 2 / sum : 1;
+  const window = new Float64Array(fftLength);
+  for (let index = 0; index < samples.values.length; index++) {
+    window[padding + index] = samples.values[index]! * scale;
+  }
+  return {
+    fftLength,
+    numBins,
+    numFrames,
+    computeFrame(frame) {
+      const centered = fillCenteredFrame(input, frame * hopSize, settings.windowSize, fftLength, padding);
+      const spectrum = fftComplex(multiply(centered, window));
+      const values = new Float32Array(numBins);
+      for (let bin = 0; bin < numBins; bin++) {
+        values[bin] = Math.hypot(spectrum.real[bin]!, spectrum.imag[bin]!);
+      }
+      return values;
+    },
+  };
+}
+
 /**
  * Audacity 4.0.2 SpectrumCache path. Frequencies and Reassignment return
  * magnitudes; Pitch returns the official clipped autocorrelation values.
@@ -229,13 +295,10 @@ export function computeAudacitySpectrogram(
   }
   const numFrames = Math.max(1, Math.ceil(input.length / hopSize));
   const data = new Float32Array(numFrames * numBins);
-  if (settings.algorithm === 'pitch') {
+  if (settings.algorithm !== 'reassignment') {
+    const computer = createAudacityDirectSpectrogramComputer(input, settings, hopSize);
     for (let frame = 0; frame < numFrames; frame++) {
-      const result = computePitchFrame(
-        fillCenteredFrame(input, frame * hopSize, settings.windowSize, settings.windowSize, 0),
-        settings.windowType,
-      );
-      data.set(result, frame * numBins);
+      data.set(computer.computeFrame(frame), frame * numBins);
     }
     return { data, fftLength, numBins, numFrames };
   }
@@ -263,13 +326,6 @@ export function computeAudacitySpectrogram(
   for (let frame = 0; frame < numFrames; frame++) {
     const centered = fillCenteredFrame(input, frame * hopSize, settings.windowSize, fftLength, padding);
     const spectrum = fftComplex(multiply(centered, window));
-    if (settings.algorithm === 'frequencies') {
-      for (let bin = 0; bin < numBins; bin++) {
-        data[frame * numBins + bin] = Math.hypot(spectrum.real[bin]!, spectrum.imag[bin]!);
-      }
-      continue;
-    }
-
     const derivative = fftComplex(multiply(centered, derivativeWindow));
     const timed = fftComplex(multiply(centered, timeWindow));
     for (let bin = 0; bin < numBins; bin++) {

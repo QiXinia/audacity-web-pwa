@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeAudacitySpectrogram,
+  createAudacityDirectSpectrogramComputer,
   getSpectrogramFftLength,
   getSpectrogramWindowSamples,
   type SpectrogramAlgorithmOptions,
@@ -114,6 +115,19 @@ describe('Audacity spectrogram algorithms', () => {
     expect(largest.numFrames).toBe(1);
     expect(largest.data).toHaveLength(262144);
     expect(Array.from(largest.data).every(Number.isFinite)).toBe(true);
+  });
+
+  it('keeps direct per-frame worker computation exactly equal to the full Frequencies/Pitch buffers', () => {
+    for (const settings of [options(), options({ algorithm: 'pitch', zeroPaddingFactor: 16 })]) {
+      const input = sine(512);
+      const full = computeAudacitySpectrogram(input, settings, 64);
+      const computer = createAudacityDirectSpectrogramComputer(input, settings, 64);
+      expect(computer.numFrames).toBe(full.numFrames);
+      for (let frame = 0; frame < full.numFrames; frame++) {
+        const start = frame * full.numBins;
+        expect(computer.computeFrame(frame)).toEqual(full.data.subarray(start, start + full.numBins));
+      }
+    }
   });
 
   it('returns an empty, bounded result for empty input', () => {
