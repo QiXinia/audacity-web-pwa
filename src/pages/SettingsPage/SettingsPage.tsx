@@ -42,6 +42,7 @@ import { projectService } from '@/services/projectService';
 import { audioDb } from '@/db/audioDb';
 import { audioEngine } from '@/engine/audioEngine';
 import type { IPreferences } from '@/types/project';
+import { SpectrogramPreferencesCard } from './SpectrogramPreferencesCard';
 import { loadWorkspaceStore } from '@/services/workspaceService';
 import {
   loadStereoHeightsPreferences,
@@ -483,6 +484,8 @@ export default function SettingsPage() {
               </p>
             </CardContent>
           </Card>
+
+          <SpectrogramPreferencesCard />
 
           {/* Storage */}
           <Card>

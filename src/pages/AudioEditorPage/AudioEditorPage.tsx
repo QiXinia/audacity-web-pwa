@@ -538,8 +538,10 @@ import {
   getSpectrogramHighBoostDb,
   getSpectrogramRgb,
   getTrackSpectrogramSettings,
+  isSpectralSelectionEnabled,
   updateTrackSpectrogramSettings,
 } from '@/lib/spectrogramSettings';
+import { getSpectrogramFftLength } from '@/lib/spectrogramAlgorithm';
 import { CLIP_COLORS, getClipColor, getClipColorIndex, setClipColor } from '@/lib/clipColor';
 import { renameClipTitle } from '@/lib/clipTitle';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -1080,11 +1082,11 @@ export default function AudioEditorPage() {
         setSelection(proj.selection);
         setCursorPosition(proj.cursorPosition);
         audioEngine.seek(proj.cursorPosition);
-        setSpectralSelection(normalizeFrequencySelection(
+        setSpectralSelection(isSpectralSelectionEnabled() ? normalizeFrequencySelection(
           proj.spectralSelection,
           proj.sampleRate,
           getTrackSpectrogramSettings(proj.tracks[0], proj.sampleRate),
-        ));
+        ) : null);
         const restoredLoop = normalizeLoopRegion(proj.loopRegion);
         setLoopRegion(restoredLoop);
         setLoopEnabled(restoredLoop ? (proj.loopEnabled ?? false) : false);
@@ -6275,6 +6277,10 @@ export default function AudioEditorPage() {
     secondHz: number,
   ) {
     if (!project) return;
+    if (!isSpectralSelectionEnabled()) {
+      handleSelectionChange(start, end, selectedTrackId ?? undefined);
+      return;
+    }
     const nextSelection = start === end
       ? null
       : { start: Math.min(start, end), end: Math.max(start, end) };
@@ -11488,7 +11494,7 @@ function ClipItem({
       }
       ctx.restore();
     }
-  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, showRMS, isStereoClip, effectiveChannelHeightRatio, isMultiView, paneHeight, spectrogramSettings.scale, spectrogramSettings.minFreq, spectrogramSettings.maxFreq, spectrogramSettings.gainDb, spectrogramSettings.rangeDb, spectrogramSettings.highBoostDbPerDec, spectrogramSettings.colorScheme]);
+  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, showRMS, isStereoClip, effectiveChannelHeightRatio, isMultiView, paneHeight, spectrogramSettings.scale, spectrogramSettings.minFreq, spectrogramSettings.maxFreq, spectrogramSettings.gainDb, spectrogramSettings.rangeDb, spectrogramSettings.highBoostDbPerDec, spectrogramSettings.colorScheme, spectrogramSettings.algorithm, spectrogramSettings.windowType, spectrogramSettings.windowSize, spectrogramSettings.zeroPaddingFactor]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
@@ -11809,6 +11815,10 @@ function ClipItem({
       data-spectrogram-range={spectrogramSettings.rangeDb}
       data-spectrogram-high-boost={spectrogramSettings.highBoostDbPerDec}
       data-spectrogram-color-scheme={spectrogramSettings.colorScheme}
+      data-spectrogram-algorithm={spectrogramSettings.algorithm}
+      data-spectrogram-window-type={spectrogramSettings.windowType}
+      data-spectrogram-window-size={spectrogramSettings.windowSize}
+      data-spectrogram-zero-padding={spectrogramSettings.zeroPaddingFactor}
       data-clip-color={clipColor}
       data-clip-name={clip.name ?? ''}
       data-rename-active={isRenaming ? 'true' : undefined}
@@ -11950,6 +11960,10 @@ function ClipItem({
         data-spectrogram-range={spectrogramSettings.rangeDb}
         data-spectrogram-high-boost={spectrogramSettings.highBoostDbPerDec}
         data-spectrogram-color-scheme={spectrogramSettings.colorScheme}
+      data-spectrogram-algorithm={spectrogramSettings.algorithm}
+      data-spectrogram-window-type={spectrogramSettings.windowType}
+      data-spectrogram-window-size={spectrogramSettings.windowSize}
+      data-spectrogram-zero-padding={spectrogramSettings.zeroPaddingFactor}
       />
       {isMultiView && (
         <div
@@ -12351,36 +12365,53 @@ function drawSpectrumMini(
   alpha: number,
   settings: ISpectrogramSettings,
 ) {
-  const windowSize = 2048;
+  if (width <= 0 || height <= 0) return;
+  const fftLength = getSpectrogramFftLength(settings);
   const hopSize = Math.floor(data.length / width) || 1;
-  const specData = wasmProcessor.spectrogram(data, windowSize, hopSize);
-  const specLen = windowSize / 2 + 1;
-  const numFrames = Math.floor(specData.length / specLen);
-  if (numFrames <= 0 || width <= 0 || height <= 0) return;
+  const specData = wasmProcessor.spectrogram(data, settings.windowSize, hopSize, settings);
+  const specLen = fftLength / 2;
+  const frameCount = Math.floor(specData.length / specLen);
+  if (frameCount <= 0) return;
 
   ctx.globalAlpha = alpha;
-  const pxPerFrame = width / numFrames;
-  const hzPerBin = sampleRate / windowSize;
+  const pxPerFrame = width / frameCount;
+  const hzPerBin = sampleRate / fftLength;
   const maxBin = Math.min(specLen - 1, Math.floor(settings.maxFreq / hzPerBin));
 
-  // Audacity findValue: every display row reads the bins in its actual scale-mapped frequency interval.
-  for (let frame = 0; frame < numFrames; frame++) {
+  // Audacity findValue: Frequencies/Reassignment use dB; Pitch uses its autocorrelation values directly.
+  for (let frame = 0; frame < frameCount; frame++) {
     const x = frame * pxPerFrame;
     const frameStart = frame * specLen;
     for (let pixelY = 0; pixelY < height; pixelY++) {
       const highHz = spectrumYToFrequency(pixelY, height, sampleRate, settings);
       const lowHz = spectrumYToFrequency(pixelY + 1, height, sampleRate, settings);
-      const firstBin = Math.max(0, Math.min(maxBin, Math.floor(lowHz / hzPerBin + 0.5)));
-      const limitBin = Math.min(maxBin + 1, Math.max(firstBin + 1, Math.floor(highHz / hzPerBin + 0.5)));
-      let maximumDb = -Infinity;
-      for (let bin = firstBin; bin < limitBin; bin++) {
-        const magnitude = specData[frameStart + bin];
-        if (!Number.isFinite(magnitude)) continue;
-        const db = 20 * Math.log10(Math.max(magnitude, 1e-10))
-          + getSpectrogramHighBoostDb(bin, windowSize, sampleRate, settings.highBoostDbPerDec);
-        maximumDb = Math.max(maximumDb, db);
+      let value: number;
+      if (settings.algorithm === 'pitch') {
+        const bin0 = lowHz / hzPerBin;
+        const bin1 = highHz / hzPerBin;
+        let index = Math.trunc(Math.max(0, Math.min(specLen - 1,
+          (specLen - 1) - (2 * specLen) / Math.max(1, bin0))));
+        const limitIndex = Math.trunc(Math.max(0, Math.min(specLen - 1,
+          (specLen - 1) - (2 * specLen) / Math.max(1, bin1))));
+        let maximum = Number.isFinite(specData[frameStart + index]) ? specData[frameStart + index]! : 0;
+        while (++index < limitIndex) {
+          const sample = specData[frameStart + index];
+          if (Number.isFinite(sample)) maximum = Math.max(maximum, sample!);
+        }
+        value = Math.max(0, Math.min(1, maximum));
+      } else {
+        const firstBin = Math.max(0, Math.min(maxBin, Math.floor(lowHz / hzPerBin + 0.5)));
+        const limitBin = Math.min(maxBin + 1, Math.max(firstBin + 1, Math.floor(highHz / hzPerBin + 0.5)));
+        let maximumDb = -Infinity;
+        for (let bin = firstBin; bin < limitBin; bin++) {
+          const magnitude = specData[frameStart + bin];
+          if (!Number.isFinite(magnitude)) continue;
+          const db = 20 * Math.log10(Math.max(magnitude, 1e-10))
+            + getSpectrogramHighBoostDb(bin, fftLength, sampleRate, settings.highBoostDbPerDec);
+          maximumDb = Math.max(maximumDb, db);
+        }
+        value = getSpectrogramColorValue(maximumDb, settings);
       }
-      const value = getSpectrogramColorValue(maximumDb, settings);
       const [red, green, blue] = getSpectrogramRgb(value, settings.colorScheme);
       ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
       ctx.fillRect(Math.floor(x), pixelY, Math.ceil(pxPerFrame), 1);

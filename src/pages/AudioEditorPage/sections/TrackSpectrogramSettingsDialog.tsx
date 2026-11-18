@@ -14,6 +14,10 @@ import {
   getDefaultSpectrogramSettings,
   getTrackSpectrogramSettings,
   isTrackSpectrogramUsingGlobalSettings,
+  SPECTROGRAM_ALGORITHMS,
+  SPECTROGRAM_WINDOW_SIZES,
+  SPECTROGRAM_WINDOW_TYPES,
+  SPECTROGRAM_ZERO_PADDING_FACTORS,
 } from '@/lib/spectrogramSettings';
 import type {
   ISpectrogramSettings,
@@ -31,12 +35,28 @@ interface TrackSpectrogramSettingsDialogProps {
 }
 
 type NumericKey = 'minFreq' | 'maxFreq' | 'gainDb' | 'rangeDb' | 'highBoostDbPerDec';
-type Draft = Record<NumericKey, string> & Pick<ISpectrogramSettings, 'scale' | 'colorScheme'>;
+type Draft = Record<NumericKey, string> & Pick<
+  ISpectrogramSettings,
+  'scale' | 'colorScheme' | 'algorithm' | 'windowType' | 'windowSize' | 'zeroPaddingFactor'
+>;
+
+const ALGORITHM_LABELS = {
+  frequencies: 'Frequencies', reassignment: 'Reassignment', pitch: 'Pitch (autocorrelation)',
+} as const;
+const WINDOW_LABELS = {
+  rectangular: 'Rectangular', bartlett: 'Bartlett', hamming: 'Hamming', hann: 'Hann',
+  blackman: 'Blackman', 'blackman-harris': 'Blackman-Harris', welch: 'Welch',
+  gaussian25: 'Gaussian (a=2.5)', gaussian35: 'Gaussian (a=3.5)', gaussian45: 'Gaussian (a=4.5)',
+} as const;
 
 function toDraft(settings: ISpectrogramSettings): Draft {
   return {
     scale: settings.scale,
     colorScheme: settings.colorScheme,
+    algorithm: settings.algorithm,
+    windowType: settings.windowType,
+    windowSize: settings.windowSize,
+    zeroPaddingFactor: settings.zeroPaddingFactor,
     minFreq: String(settings.minFreq),
     maxFreq: String(settings.maxFreq),
     gainDb: String(settings.gainDb),
@@ -109,6 +129,10 @@ export function TrackSpectrogramSettingsDialog({
       await onApply({
         scale: draft.scale,
         colorScheme: draft.colorScheme,
+        algorithm: draft.algorithm,
+        windowType: draft.windowType,
+        windowSize: draft.windowSize,
+        zeroPaddingFactor: draft.zeroPaddingFactor,
         ...numeric,
       }, useGlobalSettings);
       onOpenChange(false);
@@ -211,6 +235,69 @@ export function TrackSpectrogramSettingsDialog({
               <option value="grayscale">Grayscale</option>
               <option value="inverse-grayscale">Inverse grayscale</option>
             </select>
+          </div>
+        </section>
+
+        <section aria-labelledby="spectrogram-algorithm-heading" className="space-y-3 rounded-md border p-4">
+          <h3 id="spectrogram-algorithm-heading" className="text-sm font-semibold">Algorithm</h3>
+          <div className="space-y-1.5">
+            <Label htmlFor="spectrogram-algorithm">Algorithm</Label>
+            <select
+              id="spectrogram-algorithm"
+              data-testid="spectrogram-algorithm"
+              aria-label="Spectrogram algorithm"
+              className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+              value={draft.algorithm}
+              onChange={(event) => change('algorithm', event.target.value as ISpectrogramSettings['algorithm'])}
+            >
+              {SPECTROGRAM_ALGORITHMS.map((algorithm) => (
+                <option key={algorithm} value={algorithm}>{ALGORITHM_LABELS[algorithm]}</option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="spectrogram-window-size">Window size</Label>
+              <select
+                id="spectrogram-window-size"
+                data-testid="spectrogram-window-size"
+                aria-label="Window size"
+                className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+                value={draft.windowSize}
+                onChange={(event) => change('windowSize', Number(event.target.value))}
+              >
+                {SPECTROGRAM_WINDOW_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="spectrogram-window-type">Window type</Label>
+              <select
+                id="spectrogram-window-type"
+                data-testid="spectrogram-window-type"
+                aria-label="Window type"
+                className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+                value={draft.windowType}
+                onChange={(event) => change('windowType', event.target.value as ISpectrogramSettings['windowType'])}
+              >
+                {SPECTROGRAM_WINDOW_TYPES.map((type) => <option key={type} value={type}>{WINDOW_LABELS[type]}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="spectrogram-zero-padding">Zero padding factor</Label>
+            <select
+              id="spectrogram-zero-padding"
+              data-testid="spectrogram-zero-padding"
+              aria-label="Zero padding factor"
+              className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+              value={draft.zeroPaddingFactor}
+              onChange={(event) => change('zeroPaddingFactor', Number(event.target.value))}
+            >
+              {SPECTROGRAM_ZERO_PADDING_FACTORS.map((factor) => <option key={factor} value={factor}>{factor}</option>)}
+            </select>
+            {draft.algorithm === 'pitch' && (
+              <p className="text-muted-foreground text-xs">Pitch (autocorrelation) uses zero padding factor 1, as in Audacity.</p>
+            )}
           </div>
         </section>
 

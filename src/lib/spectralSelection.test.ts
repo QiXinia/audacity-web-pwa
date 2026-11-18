@@ -17,6 +17,7 @@ function linear(maxFreq = 100): ISpectrogramSettings {
   return {
     scale: 'linear', minFreq: 0, maxFreq, gainDb: 0, rangeDb: 100,
     highBoostDbPerDec: 0, colorScheme: 'classic',
+    algorithm: 'frequencies', windowType: 'hann', windowSize: 2048, zeroPaddingFactor: 2,
   };
 }
 

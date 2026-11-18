@@ -1,9 +1,12 @@
 import type {
   IProject,
+  ISpectrogramPreferences,
   ISpectrogramSettings,
   ITrack,
+  SpectrogramAlgorithm,
   SpectrogramColorScheme,
   SpectrogramScale,
+  SpectrogramWindowType,
 } from '@/types/project';
 import { clamp } from '@/lib/audioUtils';
 import { ROSEUS_COLOR_MAP } from '@/lib/spectrogramRoseus';
@@ -14,9 +17,23 @@ export const SPECTROGRAM_SCALES: readonly SpectrogramScale[] = [
 export const SPECTROGRAM_COLOR_SCHEMES: readonly SpectrogramColorScheme[] = [
   'roseus', 'classic', 'grayscale', 'inverse-grayscale',
 ];
+export const SPECTROGRAM_ALGORITHMS: readonly SpectrogramAlgorithm[] = [
+  'frequencies', 'reassignment', 'pitch',
+];
+export const SPECTROGRAM_WINDOW_TYPES: readonly SpectrogramWindowType[] = [
+  'rectangular', 'bartlett', 'hamming', 'hann', 'blackman', 'blackman-harris',
+  'welch', 'gaussian25', 'gaussian35', 'gaussian45',
+];
+export const SPECTROGRAM_WINDOW_SIZES = [
+  8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768,
+] as const;
+export const SPECTROGRAM_ZERO_PADDING_FACTORS = [1, 2, 4, 8, 16] as const;
+export const SPECTROGRAM_PREFERENCES_STORAGE_KEY = 'audacity-web:spectrogram-preferences:v1';
 
-/** Audacity 4.0.2 GlobalSpectrogramConfiguration::init defaults. */
-export function getDefaultSpectrogramSettings(sampleRate: number): ISpectrogramSettings {
+type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
+
+/** Audacity 4.0.2 GlobalSpectrogramConfiguration::init defaults, without browser storage. */
+export function getOfficialSpectrogramDefaults(sampleRate: number): ISpectrogramSettings {
   const nyquist = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate / 2 : 0;
   return {
     scale: 'mel',
@@ -26,6 +43,10 @@ export function getDefaultSpectrogramSettings(sampleRate: number): ISpectrogramS
     rangeDb: 80,
     highBoostDbPerDec: 0,
     colorScheme: 'roseus',
+    algorithm: 'frequencies',
+    windowType: 'hann',
+    windowSize: 2048,
+    zeroPaddingFactor: 2,
   };
 }
 
@@ -37,15 +58,21 @@ export function normalizeSpectrogramSettings(
   value: Partial<ISpectrogramSettings> | null | undefined,
   sampleRate: number,
 ): ISpectrogramSettings {
-  const defaults = getDefaultSpectrogramSettings(sampleRate);
-  const nyquist = defaults.maxFreq > 0 || sampleRate > 20000 ? sampleRate / 2 : 0;
-  if (!Number.isFinite(nyquist) || nyquist <= 0) return { ...defaults, maxFreq: 0 };
+  const defaults = getOfficialSpectrogramDefaults(sampleRate);
+  const nyquist = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate / 2 : 0;
+  if (nyquist <= 0) return { ...defaults, minFreq: 0, maxFreq: 0 };
   const scale = SPECTROGRAM_SCALES.includes(value?.scale as SpectrogramScale)
     ? value!.scale as SpectrogramScale
     : defaults.scale;
   const colorScheme = SPECTROGRAM_COLOR_SCHEMES.includes(value?.colorScheme as SpectrogramColorScheme)
     ? value!.colorScheme as SpectrogramColorScheme
     : defaults.colorScheme;
+  const algorithm = SPECTROGRAM_ALGORITHMS.includes(value?.algorithm as SpectrogramAlgorithm)
+    ? value!.algorithm as SpectrogramAlgorithm
+    : defaults.algorithm;
+  const windowType = SPECTROGRAM_WINDOW_TYPES.includes(value?.windowType as SpectrogramWindowType)
+    ? value!.windowType as SpectrogramWindowType
+    : defaults.windowType;
   let minFreq = clamp(finiteInteger(value?.minFreq, defaults.minFreq), 0, Math.max(0, Math.floor(nyquist) - 1));
   let maxFreq = clamp(finiteInteger(value?.maxFreq, defaults.maxFreq), 1, Math.floor(nyquist));
   if ((scale === 'logarithmic' || scale === 'period') && nyquist > 1) minFreq = Math.max(1, minFreq);
@@ -62,7 +89,68 @@ export function normalizeSpectrogramSettings(
     rangeDb: Math.max(1, finiteInteger(value?.rangeDb, defaults.rangeDb)),
     highBoostDbPerDec: clamp(finiteInteger(value?.highBoostDbPerDec, defaults.highBoostDbPerDec), 0, 60),
     colorScheme,
+    algorithm,
+    windowType,
+    windowSize: (SPECTROGRAM_WINDOW_SIZES as readonly number[]).includes(value?.windowSize ?? -1)
+      ? value!.windowSize!
+      : defaults.windowSize,
+    zeroPaddingFactor: (SPECTROGRAM_ZERO_PADDING_FACTORS as readonly number[]).includes(value?.zeroPaddingFactor ?? -1)
+      ? value!.zeroPaddingFactor!
+      : defaults.zeroPaddingFactor,
   };
+}
+
+export function loadSpectrogramPreferences(
+  sampleRate = 48000,
+  storage?: StorageLike,
+): ISpectrogramPreferences {
+  const defaults: ISpectrogramPreferences = {
+    ...getOfficialSpectrogramDefaults(sampleRate),
+    spectralSelectionEnabled: true,
+  };
+  try {
+    const target = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage);
+    const raw = target?.getItem(SPECTROGRAM_PREFERENCES_STORAGE_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw) as Partial<ISpectrogramPreferences>;
+    return {
+      ...normalizeSpectrogramSettings(parsed, sampleRate),
+      spectralSelectionEnabled: typeof parsed.spectralSelectionEnabled === 'boolean'
+        ? parsed.spectralSelectionEnabled
+        : true,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+export function saveSpectrogramPreferences(
+  value: ISpectrogramPreferences,
+  sampleRate = 48000,
+  storage?: StorageLike,
+): boolean {
+  if (typeof value.spectralSelectionEnabled !== 'boolean') return false;
+  try {
+    const target = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage);
+    if (!target) return false;
+    const normalized: ISpectrogramPreferences = {
+      ...normalizeSpectrogramSettings(value, sampleRate),
+      spectralSelectionEnabled: value.spectralSelectionEnabled,
+    };
+    target.setItem(SPECTROGRAM_PREFERENCES_STORAGE_KEY, JSON.stringify(normalized));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getDefaultSpectrogramSettings(sampleRate: number): ISpectrogramSettings {
+  const { spectralSelectionEnabled: _spectralSelectionEnabled, ...settings } = loadSpectrogramPreferences(sampleRate);
+  return settings;
+}
+
+export function isSpectralSelectionEnabled(storage?: StorageLike): boolean {
+  return loadSpectrogramPreferences(48000, storage).spectralSelectionEnabled;
 }
 
 export function isTrackSpectrogramUsingGlobalSettings(track: ITrack): boolean {

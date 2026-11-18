@@ -59,6 +59,9 @@ export interface IEffect {
 
 export type SpectrogramScale = 'linear' | 'logarithmic' | 'mel' | 'bark' | 'erb' | 'period';
 export type SpectrogramColorScheme = 'roseus' | 'classic' | 'grayscale' | 'inverse-grayscale';
+export type SpectrogramAlgorithm = 'frequencies' | 'reassignment' | 'pitch';
+export type SpectrogramWindowType = 'rectangular' | 'bartlett' | 'hamming' | 'hann'
+  | 'blackman' | 'blackman-harris' | 'welch' | 'gaussian25' | 'gaussian35' | 'gaussian45';
 
 export interface ISpectrogramSettings {
   scale: SpectrogramScale;
@@ -68,6 +71,14 @@ export interface ISpectrogramSettings {
   rangeDb: number;
   highBoostDbPerDec: number;
   colorScheme: SpectrogramColorScheme;
+  algorithm: SpectrogramAlgorithm;
+  windowType: SpectrogramWindowType;
+  windowSize: number;
+  zeroPaddingFactor: number;
+}
+
+export interface ISpectrogramPreferences extends ISpectrogramSettings {
+  spectralSelectionEnabled: boolean;
 }
 
 export interface ITrack {

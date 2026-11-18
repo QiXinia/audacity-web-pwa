@@ -3,6 +3,7 @@ import {
   barkToHz,
   erbToHz,
   getDefaultSpectrogramSettings,
+  getOfficialSpectrogramDefaults,
   getSpectrogramColorValue,
   getSpectrogramHighBoostDb,
   getSpectrogramRgb,
@@ -11,23 +12,26 @@ import {
   hzToErb,
   melToHz,
   hzToMel,
+  loadSpectrogramPreferences,
   normalizeSpectrogramSettings,
   spectrogramFrequencyToPosition,
   spectrogramPositionToFrequency,
+  saveSpectrogramPreferences,
   updateTrackSpectrogramSettings,
 } from '@/lib/spectrogramSettings';
 import type { IProject, ISpectrogramSettings, ITrack, SpectrogramScale } from '@/types/project';
 
 function settings(scale: SpectrogramScale, minFreq = 20, maxFreq = 20000): ISpectrogramSettings {
   return {
-    scale, minFreq, maxFreq, gainDb: 20, rangeDb: 80, highBoostDbPerDec: 0, colorScheme: 'roseus',
+    ...getOfficialSpectrogramDefaults(44100),
+    scale, minFreq, maxFreq,
   };
 }
 
 const track: ITrack = {
   id: 'track-a', name: 'A', type: 'audio', gain: 0, pan: 0, muted: false, solo: false,
   armed: false, color: '#fff', effects: [],
-  clips: [{ id: 'clip-a', audioBufferId: 'pcm-a', startTime: 0, offset: 0, duration: 1, originalDuration: 1 }],
+  clips: [{ id: 'clip-a', audioBufferId: 'pcm-a', startTime: 0, offset: 0, duration: 1, originalDuration: 1, gain: 0, fadeIn: 0, fadeOut: 0 }],
 };
 const project: IProject = {
   id: 'project-a', name: 'A', sampleRate: 44100, tracks: [track], cursorPosition: 0,
@@ -93,5 +97,29 @@ describe('Audacity Spectrogram settings', () => {
     expect(restored.tracks[0]!.spectrogramUseGlobalSettings).toBe(true);
     expect(restored.tracks[0]!.spectrogramSettings).toBeUndefined();
     expect(getTrackSpectrogramSettings(restored.tracks[0]!, 44100)).toEqual(settings('mel', 0, 20000));
+  });
+
+  it('loads saved global algorithm preferences for tracks that use global settings', () => {
+    localStorage.clear();
+    try {
+      const preference = {
+        ...settings('mel', 0, 20000),
+        algorithm: 'reassignment' as const,
+        windowType: 'blackman-harris' as const,
+        windowSize: 4096,
+        zeroPaddingFactor: 4,
+        spectralSelectionEnabled: false,
+      };
+      expect(saveSpectrogramPreferences(preference)).toBe(true);
+      expect(loadSpectrogramPreferences(44100)).toEqual(preference);
+      expect(getDefaultSpectrogramSettings(44100)).toMatchObject({
+        algorithm: 'reassignment', windowType: 'blackman-harris', windowSize: 4096, zeroPaddingFactor: 4,
+      });
+      expect(getTrackSpectrogramSettings(track, 44100)).toMatchObject({
+        algorithm: 'reassignment', windowType: 'blackman-harris', windowSize: 4096, zeroPaddingFactor: 4,
+      });
+    } finally {
+      localStorage.clear();
+    }
   });
 });

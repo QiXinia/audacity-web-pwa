@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject } from '@/types/project';
 import type { FrequencySelection } from '@/lib/spectralSelection';
+import { loadSpectrogramPreferences, saveSpectrogramPreferences } from '@/lib/spectrogramSettings';
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -36,6 +37,7 @@ function makeProject(): IProject {
       spectrogramSettings: {
         scale: 'linear', minFreq: 0, maxFreq: 100, gainDb: 0, rangeDb: 100,
         highBoostDbPerDec: 0, colorScheme: 'classic',
+        algorithm: 'frequencies', windowType: 'hann', windowSize: 2048, zeroPaddingFactor: 2,
       },
       clips: [{
         id: 'clip-one',
@@ -177,6 +179,7 @@ async function openDeleteSelection() {
 describe('AudioEditorPage spectral rectangle selection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
     mockProject = makeProject();
     mocks.loadChannels.mockResolvedValue([new Float32Array(8000).fill(0.1)]);
@@ -381,6 +384,10 @@ describe('AudioEditorPage spectral rectangle selection', () => {
     fireEvent.change(screen.getByTestId('spectrogram-rangeDb'), { target: { value: '60' } });
     fireEvent.change(screen.getByTestId('spectrogram-highBoostDbPerDec'), { target: { value: '12' } });
     fireEvent.change(screen.getByTestId('spectrogram-color-scheme'), { target: { value: 'grayscale' } });
+    fireEvent.change(screen.getByTestId('spectrogram-algorithm'), { target: { value: 'reassignment' } });
+    fireEvent.change(screen.getByTestId('spectrogram-window-type'), { target: { value: 'blackman' } });
+    fireEvent.change(screen.getByTestId('spectrogram-window-size'), { target: { value: '1024' } });
+    fireEvent.change(screen.getByTestId('spectrogram-zero-padding'), { target: { value: '4' } });
     fireEvent.click(screen.getByTestId('spectrogram-apply'));
     await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByTestId('track-spectrogram-settings-dialog')).not.toBeInTheDocument());
@@ -389,6 +396,7 @@ describe('AudioEditorPage spectral rectangle selection', () => {
     expect(saved.tracks[0]?.spectrogramSettings).toEqual({
       scale: 'logarithmic', minFreq: 20, maxFreq: 200, gainDb: 35, rangeDb: 60,
       highBoostDbPerDec: 12, colorScheme: 'grayscale',
+      algorithm: 'reassignment', windowType: 'blackman', windowSize: 1024, zeroPaddingFactor: 4,
     });
     const canvas = screen.getByTestId('waveform-canvas-clip-one');
     expect(canvas).toHaveAttribute('data-spectrogram-scale', 'logarithmic');
@@ -398,6 +406,10 @@ describe('AudioEditorPage spectral rectangle selection', () => {
     expect(canvas).toHaveAttribute('data-spectrogram-range', '60');
     expect(canvas).toHaveAttribute('data-spectrogram-high-boost', '12');
     expect(canvas).toHaveAttribute('data-spectrogram-color-scheme', 'grayscale');
+    expect(canvas).toHaveAttribute('data-spectrogram-algorithm', 'reassignment');
+    expect(canvas).toHaveAttribute('data-spectrogram-window-type', 'blackman');
+    expect(canvas).toHaveAttribute('data-spectrogram-window-size', '1024');
+    expect(canvas).toHaveAttribute('data-spectrogram-zero-padding', '4');
     expect(Number(screen.getByTestId('spectrum-ruler-tick-track-one-0-4').getAttribute('data-frequency-hz'))).toBeCloseTo(200);
 
     fireEvent.click(screen.getByTestId('track-spectrogram-settings-track-one'));
@@ -412,5 +424,19 @@ describe('AudioEditorPage spectral rectangle selection', () => {
     expect(restored.tracks[0]?.spectrogramSettings).toBeUndefined();
     expect(canvas).toHaveAttribute('data-spectrogram-scale', 'mel');
     expect(canvas).toHaveAttribute('data-spectrogram-max-frequency', '500');
+  });
+
+  it('honors the global Enable spectral selection preference while retaining time selection', async () => {
+    saveSpectrogramPreferences({ ...loadSpectrogramPreferences(), spectralSelectionEnabled: false });
+    const surface = await showSpectrum();
+    mockSurface(surface);
+    fireEvent.pointerDown(surface, { pointerId: 9, button: 0, clientX: 0, clientY: 7 });
+    fireEvent.pointerMove(surface, { pointerId: 9, clientX: 200, clientY: 26 });
+    fireEvent.pointerUp(surface, { pointerId: 9, clientX: 200, clientY: 26 });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalled());
+    await waitFor(() => expect(mockProject.selection).toEqual({ start: 0, end: 2 }));
+    expect(mockProject.spectralSelection).toBeNull();
+    expect(screen.queryByTestId('spectral-selection-rectangle')).not.toBeInTheDocument();
   });
 });

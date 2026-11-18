@@ -40,6 +40,7 @@ function makeProject(channelMode: 'stereo' | 'mono' = 'stereo'): IProject {
       spectrogramSettings: {
         scale: 'linear', minFreq: 0, maxFreq: 100, gainDb: 0, rangeDb: 100,
         highBoostDbPerDec: 0, colorScheme: 'classic',
+        algorithm: 'frequencies', windowType: 'hann', windowSize: 2048, zeroPaddingFactor: 2,
       },
       clips: [{
         id: 'clip-db',

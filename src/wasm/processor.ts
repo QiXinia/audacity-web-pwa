@@ -2,6 +2,7 @@
 
 import { logger } from '@/lib/logger';
 import { timeStretchChannelsJs } from '@/engine/timeStretch';
+import { computeAudacitySpectrogram, type SpectrogramAlgorithmOptions } from '@/lib/spectrogramAlgorithm';
 
 // JS fallback implementations (always available)
 const JS_IMPL = {
@@ -151,7 +152,9 @@ const JS_IMPL = {
     input: Float32Array,
     windowSize: number,
     hopSize: number,
+    options?: SpectrogramAlgorithmOptions,
   ): Float32Array {
+    if (options) return computeAudacitySpectrogram(input, options, hopSize).data;
     if (hopSize === 0 || windowSize === 0 || input.length === 0) {
       return new Float32Array();
     }
@@ -576,7 +579,13 @@ export const wasmProcessor = {
     return JS_IMPL.fftMagnitude(input);
   },
 
-  spectrogram(input: Float32Array, windowSize: number, hopSize: number): Float32Array {
+  spectrogram(
+    input: Float32Array,
+    windowSize: number,
+    hopSize: number,
+    options?: SpectrogramAlgorithmOptions,
+  ): Float32Array {
+    if (options) return computeAudacitySpectrogram(input, options, hopSize).data;
     if (wasmModule && _isAvailable) {
       return wasmModule.spectrogram(input, windowSize, hopSize);
     }
