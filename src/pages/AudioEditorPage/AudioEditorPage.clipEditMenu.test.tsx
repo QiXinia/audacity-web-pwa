@@ -307,6 +307,45 @@ describe('AudioEditorPage single Clip edit menu', () => {
     expect(saved.tracks[1]!.clips.map((item) => item.id)).toEqual(['clip-c']);
   });
 
+  it('groups and ungroups selected Clips with official whole-group selection behavior', async () => {
+    const clips = await renderProject();
+    fireEvent.click(clips[0]!);
+    fireEvent.click(clips[2]!, { ctrlKey: true });
+    fireEvent.contextMenu(clips[0]!);
+    const group = await screen.findByTestId('multi-clip-group-menu');
+    const ungroup = await screen.findByTestId('multi-clip-ungroup-menu');
+    expect(group).not.toHaveAttribute('aria-disabled', 'true');
+    expect(ungroup).toHaveAttribute('aria-disabled', 'true');
+    const content = group.parentElement!;
+    const order = Array.from(content.children).map((element) => element.getAttribute('data-testid'));
+    expect(order.indexOf('multi-clip-group-menu')).toBeGreaterThan(order.indexOf('multi-clip-join-menu'));
+    expect(order.indexOf('multi-clip-ungroup-menu')).toBeGreaterThan(order.indexOf('multi-clip-group-menu'));
+    fireEvent.click(group);
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    const grouped = lastSavedProject();
+    expect(grouped.tracks[0]!.clips.map((item) => item.groupId)).toEqual([1, undefined]);
+    expect(grouped.tracks[1]!.clips[0]!.groupId).toBe(1);
+    expect(screen.getAllByText('1', { selector: '[data-testid^="clip-group-"]' })).toHaveLength(2);
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    fireEvent.click(clips[1]!);
+    fireEvent.click(clips[0]!);
+    expect(clips[0]).toHaveAttribute('data-selected', 'true');
+    expect(clips[1]).toHaveAttribute('data-selected', 'false');
+    expect(clips[2]).toHaveAttribute('data-selected', 'true');
+    fireEvent.click(clips[0]!, { ctrlKey: true });
+    expect(clips[0]).toHaveAttribute('data-selected', 'false');
+    expect(clips[2]).toHaveAttribute('data-selected', 'false');
+
+    fireEvent.click(clips[0]!);
+    fireEvent.contextMenu(clips[0]!);
+    expect(await screen.findByTestId('multi-clip-group-menu')).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(await screen.findByTestId('multi-clip-ungroup-menu'));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(2));
+    const ungrouped = lastSavedProject();
+    expect(ungrouped.tracks.flatMap((track) => track.clips).every((item) => item.groupId === undefined)).toBe(true);
+  });
+
   it('pastes multi Clip segments at their relative offsets instead of one continuous block', async () => {
     const clips = await renderProject();
     fireEvent.click(clips[0]!);

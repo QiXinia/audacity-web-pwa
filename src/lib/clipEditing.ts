@@ -65,7 +65,7 @@ function findClipLocation(tracks: IProject['tracks'], key: ClipKey) {
 
 /**
  * Audacity selection semantics: replace on plain activation, Shift selects the
- * time/track rectangle from the anchor, and Ctrl/Cmd toggles individual clips.
+ * time/track rectangle from the anchor, and Ctrl/Cmd toggles a clip or its whole group.
  */
 export function updateClipSelection(
   current: readonly ClipKey[],
@@ -74,15 +74,22 @@ export function updateClipSelection(
   tracks: IProject['tracks'] = [],
   anchor: ClipKey | null = null,
 ): ClipKey[] {
-  if (mode === 'replace') return [key];
+  const target = findClipLocation(tracks, key);
+  const groupId = target?.clip.groupId;
+  const groupedKeys = target && Number.isSafeInteger(groupId) && (groupId ?? -1) >= 0
+    ? tracks.flatMap((track) => track.clips
+      .filter((clip) => clip.groupId === groupId)
+      .map((clip) => ({ trackId: track.id, clipId: clip.id })))
+    : [key];
+  if (mode === 'replace') return groupedKeys;
   if (mode === 'toggle') {
-    const id = clipKeyId(key);
-    return current.some((item) => clipKeyId(item) === id)
-      ? current.filter((item) => clipKeyId(item) !== id)
-      : [...current, key];
+    const currentIds = new Set(current.map(clipKeyId));
+    const groupedIds = new Set(groupedKeys.map(clipKeyId));
+    const wholeGroupSelected = groupedKeys.every((item) => currentIds.has(clipKeyId(item)));
+    if (wholeGroupSelected) return current.filter((item) => !groupedIds.has(clipKeyId(item)));
+    return [...current, ...groupedKeys.filter((item) => !currentIds.has(clipKeyId(item)))];
   }
 
-  const target = findClipLocation(tracks, key);
   if (!target) return [...current];
   const rangeAnchor = [anchor, ...current]
     .map((candidate) => candidate ? findClipLocation(tracks, candidate) : null)

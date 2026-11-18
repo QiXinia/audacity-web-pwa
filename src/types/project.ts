@@ -42,6 +42,8 @@ export interface IClip {
   clipTempo?: number;
   /** Audacity 4 ClipColorIndex: 0/undefined inherits the track; 1…9 selects a theme color. */
   colorIndex?: number;
+  /** Audacity 4 non-destructive clip group; undefined is the native -1/ungrouped state. */
+  groupId?: number;
   gain: number;
   fadeIn: number;
   fadeOut: number;

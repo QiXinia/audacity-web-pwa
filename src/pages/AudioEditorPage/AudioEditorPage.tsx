@@ -37,6 +37,7 @@ import {
   X,
   MousePointer2,
   AudioWaveform,
+  Link2,
   Magnet,
   Repeat,
 } from 'lucide-react';
@@ -387,6 +388,11 @@ import {
   removeMultiClipSelection,
 } from '@/lib/multiClipEditing';
 import {
+  getClipGroupState,
+  groupClips as applyClipGrouping,
+  ungroupClips as applyClipUngrouping,
+} from '@/lib/clipGrouping';
+import {
   insertBlankSpaceOnTracks,
   pasteClipIntoTrack,
   type SelectionPasteMode,
@@ -583,6 +589,8 @@ type MultiClipContextEditCommand =
   | 'copy'
   | 'delete'
   | 'join'
+  | 'group'
+  | 'ungroup'
   | { operation: 'cut' | 'delete'; mode: MultiClipRippleMode };
 
 export default function AudioEditorPage() {
@@ -3700,6 +3708,15 @@ export default function AudioEditorPage() {
       || renderingPitchAndSpeedClipId || splittingSilenceClipId) return;
     const keys = keysForClip(trackId, clipId);
     if (keys.length < 2) return;
+    if (command === 'group' || command === 'ungroup') {
+      const updated = command === 'group'
+        ? applyClipGrouping(project, keys)
+        : applyClipUngrouping(project, keys);
+      if (!updated) return;
+      await commitClipEdit(updated, command === 'group' ? 'Group clips' : 'Ungroup clips');
+      toast.success(command === 'group' ? '已分组选中 Clip' : '已取消选中 Clip 的分组');
+      return;
+    }
     if (command === 'join') {
       await joinRangeClips(keys);
       return;
@@ -7632,6 +7649,7 @@ export default function AudioEditorPage() {
   const timelineContentWidth = totalWidth + rulerWidth;
   const activeWorkspaceName = activeWorkspace.name;
   const activeWorkspaceBuiltIn = activeWorkspace.builtIn;
+  const multiClipGroupState = project ? getClipGroupState(project, selectedClips) : null;
 
   if (isLoading) {
     return (
@@ -9024,6 +9042,8 @@ export default function AudioEditorPage() {
                 onEditCommand={(clipId, command) => void runClipContextEditCommand(track.id, clipId, command)}
                 onMultiClipEditCommand={(clipId, command) => void runMultiClipContextEditCommand(track.id, clipId, command)}
                 canJoinMultiSelection={planMultiClipJoin(project, selectedClips) !== null}
+                canGroupMultiSelection={multiClipGroupState?.canGroup ?? false}
+                canUngroupMultiSelection={multiClipGroupState?.canUngroup ?? false}
                 multiClipOperationInProgress={Boolean(
                   selectionEditOperation || selectionUtilityOperation
                   || renderingPitchAndSpeedClipId || splittingSilenceClipId,
@@ -10467,6 +10487,8 @@ function TrackTimeline({
   onEditCommand,
   onMultiClipEditCommand,
   canJoinMultiSelection,
+  canGroupMultiSelection,
+  canUngroupMultiSelection,
   multiClipOperationInProgress,
   onSplitAtSilences,
   splittingSilenceClipId,
@@ -10522,6 +10544,8 @@ function TrackTimeline({
   onEditCommand: (clipId: string, command: ClipContextEditCommand) => void;
   onMultiClipEditCommand: (clipId: string, command: MultiClipContextEditCommand) => void;
   canJoinMultiSelection: boolean;
+  canGroupMultiSelection: boolean;
+  canUngroupMultiSelection: boolean;
   multiClipOperationInProgress: boolean;
   onSplitAtSilences: (clipId: string) => void;
   splittingSilenceClipId: string | null;
@@ -10708,6 +10732,8 @@ function TrackTimeline({
           onEditCommand={(command) => onEditCommand(clip.id, command)}
           onMultiClipEditCommand={(command) => onMultiClipEditCommand(clip.id, command)}
           canJoinMultiSelection={canJoinMultiSelection}
+          canGroupMultiSelection={canGroupMultiSelection}
+          canUngroupMultiSelection={canUngroupMultiSelection}
           multiClipOperationInProgress={multiClipOperationInProgress}
           onSplitAtSilences={() => onSplitAtSilences(clip.id)}
           splittingSilenceClipId={splittingSilenceClipId}
@@ -11151,6 +11177,8 @@ function ClipItem({
   onEditCommand,
   onMultiClipEditCommand,
   canJoinMultiSelection,
+  canGroupMultiSelection,
+  canUngroupMultiSelection,
   multiClipOperationInProgress,
   onSplitAtSilences,
   splittingSilenceClipId,
@@ -11201,6 +11229,8 @@ function ClipItem({
   onEditCommand: (command: ClipContextEditCommand) => void;
   onMultiClipEditCommand: (command: MultiClipContextEditCommand) => void;
   canJoinMultiSelection: boolean;
+  canGroupMultiSelection: boolean;
+  canUngroupMultiSelection: boolean;
   multiClipOperationInProgress: boolean;
   onSplitAtSilences: () => void;
   splittingSilenceClipId: string | null;
@@ -11680,6 +11710,7 @@ function ClipItem({
       data-clip-tempo={clip.clipTempo ?? ''}
       data-raw-audio-tempo={clip.rawAudioTempo ?? ''}
       data-clip-color-index={getClipColorIndex(clip)}
+      data-clip-group-id={clip.groupId ?? -1}
       data-clip-color={clipColor}
       data-clip-name={clip.name ?? ''}
       data-rename-active={isRenaming ? 'true' : undefined}
@@ -11755,6 +11786,17 @@ function ClipItem({
           />
         ) : (
           <span data-testid={`clip-title-${clip.id}`} className="min-w-0 flex-1 truncate">{clip.name ?? '音频片段'}</span>
+        )}
+        {Number.isSafeInteger(clip.groupId) && (clip.groupId ?? -1) >= 0 && (
+          <span
+            data-testid={`clip-group-${clip.id}`}
+            className="flex shrink-0 items-center gap-0.5 rounded-sm bg-[#20252a]/20 px-1 text-[9px] font-semibold"
+            title={`Clip group ${clip.groupId}`}
+            aria-label={`Clip group ${clip.groupId}`}
+          >
+            <Link2 className="size-3" aria-hidden="true" />
+            {clip.groupId}
+          </span>
         )}
         <button
           type="button"
@@ -11991,6 +12033,23 @@ function ClipItem({
               onSelect={() => onMultiClipEditCommand('join')}
             >
               Join
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              data-testid="multi-clip-group-menu"
+              disabled={!canGroupMultiSelection || multiClipOperationInProgress}
+              title="将选中 Clip 设为同一组；若已选组则复用首个组 ID"
+              onSelect={() => onMultiClipEditCommand('group')}
+            >
+              Group
+            </ContextMenuItem>
+            <ContextMenuItem
+              data-testid="multi-clip-ungroup-menu"
+              disabled={!canUngroupMultiSelection || multiClipOperationInProgress}
+              title="仅取消选中 Clip 的分组，不影响未选 Clip"
+              onSelect={() => onMultiClipEditCommand('ungroup')}
+            >
+              Ungroup
             </ContextMenuItem>
           </>
         ) : (

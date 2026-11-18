@@ -87,6 +87,16 @@ describe('clip selection editing', () => {
     expect(updateClipSelection([], c, 'range', source.tracks, null)).toEqual([c]);
   });
 
+  it('selects and Ctrl-toggles a complete Clip group across tracks', () => {
+    const source = project();
+    source.tracks[0]!.clips[0]!.groupId = 9;
+    source.tracks[1]!.clips[0]!.groupId = 9;
+    const selected = updateClipSelection([b], a, 'replace', source.tracks, b);
+    expect(selected).toEqual([a, c]);
+    expect(updateClipSelection([b], c, 'toggle', source.tracks, b)).toEqual([b, a, c]);
+    expect(updateClipSelection([b, a, c], a, 'toggle', source.tracks, b)).toEqual([b]);
+  });
+
   it('clamps a group left trim by the shortest duration and source start', () => {
     const result = trimClipSelection(project(), [a, c], 'left', 10);
     expect(result.tracks[0].clips[0].duration).toBeCloseTo(2.05);
