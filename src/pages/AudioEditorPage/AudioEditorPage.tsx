@@ -552,6 +552,19 @@ function triggerBlobDownload(blob: Blob, filename: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+interface ClipSelectionEditTarget {
+  trackId: string;
+  selection: { start: number; end: number };
+}
+
+type ClipContextEditCommand =
+  | 'cut'
+  | 'copy'
+  | 'duplicate'
+  | 'delete'
+  | 'split'
+  | { operation: 'cut' | 'delete'; mode: SelectionRippleMode };
+
 export default function AudioEditorPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -617,6 +630,7 @@ export default function AudioEditorPage() {
     operation: 'cut' | 'delete';
     deleteBehavior: SelectedDeleteBehavior;
     closeGapBehavior: CloseGapBehavior;
+    target?: ClipSelectionEditTarget;
   } | null>(null);
   const [deleteFollowupOpen, setDeleteFollowupOpen] = useState(false);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
@@ -2138,13 +2152,13 @@ export default function AudioEditorPage() {
     setSelectedClips([]);
   }
 
-  async function splitClipsAtCursor() {
+  async function splitClipsAtCursor(keysOverride?: ClipKey[]) {
     if (!project) return;
-    const keys = selectedClips.length > 0
+    const keys = keysOverride ?? (selectedClips.length > 0
       ? selectedClips
       : project.tracks
         .filter((track) => track.id === selectedTrackId)
-        .flatMap((track) => track.clips.map((clip) => ({ trackId: track.id, clipId: clip.id })));
+        .flatMap((track) => track.clips.map((clip) => ({ trackId: track.id, clipId: clip.id }))));
     const result = splitClipSelectionAtTime(project, keys, cursorPosition, generateId);
     if (!result.didSplit) {
       toast.info('请将播放光标放在选中片段内部');
@@ -2985,26 +2999,30 @@ export default function AudioEditorPage() {
     }
   }
 
-  async function handleCut() {
-    await handlePreferredSelectionEdit('cut');
+  async function handleCut(target?: ClipSelectionEditTarget) {
+    await handlePreferredSelectionEdit('cut', target);
   }
 
-  async function handleDeleteSelection() {
-    await handlePreferredSelectionEdit('delete');
+  async function handleDeleteSelection(target?: ClipSelectionEditTarget) {
+    await handlePreferredSelectionEdit('delete', target);
   }
 
-  async function handlePreferredSelectionEdit(operation: 'cut' | 'delete') {
-    if (!project || !selection || selectionEditOperation) return;
+  async function handlePreferredSelectionEdit(
+    operation: 'cut' | 'delete',
+    target?: ClipSelectionEditTarget,
+  ) {
+    if (!project || (!selection && !target?.selection) || selectionEditOperation) return;
     if (needsDeleteOnboarding(deletePreferences)) {
       // Audacity's onboarding starts with Leave gap and retains the configured ripple fallback.
       setDeleteOnboarding({
         operation,
         deleteBehavior: 'leave-gap',
         closeGapBehavior: deletePreferences.closeGapBehavior,
+        target,
       });
       return;
     }
-    await handleSelectionEdit(operation, resolveDeleteRippleMode(deletePreferences));
+    await handleSelectionEdit(operation, resolveDeleteRippleMode(deletePreferences), target);
   }
 
   async function applyDeleteOnboarding() {
@@ -3020,15 +3038,17 @@ export default function AudioEditorPage() {
     }
     setDeletePreferences(next);
     setDeleteOnboarding(null);
-    await handleSelectionEdit(pending.operation, resolveDeleteRippleMode(next));
+    await handleSelectionEdit(pending.operation, resolveDeleteRippleMode(next), pending.target);
     setDeleteFollowupOpen(true);
   }
 
   async function handleSelectionEdit(
     operation: 'cut' | 'delete',
     mode: SelectionRippleMode,
+    target?: ClipSelectionEditTarget,
   ) {
-    if (!project || !selection || selectionEditOperation) return;
+    const activeSelection = target?.selection ?? selection;
+    if (!project || !activeSelection || selectionEditOperation) return;
     if (recordingState === 'recording') {
       toast.info('请先停止录音，再编辑选区');
       return;
@@ -3040,9 +3060,11 @@ export default function AudioEditorPage() {
       'per-track': `${operation === 'cut' ? 'Cut' : 'Delete'} and close gap on this track`,
       'all-tracks': `${operation === 'cut' ? 'Cut' : 'Delete'} and close gap on all tracks`,
     };
-    const targetTrackIds = mode === 'per-track'
-      ? selectedTrackId ? [selectedTrackId] : []
-      : project.tracks.map((track) => track.id);
+    const targetTrackIds = target
+      ? mode === 'all-tracks' ? project.tracks.map((track) => track.id) : [target.trackId]
+      : mode === 'per-track'
+        ? selectedTrackId ? [selectedTrackId] : []
+        : project.tracks.map((track) => track.id);
     if (targetTrackIds.length === 0) {
       toast.info('请先选择要编辑的轨道');
       return;
@@ -3053,8 +3075,8 @@ export default function AudioEditorPage() {
       if (operation === 'cut'
         && !await storeSelectionInClipboard(
           project,
-          selection.start,
-          selection.end,
+          activeSelection.start,
+          activeSelection.end,
           new Set(targetTrackIds),
         )) {
         toast.info('选区内没有可剪切的音频');
@@ -3063,8 +3085,8 @@ export default function AudioEditorPage() {
 
       const result = applySelectionEdit(
         project,
-        selection.start,
-        selection.end,
+        activeSelection.start,
+        activeSelection.end,
         mode,
         targetTrackIds,
         generateId,
@@ -3150,8 +3172,9 @@ export default function AudioEditorPage() {
     );
   }
 
-  async function splitRangeAtBoundaries() {
-    if (!project || !selection || selectionUtilityOperation) return;
+  async function splitRangeAtBoundaries(target?: ClipSelectionEditTarget) {
+    const activeSelection = target?.selection ?? selection;
+    if (!project || !activeSelection || selectionUtilityOperation) return;
     if (recordingState === 'recording') {
       toast.info('请先停止录音，再分割选区');
       return;
@@ -3160,8 +3183,8 @@ export default function AudioEditorPage() {
     try {
       const result = splitRangeSelection(
         project,
-        selection,
-        project.tracks.map((track) => track.id),
+        activeSelection,
+        target ? [target.trackId] : project.tracks.map((track) => track.id),
         generateId,
       );
       if (!result.didChange) {
@@ -3318,10 +3341,16 @@ export default function AudioEditorPage() {
     }
   }
 
-  async function handleCopy() {
-    if (!project || !selection) return;
+  async function handleCopy(target?: ClipSelectionEditTarget) {
+    const activeSelection = target?.selection ?? selection;
+    if (!project || !activeSelection) return;
     try {
-      if (await storeSelectionInClipboard(project, selection.start, selection.end)) {
+      if (await storeSelectionInClipboard(
+        project,
+        activeSelection.start,
+        activeSelection.end,
+        target ? new Set([target.trackId]) : undefined,
+      )) {
         toast.success('已复制到剪贴板');
       } else {
         toast.info('选区内没有可复制的音频');
@@ -3433,11 +3462,18 @@ export default function AudioEditorPage() {
     }
   }
 
-  async function handleDuplicateSelection() {
-    if (!project || !quantizedGeneratorSelection) return;
-    const activeSelection = quantizedGeneratorSelection;
+  async function handleDuplicateSelection(target?: ClipSelectionEditTarget) {
+    const activeSelection = target
+      ? quantizeSelectionToSamples(target.selection, project?.sampleRate ?? 44100)
+      : quantizedGeneratorSelection;
+    if (!project || !activeSelection) return;
     try {
-      const copied = await copySelection(project, activeSelection.start, activeSelection.end);
+      const copied = await copySelection(
+        project,
+        activeSelection.start,
+        activeSelection.end,
+        target ? new Set([target.trackId]) : undefined,
+      );
       if (!copied || copied.tracks.length === 0) {
         toast.info('选区内没有可复制的音频');
         return;
@@ -3464,6 +3500,49 @@ export default function AudioEditorPage() {
       logger.error('Duplicate 选区失败:', String(error));
       toast.error(error instanceof Error ? `Duplicate 失败：${error.message}` : 'Duplicate 失败');
     }
+  }
+
+  async function runClipContextEditCommand(
+    trackId: string,
+    clipId: string,
+    command: ClipContextEditCommand,
+  ) {
+    if (!project || recordingState === 'recording'
+      || renderingPitchAndSpeedClipId || splittingSilenceClipId) return;
+
+    const key = { trackId, clipId };
+    selectClip(trackId, clipId, 'replace');
+
+    // Audacity's global Split uses selection boundaries when present, and the
+    // playback position otherwise. The Clip menu supplies the selected track.
+    if (command === 'split') {
+      if (selection && selection.end > selection.start) {
+        await splitRangeAtBoundaries({ trackId, selection });
+      } else {
+        await splitClipsAtCursor([key]);
+      }
+      return;
+    }
+
+    const clip = project.tracks.find((track) => track.id === trackId)
+      ?.clips.find((candidate) => candidate.id === clipId);
+    if (!clip) return;
+    const target: ClipSelectionEditTarget = {
+      trackId,
+      selection: { start: clip.startTime, end: clip.startTime + clip.duration },
+    };
+    // Keep the visible editor state aligned with the explicit synchronous target.
+    // Handlers receive `target` directly so they cannot observe stale React state.
+    setSelection(target.selection);
+
+    if (typeof command === 'string') {
+      if (command === 'cut') await handleCut(target);
+      else if (command === 'copy') await handleCopy(target);
+      else if (command === 'duplicate') await handleDuplicateSelection(target);
+      else if (command === 'delete') await handleDeleteSelection(target);
+      return;
+    }
+    await handleSelectionEdit(command.operation, command.mode, target);
   }
 
   async function handleCrossfadePreview(settings: CrossfadeSettings) {
@@ -7407,9 +7486,9 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={handleUndo} disabled={!canUndo}>撤销</DropdownMenuItem>
               <DropdownMenuItem onClick={handleRedo} disabled={!canRedo}>重做</DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem data-testid="cut-selection" onClick={handleCut} disabled={!selection}>剪切 (Ctrl+X)</DropdownMenuItem>
+              <DropdownMenuItem data-testid="cut-selection" onClick={() => void handleCut()} disabled={!selection}>剪切 (Ctrl+X)</DropdownMenuItem>
               <DropdownMenuItem data-testid="delete-selection" onClick={() => void handleDeleteSelection()} disabled={!selection}>删除 (Delete)</DropdownMenuItem>
-              <DropdownMenuItem onClick={handleCopy} disabled={!selection}>复制</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void handleCopy()} disabled={!selection}>复制</DropdownMenuItem>
               <DropdownMenuItem onClick={() => handlePaste()}>粘贴</DropdownMenuItem>
               {renderSelectionEditMenus()}
               <DropdownMenuItem onClick={() => void splitClipsAtCursor()} disabled={!canSplitAtCursor}>在光标处分割 (Ctrl+I)</DropdownMenuItem>
@@ -8024,7 +8103,7 @@ export default function AudioEditorPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem data-testid="toolbar-cut-selection" onClick={handleCut} disabled={!selection}>
+              <DropdownMenuItem data-testid="toolbar-cut-selection" onClick={() => void handleCut()} disabled={!selection}>
                 <Scissors className="mr-2 size-4" />
                 剪切 (Ctrl+X)
               </DropdownMenuItem>
@@ -8032,7 +8111,7 @@ export default function AudioEditorPage() {
                 <Trash2 className="mr-2 size-4" />
                 删除 (Delete)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleCopy} disabled={!selection}>
+              <DropdownMenuItem onClick={() => void handleCopy()} disabled={!selection}>
                 <Copy className="mr-2 size-4" />
                 复制 (Ctrl+C)
               </DropdownMenuItem>
@@ -8326,7 +8405,7 @@ export default function AudioEditorPage() {
                 Repeat 重复…
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={handleDuplicateSelection}
+                onClick={() => void handleDuplicateSelection()}
                 disabled={!quantizedGeneratorSelection}
               >
                 Duplicate 复制为新轨道
@@ -8740,6 +8819,7 @@ export default function AudioEditorPage() {
                 onRenderPitchAndSpeed={(clipId) => renderClipPitchAndSpeed(track.id, clipId)}
                 onToggleStretchWithTempoChanges={(clipId) => toggleStretchWithTempoChanges(track.id, clipId)}
                 onClipColorChange={(clipId, colorIndex) => changeClipColor(track.id, clipId, colorIndex)}
+                onEditCommand={(clipId, command) => void runClipContextEditCommand(track.id, clipId, command)}
                 onSplitAtSilences={(clipId) => splitClipAtSilences(track.id, clipId)}
                 splittingSilenceClipId={splittingSilenceClipId}
                 renamingClipKey={renamingClipKey}
@@ -10176,6 +10256,7 @@ function TrackTimeline({
   onRenderPitchAndSpeed,
   onToggleStretchWithTempoChanges,
   onClipColorChange,
+  onEditCommand,
   onSplitAtSilences,
   splittingSilenceClipId,
   renamingClipKey,
@@ -10227,6 +10308,7 @@ function TrackTimeline({
   onRenderPitchAndSpeed: (clipId: string) => void;
   onToggleStretchWithTempoChanges: (clipId: string) => void;
   onClipColorChange: (clipId: string, colorIndex: number) => void;
+  onEditCommand: (clipId: string, command: ClipContextEditCommand) => void;
   onSplitAtSilences: (clipId: string) => void;
   splittingSilenceClipId: string | null;
   renamingClipKey: string | null;
@@ -10406,6 +10488,7 @@ function TrackTimeline({
           onRenderPitchAndSpeed={() => onRenderPitchAndSpeed(clip.id)}
           onToggleStretchWithTempoChanges={() => onToggleStretchWithTempoChanges(clip.id)}
           onClipColorChange={(colorIndex) => onClipColorChange(clip.id, colorIndex)}
+          onEditCommand={(command) => onEditCommand(clip.id, command)}
           onSplitAtSilences={() => onSplitAtSilences(clip.id)}
           splittingSilenceClipId={splittingSilenceClipId}
           isRenaming={renamingClipKey === clipKeyId({ trackId: track.id, clipId: clip.id })}
@@ -10845,6 +10928,7 @@ function ClipItem({
   onRenderPitchAndSpeed,
   onToggleStretchWithTempoChanges,
   onClipColorChange,
+  onEditCommand,
   onSplitAtSilences,
   splittingSilenceClipId,
   isRenaming,
@@ -10891,6 +10975,7 @@ function ClipItem({
   onRenderPitchAndSpeed: () => void;
   onToggleStretchWithTempoChanges: () => void;
   onClipColorChange: (colorIndex: number) => void;
+  onEditCommand: (command: ClipContextEditCommand) => void;
   onSplitAtSilences: () => void;
   splittingSilenceClipId: string | null;
   isRenaming: boolean;
@@ -11648,6 +11733,89 @@ function ClipItem({
           </ContextMenuSubContent>
         </ContextMenuSub>
         <ContextMenuSeparator />
+        <ContextMenuItem
+          data-testid="clip-cut-menu"
+          disabled={hasMultipleSelections || clipOperationInProgress}
+          onSelect={() => onEditCommand('cut')}
+        >
+          Cut
+        </ContextMenuItem>
+        <ContextMenuItem
+          data-testid="clip-copy-menu"
+          disabled={hasMultipleSelections || clipOperationInProgress}
+          onSelect={() => onEditCommand('copy')}
+        >
+          Copy
+        </ContextMenuItem>
+        <ContextMenuItem
+          data-testid="clip-duplicate-menu"
+          disabled={hasMultipleSelections || clipOperationInProgress}
+          onSelect={() => onEditCommand('duplicate')}
+        >
+          Duplicate
+        </ContextMenuItem>
+        <ContextMenuItem
+          data-testid="clip-delete-menu"
+          disabled={hasMultipleSelections || clipOperationInProgress}
+          onSelect={() => onEditCommand('delete')}
+        >
+          Delete
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuSub>
+          <ContextMenuSubTrigger
+            data-testid="clip-cut-options-menu"
+            disabled={hasMultipleSelections || clipOperationInProgress}
+          >
+            Cut and…
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-72">
+            {([
+              { mode: 'leave-gap', label: 'leave gap' },
+              { mode: 'per-track', label: 'close gap on this track' },
+              { mode: 'all-tracks', label: 'close gap on all tracks' },
+            ] as const).map(({ mode, label }) => (
+              <ContextMenuItem
+                key={mode}
+                data-testid={`clip-cut-${mode}`}
+                onSelect={() => onEditCommand({ operation: 'cut', mode })}
+              >
+                Cut and {label}
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger
+            data-testid="clip-delete-options-menu"
+            disabled={hasMultipleSelections || clipOperationInProgress}
+          >
+            Delete and…
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-72">
+            {([
+              { mode: 'leave-gap', label: 'leave gap' },
+              { mode: 'per-track', label: 'close gap on this track' },
+              { mode: 'all-tracks', label: 'close gap on all tracks' },
+            ] as const).map(({ mode, label }) => (
+              <ContextMenuItem
+                key={mode}
+                data-testid={`clip-delete-${mode}`}
+                onSelect={() => onEditCommand({ operation: 'delete', mode })}
+              >
+                Delete and {label}
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          data-testid="clip-split-menu"
+          disabled={hasMultipleSelections || clipOperationInProgress}
+          onSelect={() => onEditCommand('split')}
+        >
+          Split
+        </ContextMenuItem>
         <ContextMenuItem
           data-testid="clip-split-silences-menu"
           disabled={hasMultipleSelections || clipOperationInProgress}
