@@ -221,6 +221,10 @@ export default function SettingsPage() {
     updatePastePreferences({ ...pastePreferences, pasteInsertBehavior });
   }
 
+  function updatePasteAsNewClip(pasteAsNewClip: boolean) {
+    updatePastePreferences({ ...pastePreferences, pasteAsNewClip });
+  }
+
   async function handleClearAllData() {
     setIsClearing(true);
     try {
@@ -407,11 +411,13 @@ export default function SettingsPage() {
                 idPrefix="paste-behavior-settings"
                 pasteBehavior={pastePreferences.pasteBehavior}
                 pasteInsertBehavior={pastePreferences.pasteInsertBehavior}
+                pasteAsNewClip={pastePreferences.pasteAsNewClip}
                 onPasteBehaviorChange={updatePasteBehavior}
                 onPasteInsertBehaviorChange={updatePasteInsertBehavior}
+                onPasteAsNewClipChange={updatePasteAsNewClip}
               />
               <p className="text-xs text-muted-foreground">
-                官方默认为 Paste overlaps other clips；选择 Paste pushes other clips 后，可继续指定仅移动当前轨道或移动全部轨道。
+                官方默认为 Paste overlaps other clips 且 Always paste audio as a new clip 开启；插入范围可指定当前轨道或全部轨道。
               </p>
             </CardContent>
           </Card>

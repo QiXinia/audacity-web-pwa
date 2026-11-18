@@ -13,8 +13,10 @@ describe('PasteBehaviorPanel', () => {
         idPrefix="paste-test"
         pasteBehavior="overlap"
         pasteInsertBehavior="per-track"
+        pasteAsNewClip={true}
         onPasteBehaviorChange={vi.fn()}
         onPasteInsertBehaviorChange={vi.fn()}
+        onPasteAsNewClipChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('paste-test-overlap')).toBeChecked();
@@ -31,8 +33,10 @@ describe('PasteBehaviorPanel', () => {
         idPrefix="paste-test"
         pasteBehavior="insert"
         pasteInsertBehavior="per-track"
+        pasteAsNewClip={true}
         onPasteBehaviorChange={onPasteBehaviorChange}
         onPasteInsertBehaviorChange={onPasteInsertBehaviorChange}
+        onPasteAsNewClipChange={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByTestId('paste-test-all-tracks'));
@@ -49,11 +53,33 @@ describe('PasteBehaviorPanel', () => {
         idPrefix="paste-test"
         pasteBehavior="insert"
         pasteInsertBehavior="all-tracks"
+        pasteAsNewClip={false}
         onPasteBehaviorChange={onPasteBehaviorChange}
         onPasteInsertBehaviorChange={vi.fn()}
+        onPasteAsNewClipChange={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByTestId('paste-test-overlap'));
     expect(onPasteBehaviorChange).toHaveBeenCalledWith('overlap');
+  });
+
+  it('exposes the official Always paste audio as a new clip checkbox', () => {
+    const onPasteAsNewClipChange = vi.fn();
+    render(
+      <PasteBehaviorPanel
+        idPrefix="paste-test"
+        pasteBehavior="overlap"
+        pasteInsertBehavior="per-track"
+        pasteAsNewClip={false}
+        onPasteBehaviorChange={vi.fn()}
+        onPasteInsertBehaviorChange={vi.fn()}
+        onPasteAsNewClipChange={onPasteAsNewClipChange}
+      />,
+    );
+    const checkbox = screen.getByTestId('paste-test-as-new-clip');
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText('Always paste audio as a new clip')).toBeInTheDocument();
+    fireEvent.click(checkbox);
+    expect(onPasteAsNewClipChange).toHaveBeenCalledWith(true);
   });
 });

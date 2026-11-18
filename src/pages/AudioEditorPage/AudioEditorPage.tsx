@@ -397,8 +397,14 @@ import {
 import {
   loadPastePreferences,
   resolveDefaultPasteMode,
+  shouldPasteIntoExistingClip,
   type PastePreferences,
 } from '@/lib/pastePreferences';
+import {
+  findClipAtTime,
+  mergeClipboardPcmIntoClip,
+  replaceTrackWithMergedClip,
+} from '@/lib/pasteIntoExistingClip';
 import {
   collectClipSnapPoints,
   DEFAULT_SNAP_TOLERANCE_PIXELS,
@@ -6187,6 +6193,41 @@ export default function AudioEditorPage() {
         updated.tracks.push(newTrack);
         targetTrack = newTrack;
         actualDestinationIndex = updated.tracks.length - 1;
+      }
+
+      const existingClip = shouldPasteIntoExistingClip(pastePreferences, mode)
+        ? findClipAtTime(targetTrack, cursorPos)
+        : null;
+      if (existingClip) {
+        const effective = await loadEffectiveClipChannels(existingClip, proj.sampleRate);
+        if (effective) {
+          const pastedChannels = clipboardData.sampleRate === proj.sampleRate
+            ? trackClip.channels.map((channel) => channel.slice())
+            : trackClip.channels.map((channel) => resampleBuffer(
+              channel,
+              clipboardData.sampleRate,
+              proj.sampleRate,
+            ));
+          const merged = mergeClipboardPcmIntoClip({
+            clip: existingClip,
+            existingChannels: effective.channels,
+            sourceOffset: effective.sourceOffset,
+            pastedChannels,
+            pasteTime: cursorPos,
+            sampleRate: proj.sampleRate,
+          });
+          const mergedBufferId = await storeProjectBuffer(proj.id, merged.channels, proj.sampleRate);
+          const mergedClip: IClip = { ...merged.clip, audioBufferId: mergedBufferId };
+          targetTrack = replaceTrackWithMergedClip(
+            targetTrack,
+            existingClip,
+            mergedClip,
+            mode === 'per-track' ? 'insert' : 'overlap',
+            generateId,
+          );
+          updated.tracks[actualDestinationIndex] = targetTrack;
+          continue;
+        }
       }
 
       // Store every channel without downmixing.

@@ -8,11 +8,13 @@ export type PasteInsertBehavior = Exclude<SelectionPasteMode, 'overlap'>;
 export interface PastePreferences {
   pasteBehavior: PasteBehavior;
   pasteInsertBehavior: PasteInsertBehavior;
+  pasteAsNewClip: boolean;
 }
 
 export const DEFAULT_PASTE_PREFERENCES: Readonly<PastePreferences> = Object.freeze({
   pasteBehavior: 'overlap',
   pasteInsertBehavior: 'per-track',
+  pasteAsNewClip: true,
 });
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
@@ -30,6 +32,14 @@ export function resolveDefaultPasteMode(preferences: PastePreferences): Selectio
   return preferences.pasteBehavior === 'overlap' ? 'overlap' : preferences.pasteInsertBehavior;
 }
 
+/** pasteAsNewClip=false applies to overlap/per-track, never to all-tracks ripple. */
+export function shouldPasteIntoExistingClip(
+  preferences: Pick<PastePreferences, 'pasteAsNewClip'>,
+  mode: SelectionPasteMode,
+): boolean {
+  return !preferences.pasteAsNewClip && mode !== 'all-tracks';
+}
+
 /** Load Audacity's PasteOverlap/PasteInsert defaults, preserving valid fields independently. */
 export function loadPastePreferences(storage?: StorageLike): PastePreferences {
   try {
@@ -44,6 +54,9 @@ export function loadPastePreferences(storage?: StorageLike): PastePreferences {
       pasteInsertBehavior: isPasteInsertBehavior(parsed?.pasteInsertBehavior)
         ? parsed.pasteInsertBehavior
         : DEFAULT_PASTE_PREFERENCES.pasteInsertBehavior,
+      pasteAsNewClip: typeof parsed?.pasteAsNewClip === 'boolean'
+        ? parsed.pasteAsNewClip
+        : DEFAULT_PASTE_PREFERENCES.pasteAsNewClip,
     };
   } catch {
     return { ...DEFAULT_PASTE_PREFERENCES };
@@ -53,13 +66,15 @@ export function loadPastePreferences(storage?: StorageLike): PastePreferences {
 /** Persist only a complete supported value and report unavailable or full browser storage. */
 export function savePastePreferences(preferences: PastePreferences, storage?: StorageLike): boolean {
   if (!isPasteBehavior(preferences.pasteBehavior)
-    || !isPasteInsertBehavior(preferences.pasteInsertBehavior)) return false;
+    || !isPasteInsertBehavior(preferences.pasteInsertBehavior)
+    || typeof preferences.pasteAsNewClip !== 'boolean') return false;
   try {
     const target = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage);
     if (!target) return false;
     target.setItem(PASTE_PREFERENCES_STORAGE_KEY, JSON.stringify({
       pasteBehavior: preferences.pasteBehavior,
       pasteInsertBehavior: preferences.pasteInsertBehavior,
+      pasteAsNewClip: preferences.pasteAsNewClip,
     }));
     return true;
   } catch {

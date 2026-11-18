@@ -33,8 +33,10 @@ interface PasteBehaviorPanelProps {
   idPrefix: string;
   pasteBehavior: PasteBehavior;
   pasteInsertBehavior: PasteInsertBehavior;
+  pasteAsNewClip: boolean;
   onPasteBehaviorChange: (value: PasteBehavior) => void;
   onPasteInsertBehaviorChange: (value: PasteInsertBehavior) => void;
+  onPasteAsNewClipChange: (value: boolean) => void;
 }
 
 /** Shared Audacity 4 Edit Preferences choices for the ordinary Paste command. */
@@ -42,8 +44,10 @@ export function PasteBehaviorPanel({
   idPrefix,
   pasteBehavior,
   pasteInsertBehavior,
+  pasteAsNewClip,
   onPasteBehaviorChange,
   onPasteInsertBehaviorChange,
+  onPasteAsNewClipChange,
 }: PasteBehaviorPanelProps) {
   return (
     <div className="space-y-4" data-testid={idPrefix}>
@@ -104,6 +108,26 @@ export function PasteBehaviorPanel({
           </div>
         </div>
       )}
+
+      <Label
+        htmlFor={`${idPrefix}-as-new-clip`}
+        className="flex cursor-pointer items-start gap-3 rounded-md border p-4 font-normal"
+      >
+        <input
+          id={`${idPrefix}-as-new-clip`}
+          data-testid={`${idPrefix}-as-new-clip`}
+          type="checkbox"
+          className="mt-0.5 size-4 shrink-0 accent-primary"
+          checked={pasteAsNewClip}
+          onChange={(event) => onPasteAsNewClipChange(event.target.checked)}
+        />
+        <span className="space-y-1">
+          <span className="block text-sm font-medium">Always paste audio as a new clip</span>
+          <span className="block text-xs leading-5 text-muted-foreground">
+            关闭后，在既有 Clip 内执行非全轨粘贴时，将音频插入并合并为一个 Clip。
+          </span>
+        </span>
+      </Label>
     </div>
   );
 }
