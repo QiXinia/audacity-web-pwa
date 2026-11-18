@@ -376,6 +376,7 @@ import {
   type ClipSelectionMode,
 } from '@/lib/clipEditing';
 import { splitClipAtSilences as disjoinClipAtSilences } from '@/lib/clipSilence';
+import { applySelectionEdit, type SelectionRippleMode } from '@/lib/selectionEdit';
 import {
   collectClipSnapPoints,
   DEFAULT_SNAP_TOLERANCE_PIXELS,
@@ -576,6 +577,7 @@ export default function AudioEditorPage() {
   const [renamingClipKey, setRenamingClipKey] = useState<string | null>(null);
   const [renderingPitchAndSpeedClipId, setRenderingPitchAndSpeedClipId] = useState<string | null>(null);
   const [splittingSilenceClipId, setSplittingSilenceClipId] = useState<string | null>(null);
+  const [selectionEditOperation, setSelectionEditOperation] = useState<string | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const clipSelectionAnchorRef = useRef<ClipKey | null>(null);
   const [workspaceStore, setWorkspaceStore] = useState(loadWorkspaceStore);
@@ -2886,8 +2888,13 @@ export default function AudioEditorPage() {
   }
 
   // Clipboard operations
-  async function storeSelectionInClipboard(proj: IProject, start: number, end: number): Promise<boolean> {
-    const clipboardData = await copySelection(proj, start, end);
+  async function storeSelectionInClipboard(
+    proj: IProject,
+    start: number,
+    end: number,
+    trackIds?: ReadonlySet<string>,
+  ): Promise<boolean> {
+    const clipboardData = await copySelection(proj, start, end, trackIds);
     if (!clipboardData || clipboardData.tracks.length === 0) return false;
     await audioDb.clipboard.put({
       id: 'current',
@@ -2898,31 +2905,118 @@ export default function AudioEditorPage() {
   }
 
   async function handleCut() {
-    if (!project || !selection) return;
+    // Audacity's default CloseGapBehavior is ClipRipple.
+    await handleSelectionEdit('cut', 'per-clip');
+  }
+
+  async function handleSelectionEdit(
+    operation: 'cut' | 'delete',
+    mode: SelectionRippleMode,
+  ) {
+    if (!project || !selection || selectionEditOperation) return;
+    if (recordingState === 'recording') {
+      toast.info('请先停止录音，再编辑选区');
+      return;
+    }
+
+    const labels: Record<SelectionRippleMode, string> = {
+      'leave-gap': `${operation === 'cut' ? 'Cut' : 'Delete'} and leave gap`,
+      'per-clip': `${operation === 'cut' ? 'Cut' : 'Delete'} and close gap`,
+      'per-track': `${operation === 'cut' ? 'Cut' : 'Delete'} and close gap on this track`,
+      'all-tracks': `${operation === 'cut' ? 'Cut' : 'Delete'} and close gap on all tracks`,
+    };
+    const targetTrackIds = mode === 'per-track'
+      ? selectedTrackId ? [selectedTrackId] : []
+      : project.tracks.map((track) => track.id);
+    if (targetTrackIds.length === 0) {
+      toast.info('请先选择要编辑的轨道');
+      return;
+    }
+
+    setSelectionEditOperation(`${operation}:${mode}`);
     try {
-      if (!await storeSelectionInClipboard(project, selection.start, selection.end)) {
+      if (operation === 'cut'
+        && !await storeSelectionInClipboard(
+          project,
+          selection.start,
+          selection.end,
+          new Set(targetTrackIds),
+        )) {
         toast.info('选区内没有可剪切的音频');
         return;
       }
-      const before = JSON.parse(JSON.stringify(project)) as IProject;
-      const result = await cutSelection(project, selection.start, selection.end);
-      if (result) {
-        setProject(result);
-        await projectService.saveProject(result);
-        pushHistoryCmd({
-          id: generateId(),
-          label: '剪切',
-          execute: () => result,
-          undo: () => before,
-        });
-        updateHistoryState();
-        setSelection(null);
-        toast.success('已剪切到剪贴板');
+
+      const result = applySelectionEdit(
+        project,
+        selection.start,
+        selection.end,
+        mode,
+        targetTrackIds,
+        generateId,
+      );
+      if (!result.didChange) {
+        toast.info('选区内没有可删除的音频');
+        return;
       }
+
+      const updated = { ...result.project, selection: null, spectralSelection: null };
+      await commitClipEdit(updated, labels[mode]);
+      setSelection(null);
+      setSpectralSelection(null);
+      setSelectedClips([]);
+      toast.success(operation === 'cut' ? '已剪切到剪贴板' : '已删除选区');
     } catch (error) {
-      logger.error('剪切失败:', String(error));
-      toast.error('剪切失败');
+      logger.error(`${labels[mode]} failed:`, String(error));
+      toast.error(operation === 'cut' ? '剪切失败' : '删除失败');
+    } finally {
+      setSelectionEditOperation(null);
     }
+  }
+
+  function renderSelectionEditMenus() {
+    const disabled = !selection || selectionEditOperation !== null || recordingState === 'recording';
+    return (
+      <>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger disabled={disabled} data-testid="selection-cut-menu">
+            Cut and…
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem data-testid="selection-cut-leave-gap" onSelect={() => void handleSelectionEdit('cut', 'leave-gap')}>
+              Cut and leave gap
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="selection-cut-per-clip" onSelect={() => void handleSelectionEdit('cut', 'per-clip')}>
+              Cut and close gap
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="selection-cut-per-track" onSelect={() => void handleSelectionEdit('cut', 'per-track')}>
+              Cut and close gap on this track
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="selection-cut-all-tracks" onSelect={() => void handleSelectionEdit('cut', 'all-tracks')}>
+              Cut and close gap on all tracks
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger disabled={disabled} data-testid="selection-delete-menu">
+            Delete and…
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem data-testid="selection-delete-leave-gap" onSelect={() => void handleSelectionEdit('delete', 'leave-gap')}>
+              Delete and leave gap
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="selection-delete-per-clip" onSelect={() => void handleSelectionEdit('delete', 'per-clip')}>
+              Delete and close gap
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="selection-delete-per-track" onSelect={() => void handleSelectionEdit('delete', 'per-track')}>
+              Delete and close gap on this track
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="selection-delete-all-tracks" onSelect={() => void handleSelectionEdit('delete', 'all-tracks')}>
+              Delete and close gap on all tracks
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      </>
+    );
   }
 
   async function handleCopy() {
@@ -5551,7 +5645,8 @@ export default function AudioEditorPage() {
   }
 
   // Selection handling from canvas
-  function handleSelectionChange(start: number, end: number) {
+  function handleSelectionChange(start: number, end: number, trackId?: string) {
+    if (trackId) setSelectedTrackId(trackId);
     const nextSelection = start === end
       ? null
       : { start: Math.min(start, end), end: Math.max(start, end) };
@@ -5643,28 +5738,6 @@ export default function AudioEditorPage() {
   }
 
   // Selection edit operations
-  async function cutSelection(
-    proj: IProject,
-    start: number,
-    end: number,
-  ): Promise<IProject | null> {
-    // Copy first, then delete region
-    const copied = await copySelection(proj, start, end);
-    if (!copied) return null;
-
-    // Store in clipboard
-    try {
-      
-      await audioDb.clipboard.put({
-        id: 'current',
-        data: serializeAudioClipboard(copied),
-        createdAt: Date.now(),
-      });
-    } catch {}
-
-    return deleteRegion(proj, start, end);
-  }
-
   async function storeProjectBuffer(
     projectId: string,
     channels: Float32Array[],
@@ -5708,6 +5781,7 @@ export default function AudioEditorPage() {
     proj: IProject,
     start: number,
     end: number,
+    trackIds?: ReadonlySet<string>,
   ): Promise<AudioClipboardData | null> {
     const duration = end - start;
     if (duration <= 0) return null;
@@ -5717,6 +5791,7 @@ export default function AudioEditorPage() {
     const totalSamples = Math.max(1, Math.ceil(duration * sampleRate));
 
     for (const track of proj.tracks) {
+      if (trackIds && !trackIds.has(track.id)) continue;
       const trackBuffers: Float32Array[] = [];
       let hasContent = false;
 
@@ -5835,91 +5910,8 @@ export default function AudioEditorPage() {
     start: number,
     end: number,
   ): Promise<IProject | null> {
-    const updated = JSON.parse(JSON.stringify(proj)) as IProject;
-    const duration = end - start;
-    if (duration <= 0) return null;
-
-    for (const track of updated.tracks) {
-      const newClips: IClip[] = [];
-      for (const clip of track.clips) {
-        const clipEnd = clip.startTime + clip.duration;
-
-        // Clip completely outside region
-        if (clipEnd <= start || clip.startTime >= end) {
-          newClips.push(clip);
-          continue;
-        }
-
-        // Clip fully inside region - remove
-        if (clip.startTime >= start && clipEnd <= end) {
-          continue;
-        }
-
-        // Clip overlaps region - split or truncate
-        const effective = await loadEffectiveClipChannels(clip, proj.sampleRate);
-        if (!effective) {
-          newClips.push(clip);
-          continue;
-        }
-        const clipChannels = effective.channels;
-
-        // Left part (before start)
-        if (clip.startTime < start) {
-          const leftDuration = start - clip.startTime;
-          const leftSamples = Math.floor(leftDuration * proj.sampleRate);
-          const leftStartSample = Math.floor(effective.sourceOffset * proj.sampleRate);
-          const leftChannels = clipChannels.map((channel) =>
-            wasmProcessor.sliceBuffer(channel, leftStartSample, leftStartSample + leftSamples),
-          );
-          const leftBufferId = await storeProjectBuffer(proj.id, leftChannels, proj.sampleRate);
-
-          newClips.push({
-            ...clip,
-            id: generateId(),
-            audioBufferId: leftBufferId,
-            duration: leftDuration,
-            originalDuration: leftDuration,
-            stretchRatio: 1,
-            offset: 0,
-            fadeOut: 0, // reset fades for simplicity
-          });
-        }
-
-        // Right part (after end) - shift left by duration
-        if (clipEnd > end) {
-          const rightOffsetInClip = end - clip.startTime + effective.sourceOffset;
-          const rightStartSample = Math.floor(rightOffsetInClip * proj.sampleRate);
-          const rightChannels = clipChannels.map((channel) =>
-            wasmProcessor.sliceBuffer(channel, rightStartSample, channel.length),
-          );
-          const rightDuration = rightChannels[0].length / proj.sampleRate;
-          const rightBufferId = await storeProjectBuffer(proj.id, rightChannels, proj.sampleRate);
-
-          newClips.push({
-            ...clip,
-            id: generateId(),
-            audioBufferId: rightBufferId,
-            startTime: start, // shifted left
-            offset: 0,
-            duration: rightDuration,
-            originalDuration: rightDuration,
-            stretchRatio: 1,
-            fadeIn: 0,
-          });
-        }
-      }
-
-      // Shift clips after the deleted region leftward
-      for (const clip of newClips) {
-        if (clip.startTime >= end) {
-          clip.startTime -= duration;
-        }
-      }
-
-      track.clips = newClips.sort((a, b) => a.startTime - b.startTime);
-    }
-
-    return updated;
+    const result = applySelectionEdit(proj, start, end, 'all-tracks', [], generateId);
+    return result.didChange ? result.project : null;
   }
 
   async function trimToSelection(
@@ -7055,6 +7047,7 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={handleCut} disabled={!selection}>剪切</DropdownMenuItem>
               <DropdownMenuItem onClick={handleCopy} disabled={!selection}>复制</DropdownMenuItem>
               <DropdownMenuItem onClick={handlePaste}>粘贴</DropdownMenuItem>
+              {renderSelectionEditMenus()}
               <DropdownMenuItem onClick={() => void splitClipsAtCursor()} disabled={!canSplitAtCursor}>在光标处分割 (Ctrl+I)</DropdownMenuItem>
               <DropdownMenuItem onClick={handleTrim} disabled={!selection}>裁剪到选区</DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -7679,6 +7672,7 @@ export default function AudioEditorPage() {
                 <Clipboard className="mr-2 size-4" />
                 粘贴 (Ctrl+V)
               </DropdownMenuItem>
+              {renderSelectionEditMenus()}
               <DropdownMenuItem onClick={() => void splitClipsAtCursor()} disabled={!canSplitAtCursor}>
                 <Scissors className="mr-2 size-4" />
                 在光标处分割 (Ctrl+I)
@@ -8388,7 +8382,7 @@ export default function AudioEditorPage() {
                 onRenameClipEnd={() => setRenamingClipKey(null)}
                 tempoChangesDisabled={recordingState === 'recording'}
                 renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
-                onSelectionChange={handleSelectionChange}
+                onSelectionChange={(start, end) => handleSelectionChange(start, end, track.id)}
                 onSpectralSelectionChange={handleSpectralSelectionChange}
                 onCursorChange={handleCursorChange}
                 onSnapTime={resolveTimelineSnap}
