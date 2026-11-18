@@ -137,12 +137,13 @@ describe('AudioEditorPage Clip properties integration', () => {
     await waitFor(() => expect(screen.queryByTestId('clip-properties-dialog')).not.toBeInTheDocument());
   });
 
-  it('disables properties for a Shift-selected multi-clip group', async () => {
+  it('uses the dedicated multi Clip menu instead of exposing single Clip properties', async () => {
     const clips = await renderProject();
     fireEvent.click(clips[0]!);
     fireEvent.click(clips[1]!, { shiftKey: true });
     fireEvent.contextMenu(clips[0]!);
-    expect(await screen.findByTestId('clip-properties-menu')).toHaveAttribute('aria-disabled', 'true');
+    expect(await screen.findByTestId('multi-clip-copy-menu')).toBeInTheDocument();
+    expect(screen.queryByTestId('clip-properties-menu')).not.toBeInTheDocument();
     expect(screen.queryByTestId('clip-properties-dialog')).not.toBeInTheDocument();
   });
 });

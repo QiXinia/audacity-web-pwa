@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   loadChannels: vi.fn(),
   saveProject: vi.fn(async () => undefined),
   clipboardPut: vi.fn(async () => undefined),
+  clipboardGet: vi.fn(),
   duplicateSelectionToTracks: vi.fn(async () => [{ id: 'duplicated-track' }]),
   drawWaveform: vi.fn(),
 }));
@@ -60,7 +61,7 @@ vi.mock('@/services/historyService', () => ({
 vi.mock('@/db/audioDb', () => ({
   audioDb: {
     audioBuffers: { get: vi.fn(), put: vi.fn(), delete: vi.fn() },
-    clipboard: { get: vi.fn(), put: mocks.clipboardPut }, historySnapshots: {},
+    clipboard: { get: mocks.clipboardGet, put: mocks.clipboardPut }, historySnapshots: {},
   },
   serializeTracks: (tracks: unknown) => JSON.stringify(tracks), deserializeTracks: (data: string) => JSON.parse(data),
   serializeSelection: (selection: unknown) => selection ? JSON.stringify(selection) : null,
@@ -125,6 +126,10 @@ describe('AudioEditorPage single Clip edit menu', () => {
     mocks.loadChannels.mockResolvedValue([left, right]);
     mocks.saveProject.mockResolvedValue(undefined);
     mocks.clipboardPut.mockResolvedValue(undefined);
+    mocks.clipboardGet.mockImplementation(async () => {
+      const calls = mocks.clipboardPut.mock.calls as unknown as Array<[{ data: string }]>;
+      return calls[0]?.[0];
+    });
     mocks.duplicateSelectionToTracks.mockResolvedValue([{ id: 'duplicated-track' }]);
     Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
     const context = {
@@ -136,7 +141,7 @@ describe('AudioEditorPage single Clip edit menu', () => {
 
   afterEach(() => cleanup());
 
-  it('places the official basic edit commands before Split at silences and disables them for multi-selection', async () => {
+  it('places single Clip commands correctly and switches to the dedicated multi Clip menu', async () => {
     const clips = await renderProject();
     fireEvent.contextMenu(clips[0]!);
     for (const id of [
@@ -155,11 +160,13 @@ describe('AudioEditorPage single Clip edit menu', () => {
     fireEvent.click(clips[1]!, { shiftKey: true });
     fireEvent.contextMenu(clips[0]!);
     for (const id of [
-      'clip-cut-menu', 'clip-copy-menu', 'clip-duplicate-menu', 'clip-delete-menu',
-      'clip-cut-options-menu', 'clip-delete-options-menu', 'clip-split-menu',
+      'multi-clip-cut-menu', 'multi-clip-copy-menu', 'multi-clip-delete-menu',
+      'multi-clip-cut-options-menu', 'multi-clip-delete-options-menu', 'multi-clip-join-menu',
     ]) {
-      expect(await screen.findByTestId(id)).toHaveAttribute('aria-disabled', 'true');
+      expect(await screen.findByTestId(id)).not.toHaveAttribute('aria-disabled', 'true');
     }
+    expect(screen.queryByTestId('clip-cut-menu')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('clip-properties-menu')).not.toBeInTheDocument();
     expect(mocks.saveProject).not.toHaveBeenCalled();
   });
 
@@ -210,14 +217,108 @@ describe('AudioEditorPage single Clip edit menu', () => {
     expect(tracks.map((track: { trackId: string }) => track.trackId)).toEqual(['track-a']);
   });
 
-  it('splits only the right-clicked Clip at the playback cursor when there is no time selection', async () => {
+  it('splits at the playback cursor without letting the portal menu click move it', async () => {
     const clips = await renderProject();
     fireEvent.contextMenu(clips[0]!);
-    fireEvent.click(await screen.findByTestId('clip-split-menu'));
+    const splitItem = await screen.findByTestId('clip-split-menu');
+    fireEvent.mouseDown(splitItem, { button: 0, clientX: 605, clientY: 565 });
+    fireEvent.click(splitItem);
     await waitFor(() => expect(mocks.saveProject).toHaveBeenCalled());
     const saved = lastSavedProject();
     expect(saved.tracks[0]!.clips.filter((item) => item.id !== 'clip-b')).toHaveLength(2);
     expect(saved.tracks[0]!.clips.filter((item) => item.id !== 'clip-b').map((item) => item.duration)).toEqual([0.5, 1.5]);
     expect(saved.tracks[1]!.clips.map((item) => item.id)).toEqual(['clip-c']);
+  });
+
+  it('copies sparse multi Clips as non-contiguous segments relative to the leftmost Clip', async () => {
+    const clips = await renderProject();
+    fireEvent.click(clips[0]!);
+    fireEvent.click(clips[1]!, { shiftKey: true });
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByTestId('multi-clip-copy-menu'));
+    await waitFor(() => expect(mocks.clipboardPut).toHaveBeenCalledTimes(1));
+    const copied = clipboardData();
+    expect(copied.duration).toBe(4);
+    expect(copied.tracks.map((track) => track.trackId)).toEqual(['track-a']);
+    expect(copied.tracks[0]?.channels).toEqual([]);
+    expect(copied.tracks[0]?.segments?.map((segment) => [segment.startTime, segment.duration, segment.name])).toEqual([
+      [0, 2, 'Voice take'], [3, 1, 'Second clip'],
+    ]);
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+  });
+
+  it('cuts only the selected Clips across their own tracks and leaves gaps', async () => {
+    const clips = await renderProject();
+    fireEvent.click(clips[0]!);
+    fireEvent.click(clips[2]!, { shiftKey: true });
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.keyDown(await screen.findByTestId('multi-clip-cut-options-menu'), { key: 'ArrowRight' });
+    fireEvent.click(await screen.findByTestId('multi-clip-cut-leave-gap'));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    const saved = lastSavedProject();
+    expect(saved.tracks[0]!.clips.map((item) => [item.id, item.startTime])).toEqual([['clip-b', 4]]);
+    expect(saved.tracks[1]!.clips).toEqual([]);
+    expect(clipboardData().tracks.map((track) => track.trackId)).toEqual(['track-a', 'track-b']);
+  });
+
+  it('per-track multi Delete moves only following Clips on the selected tracks', async () => {
+    const clips = await renderProject();
+    fireEvent.click(clips[0]!);
+    fireEvent.click(clips[2]!, { shiftKey: true });
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.keyDown(await screen.findByTestId('multi-clip-delete-options-menu'), { key: 'ArrowRight' });
+    fireEvent.click(await screen.findByTestId('multi-clip-delete-per-track'));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    const saved = lastSavedProject();
+    expect(saved.tracks[0]!.clips.map((item) => [item.id, item.startTime])).toEqual([['clip-b', 2]]);
+    expect(saved.tracks[1]!.clips).toEqual([]);
+    expect(mocks.clipboardPut).not.toHaveBeenCalled();
+  });
+
+  it('uses the configured leave-gap behavior for the ordinary multi Delete command', async () => {
+    const clips = await renderProject();
+    fireEvent.click(clips[0]!);
+    fireEvent.click(clips[2]!, { shiftKey: true });
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByTestId('multi-clip-delete-menu'));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    const saved = lastSavedProject();
+    expect(saved.tracks[0]!.clips.map((item) => [item.id, item.startTime])).toEqual([['clip-b', 4]]);
+    expect(saved.tracks[1]!.clips).toEqual([]);
+    expect(mocks.clipboardPut).not.toHaveBeenCalled();
+  });
+
+  it('joins eligible same-track multi Clips and disables Join for cross-track selection', async () => {
+    const clips = await renderProject();
+    fireEvent.click(clips[0]!);
+    fireEvent.click(clips[2]!, { shiftKey: true });
+    fireEvent.contextMenu(clips[0]!);
+    expect(await screen.findByTestId('multi-clip-join-menu')).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    fireEvent.click(clips[0]!);
+    fireEvent.click(clips[1]!, { shiftKey: true });
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByTestId('multi-clip-join-menu'));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    const saved = lastSavedProject();
+    expect(saved.tracks[0]!.clips).toHaveLength(1);
+    expect(saved.tracks[0]!.clips[0]).toMatchObject({ startTime: 1, duration: 4 });
+    expect(saved.tracks[1]!.clips.map((item) => item.id)).toEqual(['clip-c']);
+  });
+
+  it('pastes multi Clip segments at their relative offsets instead of one continuous block', async () => {
+    const clips = await renderProject();
+    fireEvent.click(clips[0]!);
+    fireEvent.click(clips[1]!, { shiftKey: true });
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByTestId('multi-clip-copy-menu'));
+    await waitFor(() => expect(mocks.clipboardPut).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true });
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    const pasted = lastSavedProject().tracks[0]!.clips.filter((item) => item.startTime === 1.5 || item.startTime === 4.5);
+    expect(pasted.map((item) => [item.startTime, item.duration, item.name])).toEqual([
+      [1.5, 2, 'Voice take'], [4.5, 1, 'Second clip'],
+    ]);
   });
 });

@@ -123,6 +123,7 @@ import {
   planClipboardPasteTrackIndices,
   serializeAudioClipboard,
   type AudioClipboardData,
+  type AudioClipboardTrack,
 } from '@/services/clipboardService';
 import { wasmProcessor, isWasmAvailable } from '@/wasm/processor';
 import { formatTime, clamp, generateId, dbToGain, gainToDb, resampleBuffer } from '@/lib/audioUtils';
@@ -381,6 +382,11 @@ import { splitClipAtSilences as disjoinClipAtSilences } from '@/lib/clipSilence'
 import { applySelectionEdit, type SelectionRippleMode } from '@/lib/selectionEdit';
 import { planRangeJoin, splitRangeSelection } from '@/lib/selectionStructure';
 import {
+  planMultiClipJoin,
+  planMultiClipSelection,
+  removeMultiClipSelection,
+} from '@/lib/multiClipEditing';
+import {
   insertBlankSpaceOnTracks,
   pasteClipIntoTrack,
   type SelectionPasteMode,
@@ -557,6 +563,13 @@ interface ClipSelectionEditTarget {
   selection: { start: number; end: number };
 }
 
+interface MultiClipSelectionEditTarget {
+  keys: ClipKey[];
+}
+
+type DeleteEditTarget = ClipSelectionEditTarget | MultiClipSelectionEditTarget;
+type MultiClipRippleMode = 'leave-gap' | 'per-track' | 'all-tracks';
+
 type ClipContextEditCommand =
   | 'cut'
   | 'copy'
@@ -564,6 +577,13 @@ type ClipContextEditCommand =
   | 'delete'
   | 'split'
   | { operation: 'cut' | 'delete'; mode: SelectionRippleMode };
+
+type MultiClipContextEditCommand =
+  | 'cut'
+  | 'copy'
+  | 'delete'
+  | 'join'
+  | { operation: 'cut' | 'delete'; mode: MultiClipRippleMode };
 
 export default function AudioEditorPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -630,7 +650,7 @@ export default function AudioEditorPage() {
     operation: 'cut' | 'delete';
     deleteBehavior: SelectedDeleteBehavior;
     closeGapBehavior: CloseGapBehavior;
-    target?: ClipSelectionEditTarget;
+    target?: DeleteEditTarget;
   } | null>(null);
   const [deleteFollowupOpen, setDeleteFollowupOpen] = useState(false);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
@@ -3038,7 +3058,19 @@ export default function AudioEditorPage() {
     }
     setDeletePreferences(next);
     setDeleteOnboarding(null);
-    await handleSelectionEdit(pending.operation, resolveDeleteRippleMode(next), pending.target);
+    if (pending.target && 'keys' in pending.target) {
+      const resolved = resolveDeleteRippleMode(next);
+      const mode: MultiClipRippleMode = resolved === 'all-tracks'
+        ? 'all-tracks'
+        : resolved === 'per-track' ? 'per-track' : 'leave-gap';
+      await handleMultiClipSelectionEdit(pending.operation, mode, pending.target.keys);
+    } else {
+      await handleSelectionEdit(
+        pending.operation,
+        resolveDeleteRippleMode(next),
+        pending.target as ClipSelectionEditTarget | undefined,
+      );
+    }
     setDeleteFollowupOpen(true);
   }
 
@@ -3243,15 +3275,20 @@ export default function AudioEditorPage() {
     }
   }
 
-  async function joinRangeClips() {
-    if (!project || !selection || selectionUtilityOperation) return;
+  async function joinRangeClips(multiClipKeys?: ClipKey[]) {
+    if (!project || (!selection && !multiClipKeys) || selectionUtilityOperation) return;
     if (recordingState === 'recording') {
       toast.info('请先停止录音，再合并 Clip');
       return;
     }
-    const groups = planRangeJoin(project, selection, project.tracks.map((track) => track.id));
+    const multiGroup = multiClipKeys ? planMultiClipJoin(project, multiClipKeys) : null;
+    const groups = multiClipKeys
+      ? multiGroup ? [multiGroup] : []
+      : planRangeJoin(project, selection!, project.tracks.map((track) => track.id));
     if (groups.length === 0) {
-      toast.info('每条轨道至少需要两个与选区相交的 Clip 才能 Join');
+      toast.info(multiClipKeys
+        ? 'Join 需要同一轨道至少两个选中 Clip，且跨度内不能包含未选 Clip'
+        : '每条轨道至少需要两个与选区相交的 Clip 才能 Join');
       return;
     }
     setSelectionUtilityOperation('join');
@@ -3543,6 +3580,139 @@ export default function AudioEditorPage() {
       return;
     }
     await handleSelectionEdit(command.operation, command.mode, target);
+  }
+
+  async function storeMultiClipSelectionInClipboard(keys: ClipKey[]): Promise<boolean> {
+    if (!project) return false;
+    const plan = planMultiClipSelection(project, keys);
+    if (!plan) return false;
+    const tracks: AudioClipboardTrack[] = [];
+    for (const group of plan.tracks) {
+      const segments: NonNullable<AudioClipboardTrack['segments']> = [];
+      for (const clip of group.clips) {
+        const copied = await copySelection(
+          project,
+          clip.startTime,
+          clip.startTime + clip.duration,
+          new Set([group.trackId]),
+        );
+        const channels = copied?.tracks.find((track) => track.trackId === group.trackId)?.channels;
+        if (!channels || channels.length === 0) throw new Error(`无法读取 Clip「${clip.name}」的音频`);
+        segments.push({
+          startTime: clip.startTime - plan.start,
+          duration: clip.duration,
+          channels,
+          name: clip.name,
+        });
+      }
+      if (segments.length > 0) {
+        tracks.push({ trackId: group.trackId, startTime: 0, channels: [], segments });
+      }
+    }
+    if (tracks.length === 0) return false;
+    await audioDb.clipboard.put({
+      id: 'current',
+      data: serializeAudioClipboard({
+        tracks,
+        sampleRate: project.sampleRate,
+        duration: plan.end - plan.start,
+      }),
+      createdAt: Date.now(),
+    });
+    setHasAudioClipboard(true);
+    return true;
+  }
+
+  async function handleMultiClipCopy(keys: ClipKey[]) {
+    if (!project || selectionEditOperation || recordingState === 'recording') return;
+    setSelectionEditOperation('copy:multi-clip');
+    try {
+      if (await storeMultiClipSelectionInClipboard(keys)) toast.success('已按选中 Clip 复制（保留间隙与边界）');
+    } catch (error) {
+      logger.error('多 Clip Copy 失败:', String(error));
+      toast.error(error instanceof Error ? `Copy 失败：${error.message}` : 'Copy 失败');
+    } finally {
+      setSelectionEditOperation(null);
+    }
+  }
+
+  async function handleMultiClipSelectionEdit(
+    operation: 'cut' | 'delete',
+    mode: MultiClipRippleMode,
+    keys: ClipKey[],
+  ) {
+    if (!project || selectionEditOperation || recordingState === 'recording') return;
+    const plan = planMultiClipSelection(project, keys);
+    if (!plan) return;
+    if (mode === 'all-tracks') {
+      await handleSelectionEdit(operation, 'all-tracks', {
+        trackId: plan.tracks[0]!.trackId,
+        selection: { start: plan.start, end: plan.end },
+      });
+      return;
+    }
+
+    setSelectionEditOperation(`${operation}:multi-clip:${mode}`);
+    try {
+      if (operation === 'cut') await storeMultiClipSelectionInClipboard(keys);
+      const updated = removeMultiClipSelection(project, keys, mode === 'per-track');
+      if (!updated) return;
+      const label = `${operation === 'cut' ? 'Cut' : 'Delete'} ${mode === 'per-track' ? 'and close gap on this track' : 'and leave gap'}`;
+      await commitClipEdit(updated, label);
+      setSelectedClips([]);
+      toast.success(`${operation === 'cut' ? 'Cut' : 'Delete'} 已仅作用于选中 Clip`);
+    } catch (error) {
+      logger.error(`多 Clip ${operation} 失败:`, String(error));
+      toast.error(error instanceof Error ? `${operation === 'cut' ? 'Cut' : 'Delete'} 失败：${error.message}` : '编辑失败');
+    } finally {
+      setSelectionEditOperation(null);
+    }
+  }
+
+  async function handlePreferredMultiClipSelectionEdit(
+    operation: 'cut' | 'delete',
+    keys: ClipKey[],
+  ) {
+    if (!project || selectionEditOperation || recordingState === 'recording') return;
+    if (needsDeleteOnboarding(deletePreferences)) {
+      setDeleteOnboarding({
+        operation,
+        deleteBehavior: 'leave-gap',
+        closeGapBehavior: deletePreferences.closeGapBehavior,
+        target: { keys },
+      });
+      return;
+    }
+    const resolved = resolveDeleteRippleMode(deletePreferences);
+    const mode: MultiClipRippleMode = resolved === 'all-tracks'
+      ? 'all-tracks'
+      : resolved === 'per-track' ? 'per-track' : 'leave-gap';
+    await handleMultiClipSelectionEdit(operation, mode, keys);
+  }
+
+  async function runMultiClipContextEditCommand(
+    trackId: string,
+    clipId: string,
+    command: MultiClipContextEditCommand,
+  ) {
+    if (!project || recordingState === 'recording'
+      || selectionEditOperation || selectionUtilityOperation
+      || renderingPitchAndSpeedClipId || splittingSilenceClipId) return;
+    const keys = keysForClip(trackId, clipId);
+    if (keys.length < 2) return;
+    if (command === 'join') {
+      await joinRangeClips(keys);
+      return;
+    }
+    if (command === 'copy') {
+      await handleMultiClipCopy(keys);
+      return;
+    }
+    if (command === 'cut' || command === 'delete') {
+      await handlePreferredMultiClipSelectionEdit(command, keys);
+      return;
+    }
+    await handleMultiClipSelectionEdit(command.operation, command.mode, keys);
   }
 
   async function handleCrossfadePreview(settings: CrossfadeSettings) {
@@ -6283,6 +6453,38 @@ export default function AudioEditorPage() {
         actualDestinationIndex = updated.tracks.length - 1;
       }
 
+      if (trackClip.segments && trackClip.segments.length > 0) {
+        if (mode === 'per-track') {
+          updated = insertBlankSpaceOnTracks(
+            updated,
+            cursorPos,
+            clipboardData.duration,
+            [targetTrack.id],
+            generateId,
+          ).project;
+          targetTrack = updated.tracks[actualDestinationIndex]!;
+        }
+        for (const segment of trackClip.segments) {
+          const bufferId = await storeProjectBuffer(proj.id, segment.channels, clipboardData.sampleRate);
+          const newClip: IClip = {
+            id: generateId(),
+            audioBufferId: bufferId,
+            startTime: cursorPos + segment.startTime,
+            offset: 0,
+            duration: segment.duration,
+            originalDuration: segment.duration,
+            stretchRatio: 1,
+            gain: 0,
+            fadeIn: 0,
+            fadeOut: 0,
+            name: segment.name || '粘贴',
+          };
+          targetTrack = pasteClipIntoTrack(targetTrack, newClip, 'overlap', generateId);
+        }
+        updated.tracks[actualDestinationIndex] = targetTrack;
+        continue;
+      }
+
       const existingClip = shouldPasteIntoExistingClip(pastePreferences, mode)
         ? findClipAtTime(targetTrack, cursorPos)
         : null;
@@ -8820,6 +9022,12 @@ export default function AudioEditorPage() {
                 onToggleStretchWithTempoChanges={(clipId) => toggleStretchWithTempoChanges(track.id, clipId)}
                 onClipColorChange={(clipId, colorIndex) => changeClipColor(track.id, clipId, colorIndex)}
                 onEditCommand={(clipId, command) => void runClipContextEditCommand(track.id, clipId, command)}
+                onMultiClipEditCommand={(clipId, command) => void runMultiClipContextEditCommand(track.id, clipId, command)}
+                canJoinMultiSelection={planMultiClipJoin(project, selectedClips) !== null}
+                multiClipOperationInProgress={Boolean(
+                  selectionEditOperation || selectionUtilityOperation
+                  || renderingPitchAndSpeedClipId || splittingSilenceClipId,
+                )}
                 onSplitAtSilences={(clipId) => splitClipAtSilences(track.id, clipId)}
                 splittingSilenceClipId={splittingSilenceClipId}
                 renamingClipKey={renamingClipKey}
@@ -10257,6 +10465,9 @@ function TrackTimeline({
   onToggleStretchWithTempoChanges,
   onClipColorChange,
   onEditCommand,
+  onMultiClipEditCommand,
+  canJoinMultiSelection,
+  multiClipOperationInProgress,
   onSplitAtSilences,
   splittingSilenceClipId,
   renamingClipKey,
@@ -10309,6 +10520,9 @@ function TrackTimeline({
   onToggleStretchWithTempoChanges: (clipId: string) => void;
   onClipColorChange: (clipId: string, colorIndex: number) => void;
   onEditCommand: (clipId: string, command: ClipContextEditCommand) => void;
+  onMultiClipEditCommand: (clipId: string, command: MultiClipContextEditCommand) => void;
+  canJoinMultiSelection: boolean;
+  multiClipOperationInProgress: boolean;
   onSplitAtSilences: (clipId: string) => void;
   splittingSilenceClipId: string | null;
   renamingClipKey: string | null;
@@ -10339,7 +10553,10 @@ function TrackTimeline({
   }, []);
 
   function handleMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    if (e.button !== 0) return;
+    // Radix portals keep React-tree bubbling: menu clicks must not move the timeline cursor.
+    if (e.button !== 0 || (e.target instanceof Element && e.target.closest(
+      '[data-slot="context-menu-content"], [data-slot="context-menu-sub-content"]',
+    ))) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left - rulerWidth;
     const rawPosition = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
@@ -10489,6 +10706,9 @@ function TrackTimeline({
           onToggleStretchWithTempoChanges={() => onToggleStretchWithTempoChanges(clip.id)}
           onClipColorChange={(colorIndex) => onClipColorChange(clip.id, colorIndex)}
           onEditCommand={(command) => onEditCommand(clip.id, command)}
+          onMultiClipEditCommand={(command) => onMultiClipEditCommand(clip.id, command)}
+          canJoinMultiSelection={canJoinMultiSelection}
+          multiClipOperationInProgress={multiClipOperationInProgress}
           onSplitAtSilences={() => onSplitAtSilences(clip.id)}
           splittingSilenceClipId={splittingSilenceClipId}
           isRenaming={renamingClipKey === clipKeyId({ trackId: track.id, clipId: clip.id })}
@@ -10929,6 +11149,9 @@ function ClipItem({
   onToggleStretchWithTempoChanges,
   onClipColorChange,
   onEditCommand,
+  onMultiClipEditCommand,
+  canJoinMultiSelection,
+  multiClipOperationInProgress,
   onSplitAtSilences,
   splittingSilenceClipId,
   isRenaming,
@@ -10976,6 +11199,9 @@ function ClipItem({
   onToggleStretchWithTempoChanges: () => void;
   onClipColorChange: (colorIndex: number) => void;
   onEditCommand: (command: ClipContextEditCommand) => void;
+  onMultiClipEditCommand: (command: MultiClipContextEditCommand) => void;
+  canJoinMultiSelection: boolean;
+  multiClipOperationInProgress: boolean;
   onSplitAtSilences: () => void;
   splittingSilenceClipId: string | null;
   isRenaming: boolean;
@@ -11685,6 +11911,90 @@ function ClipItem({
     </div>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-60">
+        {hasMultipleSelections ? (
+          <>
+            <ContextMenuItem
+              data-testid="multi-clip-cut-menu"
+              disabled={multiClipOperationInProgress}
+              onSelect={() => onMultiClipEditCommand('cut')}
+            >
+              Cut
+            </ContextMenuItem>
+            <ContextMenuItem
+              data-testid="multi-clip-copy-menu"
+              disabled={multiClipOperationInProgress}
+              onSelect={() => onMultiClipEditCommand('copy')}
+            >
+              Copy
+            </ContextMenuItem>
+            <ContextMenuItem
+              data-testid="multi-clip-delete-menu"
+              disabled={multiClipOperationInProgress}
+              onSelect={() => onMultiClipEditCommand('delete')}
+            >
+              Delete
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuSub>
+              <ContextMenuSubTrigger
+                data-testid="multi-clip-cut-options-menu"
+                disabled={multiClipOperationInProgress}
+              >
+                Cut and…
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent className="w-72">
+                {([
+                  { mode: 'leave-gap', label: 'leave gap' },
+                  { mode: 'per-track', label: 'close gap on this track' },
+                  { mode: 'all-tracks', label: 'close gap on all tracks' },
+                ] as const).map(({ mode, label }) => (
+                  <ContextMenuItem
+                    key={mode}
+                    data-testid={`multi-clip-cut-${mode}`}
+                    disabled={multiClipOperationInProgress}
+                    onSelect={() => onMultiClipEditCommand({ operation: 'cut', mode })}
+                  >
+                    Cut and {label}
+                  </ContextMenuItem>
+                ))}
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+            <ContextMenuSub>
+              <ContextMenuSubTrigger
+                data-testid="multi-clip-delete-options-menu"
+                disabled={multiClipOperationInProgress}
+              >
+                Delete and…
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent className="w-72">
+                {([
+                  { mode: 'leave-gap', label: 'leave gap' },
+                  { mode: 'per-track', label: 'close gap on this track' },
+                  { mode: 'all-tracks', label: 'close gap on all tracks' },
+                ] as const).map(({ mode, label }) => (
+                  <ContextMenuItem
+                    key={mode}
+                    data-testid={`multi-clip-delete-${mode}`}
+                    disabled={multiClipOperationInProgress}
+                    onSelect={() => onMultiClipEditCommand({ operation: 'delete', mode })}
+                  >
+                    Delete and {label}
+                  </ContextMenuItem>
+                ))}
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              data-testid="multi-clip-join-menu"
+              disabled={!canJoinMultiSelection || multiClipOperationInProgress}
+              title="Join 需要同一轨道的多个选中 Clip，且跨度内没有未选 Clip"
+              onSelect={() => onMultiClipEditCommand('join')}
+            >
+              Join
+            </ContextMenuItem>
+          </>
+        ) : (
+          <>
         <ContextMenuItem
           data-testid="clip-properties-menu"
           disabled={hasMultipleSelections || clipOperationInProgress}
@@ -11850,6 +12160,8 @@ function ClipItem({
         >
           {isRenderingPitchAndSpeed ? 'Rendering pitch and speed…' : 'Render pitch and speed'}
         </ContextMenuItem>
+          </>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );

@@ -110,7 +110,7 @@ export function updateClipSelection(
   return selected.length > 0 ? selected : [key];
 }
 
-function selectedClipSet(keys: ClipKey[]): Set<string> {
+function selectedClipSet(keys: readonly ClipKey[]): Set<string> {
   return new Set(keys.map(clipKeyId));
 }
 
@@ -326,7 +326,7 @@ export function moveClipSelection(
   };
 }
 
-export function deleteClipSelection(project: IProject, keys: ClipKey[]): IProject {
+export function deleteClipSelection(project: IProject, keys: readonly ClipKey[]): IProject {
   const selected = selectedClipSet(keys);
   if (selected.size === 0) return project;
   return {

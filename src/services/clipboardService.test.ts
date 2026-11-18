@@ -54,6 +54,33 @@ describe('audio clipboard serialization', () => {
     expect(() => parseAudioClipboard('{')).toThrow();
     expect(() => parseAudioClipboard(JSON.stringify({ sampleRate: 44100, duration: 1, tracks: [{}] }))).toThrow('Invalid clipboard track');
   });
+
+  it('round-trips non-contiguous multi Clip segments without requiring continuous channels', () => {
+    const source: AudioClipboardData = {
+      sampleRate: 100,
+      duration: 4,
+      tracks: [{
+        trackId: 'track-a', startTime: 0, channels: [],
+        segments: [
+          { startTime: 0, duration: 1, name: 'first', channels: [Float32Array.from([0.1, 0.2])] },
+          { startTime: 3, duration: 1, name: 'second', channels: [Float32Array.from([0.3, 0.4])] },
+        ],
+      }],
+    };
+    const restored = parseAudioClipboard(serializeAudioClipboard(source));
+    expect(restored.tracks[0]?.channels).toEqual([]);
+    expect(restored.tracks[0]?.segments?.map((segment) => [segment.startTime, segment.name])).toEqual([
+      [0, 'first'], [3, 'second'],
+    ]);
+    expect(Array.from(restored.tracks[0]!.segments![1]!.channels[0]!)).toEqual(Array.from(source.tracks[0]!.segments![1]!.channels[0]!));
+  });
+
+  it('rejects malformed multi Clip segments', () => {
+    expect(() => parseAudioClipboard(JSON.stringify({
+      sampleRate: 100, duration: 1,
+      tracks: [{ trackId: 'track-a', channels: [], segments: [{ startTime: -1, duration: 1, channels: [[1]] }] }],
+    }))).toThrow('Invalid clipboard segment');
+  });
 });
 
 describe('multi-track clipboard destination planning', () => {
