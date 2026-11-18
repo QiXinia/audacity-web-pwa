@@ -8,6 +8,7 @@ import {
   serializeSelection,
   deserializeSelection,
   type ProjectRecord,
+  type AudioBufferRecord,
 } from '@/db/audioDb';
 import { generateId, getTrackColor, resampleBuffer } from '@/lib/audioUtils';
 import {
@@ -367,6 +368,11 @@ export type AdjustableFadeClipAudio = EchoClipAudio;
 export type AdjustableFadeTrackAudio = EchoTrackAudio;
 export type StudioFadeOutClipAudio = EchoClipAudio;
 export type StudioFadeOutTrackAudio = EchoTrackAudio;
+
+export type AudioBufferMetadata = Pick<
+  AudioBufferRecord,
+  'id' | 'sampleRate' | 'channels' | 'length' | 'duration'
+>;
 
 interface PendingAudioBuffer {
   id: string;
@@ -6417,6 +6423,18 @@ class ProjectService {
     if (!cached || cached.length === 0) audioEngine.cacheBuffer(bufferId, channels, record.sampleRate);
     if (targetSampleRate === undefined || targetSampleRate === record.sampleRate) return channels;
     return channels.map((channel) => resampleBuffer(channel, record.sampleRate, targetSampleRate));
+  }
+
+  async loadAudioBufferMetadata(bufferId: string): Promise<AudioBufferMetadata | null> {
+    const record = await audioDb.audioBuffers.get(bufferId);
+    if (!record) return null;
+    return {
+      id: record.id,
+      sampleRate: record.sampleRate,
+      channels: record.channels,
+      length: record.length,
+      duration: record.duration,
+    };
   }
 
   async loadAudioBuffer(bufferId: string, targetSampleRate?: number): Promise<Float32Array | null> {

@@ -499,6 +499,7 @@ import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
 import { ChangeSpeedDialog } from './sections/ChangeSpeedDialog';
 import { ChangePitchDialog } from './sections/ChangePitchDialog';
 import { ClipPitchAndSpeedDialog } from './sections/ClipPitchAndSpeedDialog';
+import { ClipPropertiesDialog } from './sections/ClipPropertiesDialog';
 import {
   applyClipPitchAndSpeed,
   getClipOptimizeForVoice,
@@ -601,6 +602,7 @@ export default function AudioEditorPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedClips, setSelectedClips] = useState<ClipKey[]>([]);
+  const [clipPropertiesKey, setClipPropertiesKey] = useState<ClipKey | null>(null);
   const [pitchAndSpeedClipKey, setPitchAndSpeedClipKey] = useState<ClipKey | null>(null);
   const [renamingClipKey, setRenamingClipKey] = useState<string | null>(null);
   const [renderingPitchAndSpeedClipId, setRenderingPitchAndSpeedClipId] = useState<string | null>(null);
@@ -2118,8 +2120,15 @@ export default function AudioEditorPage() {
     await commitClipEdit(updated, '重命名片段');
   }
 
+  function openClipProperties(trackId: string, clipId: string) {
+    selectClip(trackId, clipId, 'replace');
+    setPitchAndSpeedClipKey(null);
+    setClipPropertiesKey({ trackId, clipId });
+  }
+
   function openClipPitchAndSpeed(trackId: string, clipId: string) {
     selectClip(trackId, clipId, 'replace');
+    setClipPropertiesKey(null);
     setPitchAndSpeedClipKey({ trackId, clipId });
   }
 
@@ -8725,6 +8734,7 @@ export default function AudioEditorPage() {
                 onMoveClip={(clipId, delta, bypassSnap) => handleClipMove(track.id, clipId, delta, bypassSnap)}
                 onResolveClipDelta={(clipId, operation, delta, bypassSnap) => resolveClipSnapDelta(track.id, clipId, operation, delta, bypassSnap)}
                 onResetClip={(clipId) => handleClipReset(track.id, clipId)}
+                onClipProperties={(clipId) => openClipProperties(track.id, clipId)}
                 onPitchAndSpeed={(clipId) => openClipPitchAndSpeed(track.id, clipId)}
                 onResetPitchAndSpeed={(clipId) => resetClipPitchAndSpeed(track.id, clipId)}
                 onRenderPitchAndSpeed={(clipId) => renderClipPitchAndSpeed(track.id, clipId)}
@@ -9581,6 +9591,21 @@ export default function AudioEditorPage() {
           onApply={handleApplyChangeSpeed}
         />
 
+        {clipPropertiesKey && (() => {
+          const track = project.tracks.find((candidate) => candidate.id === clipPropertiesKey.trackId);
+          const clip = track?.clips.find((candidate) => candidate.id === clipPropertiesKey.clipId);
+          // Removing the selected clip closes the properties dialog as well.
+          if (!track || !clip) return null;
+          return (
+            <ClipPropertiesDialog
+              open
+              onOpenChange={(open) => { if (!open) setClipPropertiesKey(null); }}
+              clip={clip}
+              track={track}
+            />
+          );
+        })()}
+
         {pitchAndSpeedClipKey && (() => {
           const track = project.tracks.find((candidate) => candidate.id === pitchAndSpeedClipKey.trackId);
           const clip = track?.clips.find((candidate) => candidate.id === pitchAndSpeedClipKey.clipId);
@@ -10145,6 +10170,7 @@ function TrackTimeline({
   onMoveClip,
   onResolveClipDelta,
   onResetClip,
+  onClipProperties,
   onPitchAndSpeed,
   onResetPitchAndSpeed,
   onRenderPitchAndSpeed,
@@ -10195,6 +10221,7 @@ function TrackTimeline({
   onMoveClip: (clipId: string, deltaSeconds: number, bypassSnap?: boolean) => void;
   onResolveClipDelta: (clipId: string, operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onResetClip: (clipId: string) => void;
+  onClipProperties: (clipId: string) => void;
   onPitchAndSpeed: (clipId: string) => void;
   onResetPitchAndSpeed: (clipId: string) => void;
   onRenderPitchAndSpeed: (clipId: string) => void;
@@ -10373,6 +10400,7 @@ function TrackTimeline({
           onMove={(delta, bypassSnap) => onMoveClip(clip.id, delta, bypassSnap)}
           onResolveDelta={(operation, delta, bypassSnap) => onResolveClipDelta(clip.id, operation, delta, bypassSnap)}
           onReset={() => onResetClip(clip.id)}
+          onClipProperties={() => onClipProperties(clip.id)}
           onPitchAndSpeed={() => onPitchAndSpeed(clip.id)}
           onResetPitchAndSpeed={() => onResetPitchAndSpeed(clip.id)}
           onRenderPitchAndSpeed={() => onRenderPitchAndSpeed(clip.id)}
@@ -10811,6 +10839,7 @@ function ClipItem({
   onMove,
   onResolveDelta,
   onReset,
+  onClipProperties,
   onPitchAndSpeed,
   onResetPitchAndSpeed,
   onRenderPitchAndSpeed,
@@ -10856,6 +10885,7 @@ function ClipItem({
   onMove: (deltaSeconds: number, bypassSnap?: boolean) => void;
   onResolveDelta: (operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onReset: () => void;
+  onClipProperties: () => void;
   onPitchAndSpeed: () => void;
   onResetPitchAndSpeed: () => void;
   onRenderPitchAndSpeed: () => void;
@@ -11570,6 +11600,13 @@ function ClipItem({
     </div>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-60">
+        <ContextMenuItem
+          data-testid="clip-properties-menu"
+          disabled={hasMultipleSelections || clipOperationInProgress}
+          onSelect={onClipProperties}
+        >
+          Clip properties
+        </ContextMenuItem>
         <ContextMenuItem
           data-testid="clip-rename-menu"
           disabled={hasMultipleSelections || clipOperationInProgress}
