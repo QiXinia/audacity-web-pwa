@@ -23,7 +23,7 @@ interface SelectionContextMenuProps {
   onOpenChange: (open: boolean) => void;
   onCut: () => void;
   onCopy: () => void;
-  onPaste: (mode: SelectionPasteMode) => void;
+  onPaste: (mode?: SelectionPasteMode) => void;
   onDuplicate: () => void;
   onDelete: () => void;
   onEdit: (operation: SelectionContextEditOperation, mode: SelectionRippleMode) => void;
@@ -93,7 +93,7 @@ export function SelectionContextMenu({
         <DropdownMenuItem
           data-testid="selection-context-paste"
           disabled={disabled || !hasClipboard}
-          onClick={() => onPaste('overlap')}
+          onClick={() => onPaste()}
         >
           Paste
         </DropdownMenuItem>

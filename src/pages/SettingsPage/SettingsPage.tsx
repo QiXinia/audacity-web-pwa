@@ -64,6 +64,14 @@ import {
   type SelectedDeleteBehavior,
 } from '@/lib/deletePreferences';
 import { DeleteBehaviorPanel } from '@/components/DeleteBehaviorPanel';
+import { PasteBehaviorPanel } from '@/components/PasteBehaviorPanel';
+import {
+  loadPastePreferences,
+  savePastePreferences,
+  type PasteBehavior,
+  type PasteInsertBehavior,
+  type PastePreferences,
+} from '@/lib/pastePreferences';
 
 const DEFAULT_SAMPLE_RATES = [
   { value: '22050', label: '22050 Hz (低质量)' },
@@ -96,6 +104,7 @@ export default function SettingsPage() {
   const [workspaceStore] = useState(loadWorkspaceStore);
   const [meterDbRange, setMeterDbRange] = useState<MeterDbRange>(() => getMeterDbRange());
   const [deletePreferences, setDeletePreferences] = useState<DeletePreferences>(() => loadDeletePreferences());
+  const [pastePreferences, setPastePreferences] = useState<PastePreferences>(() => loadPastePreferences());
   const [stereoHeightsPreferences, setStereoHeightsPreferences] = useState<AsymmetricStereoHeightsPreferences>(() => {
     const store = loadWorkspaceStore();
     return loadStereoHeightsPreferences(undefined, store.presets.map((preset) => preset.name));
@@ -194,6 +203,22 @@ export default function SettingsPage() {
 
   function updateCloseGapBehavior(closeGapBehavior: CloseGapBehavior) {
     updateDeletePreferences({ ...deletePreferences, closeGapBehavior });
+  }
+
+  function updatePastePreferences(next: PastePreferences) {
+    if (savePastePreferences(next)) {
+      setPastePreferences(next);
+      return;
+    }
+    toast.error('浏览器存储不可用，Paste 偏好未保存');
+  }
+
+  function updatePasteBehavior(pasteBehavior: PasteBehavior) {
+    updatePastePreferences({ ...pastePreferences, pasteBehavior });
+  }
+
+  function updatePasteInsertBehavior(pasteInsertBehavior: PasteInsertBehavior) {
+    updatePastePreferences({ ...pastePreferences, pasteInsertBehavior });
   }
 
   async function handleClearAllData() {
@@ -364,6 +389,29 @@ export default function SettingsPage() {
               />
               <p className="text-xs text-muted-foreground">
                 默认 CloseGapBehavior 为 per-clip；Leave gap 与 Close gap 的选择会保存在当前浏览器。
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Audacity Edit Preferences: default Paste behavior */}
+          <Card data-testid="paste-behavior-settings-card">
+            <CardHeader>
+              <CardTitle>Choose behavior when pasting audio</CardTitle>
+              <CardDescription>Paste behavior · Audacity Edit Preferences</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                普通 Ctrl+V、顶部 Paste 与选区右键 Paste 使用此处保存的行为；Paste and… 菜单仍可显式执行任意模式，不会改写此偏好。
+              </p>
+              <PasteBehaviorPanel
+                idPrefix="paste-behavior-settings"
+                pasteBehavior={pastePreferences.pasteBehavior}
+                pasteInsertBehavior={pastePreferences.pasteInsertBehavior}
+                onPasteBehaviorChange={updatePasteBehavior}
+                onPasteInsertBehaviorChange={updatePasteInsertBehavior}
+              />
+              <p className="text-xs text-muted-foreground">
+                官方默认为 Paste overlaps other clips；选择 Paste pushes other clips 后，可继续指定仅移动当前轨道或移动全部轨道。
               </p>
             </CardContent>
           </Card>

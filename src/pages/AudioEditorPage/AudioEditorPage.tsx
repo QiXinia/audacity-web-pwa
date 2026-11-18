@@ -395,6 +395,11 @@ import {
   type SelectedDeleteBehavior,
 } from '@/lib/deletePreferences';
 import {
+  loadPastePreferences,
+  resolveDefaultPasteMode,
+  type PastePreferences,
+} from '@/lib/pastePreferences';
+import {
   collectClipSnapPoints,
   DEFAULT_SNAP_TOLERANCE_PIXELS,
   snapClipSelectionDelta,
@@ -599,6 +604,7 @@ export default function AudioEditorPage() {
   const [selectionContextMenu, setSelectionContextMenu] = useState<{ x: number; y: number; trackId: string } | null>(null);
   const [hasAudioClipboard, setHasAudioClipboard] = useState(false);
   const [deletePreferences, setDeletePreferences] = useState<DeletePreferences>(() => loadDeletePreferences());
+  const [pastePreferences] = useState<PastePreferences>(() => loadPastePreferences());
   const [deleteOnboarding, setDeleteOnboarding] = useState<{
     operation: 'cut' | 'delete';
     deleteBehavior: SelectedDeleteBehavior;
@@ -3311,12 +3317,13 @@ export default function AudioEditorPage() {
     }
   }
 
-  async function handlePaste(mode: SelectionPasteMode = 'overlap') {
+  async function handlePaste(mode?: SelectionPasteMode) {
     if (!project || selectionEditOperation || selectionUtilityOperation) return;
     if (recordingState === 'recording') {
       toast.info('请先停止录音，再粘贴');
       return;
     }
+    const resolvedMode = mode ?? resolveDefaultPasteMode(pastePreferences);
     try {
       const entry = await audioDb.clipboard.get('current');
       if (!entry) {
@@ -3326,7 +3333,7 @@ export default function AudioEditorPage() {
       }
       const before = JSON.parse(JSON.stringify(project)) as IProject;
       const clipboardData = parseAudioClipboard(entry.data);
-      const result = await pasteAtCursor(project, clipboardData, cursorPosition, mode);
+      const result = await pasteAtCursor(project, clipboardData, cursorPosition, resolvedMode);
       if (result) {
         const labels: Record<SelectionPasteMode, string> = {
           overlap: 'Paste and overlap',
@@ -3337,13 +3344,13 @@ export default function AudioEditorPage() {
         await projectService.saveProject(result);
         pushHistoryCmd({
           id: generateId(),
-          label: labels[mode],
+          label: labels[resolvedMode],
           execute: () => result,
           undo: () => before,
         });
         await historyManager.flush();
         updateHistoryState();
-        toast.success(labels[mode]);
+        toast.success(labels[resolvedMode]);
       }
     } catch (error) {
       console.error('Paste failed:', error);
