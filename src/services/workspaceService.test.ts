@@ -16,6 +16,7 @@ const layout: WorkspaceLayout = {
   showMixer: true,
   showClipping: true,
   showRMS: true,
+  showVerticalRulers: false,
   viewMode: 'spectrum',
   halfWave: true,
   horizontalZoom: 240,
@@ -101,7 +102,7 @@ describe('Workspace persistence', () => {
     expect(restored.presets.find((preset) => preset.id === 'classic')?.layout.horizontalZoom).toBe(100);
   });
 
-  it('persists ruler formats, half-wave and RMS, and normalizes unknown legacy values', () => {
+  it('persists ruler formats, half-wave, RMS and vertical rulers, and normalizes unknown legacy values', () => {
     const values = new Map<string, string>();
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
@@ -117,15 +118,17 @@ describe('Workspace persistence', () => {
     expect(restored?.viewMode).toBe('waveformDbLinear');
     expect(restored?.halfWave).toBe(true);
     expect(restored?.showRMS).toBe(true);
+    expect(restored?.showVerticalRulers).toBe(false);
 
     values.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
       activeId: 'classic',
-      presets: [{ id: 'classic', name: 'Classic', layout: { viewMode: 'logarithmic', halfWave: 'invalid', showRMS: 'invalid' } }],
+      presets: [{ id: 'classic', name: 'Classic', layout: { viewMode: 'logarithmic', halfWave: 'invalid', showRMS: 'invalid', showVerticalRulers: 'invalid' } }],
     }));
     const fallback = loadWorkspaceStore(storage).presets.find((preset) => preset.id === 'classic')?.layout;
     expect(fallback?.viewMode).toBe('waveform');
     expect(fallback?.halfWave).toBe(false);
     expect(fallback?.showRMS).toBe(false);
+    expect(fallback?.showVerticalRulers).toBe(true);
   });
 
   it('reports browser storage write failures without throwing', () => {

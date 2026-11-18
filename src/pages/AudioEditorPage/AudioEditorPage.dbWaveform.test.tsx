@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 const left = new Float32Array(4000).fill(0.0001);
 const right = new Float32Array(4000).fill(-0.0001);
 let mockProject: IProject;
+const DOM_RECT = { left: 100, top: 0, right: 1144, bottom: 100, width: 1044, height: 100, x: 100, y: 0 } as DOMRect;
 
 function makeProject(channelMode: 'stereo' | 'mono' = 'stereo'): IProject {
   return {
@@ -135,6 +136,11 @@ async function renderProject() {
   expect(await screen.findByText('dB waveform integration')).toBeInTheDocument();
   await screen.findByText('Minus eighty dB clip');
   await waitFor(() => expect(mocks.loadChannels).toHaveBeenCalled());
+}
+
+async function openViewMenu() {
+  fireEvent.pointerDown(screen.getByRole('button', { name: '视图' }));
+  await screen.findByRole('menu');
 }
 
 describe('AudioEditorPage dB waveform and ruler', () => {
@@ -371,6 +377,82 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     await waitFor(() => expect(ruler).toHaveAttribute('data-ruler-format', 'waveformDb'));
     expect(ruler).toHaveAttribute('data-half-wave', 'true');
     expect(screen.getByTestId('db-ruler-tick-track-db-0-positive-n60')).toHaveTextContent('60');
+  });
+
+  it('toggles vertical rulers with correct time conversion and Workspace restoration', async () => {
+    await renderProject();
+    const timeline = screen.getByTestId('track-timeline-track-db');
+    expect(timeline).toHaveAttribute('data-ruler-width', '44');
+    vi.spyOn(timeline, 'getBoundingClientRect').mockReturnValue({ ...DOM_RECT, left: 100 });
+    fireEvent.mouseDown(timeline, { clientX: 344 });
+    expect(audioEngine.seek).toHaveBeenLastCalledWith(2);
+
+    await openViewMenu();
+    const toggle = screen.getByTestId('view-show-vertical-rulers');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.queryByTestId('track-linear-ruler-track-db')).not.toBeInTheDocument());
+    expect(timeline).toHaveAttribute('data-ruler-width', '0');
+    fireEvent.mouseDown(timeline, { clientX: 344 });
+    expect(audioEngine.seek).toHaveBeenLastCalledWith(2.44);
+    await waitFor(() => expect(loadWorkspaceStore().presets[0].layout.showVerticalRulers).toBe(false));
+
+    cleanup();
+    await renderProject();
+    expect(screen.queryByTestId('track-linear-ruler-track-db')).not.toBeInTheDocument();
+    expect(screen.getByTestId('track-timeline-track-db')).toHaveAttribute('data-ruler-width', '0');
+
+    await openViewMenu();
+    fireEvent.click(screen.getByTestId('view-show-vertical-rulers'));
+    await screen.findByTestId('track-linear-ruler-track-db');
+    await waitFor(() => expect(loadWorkspaceStore().presets[0].layout.showVerticalRulers).toBe(true));
+    cleanup();
+    await renderProject();
+    expect(screen.getByTestId('track-linear-ruler-track-db')).toBeInTheDocument();
+    expect(screen.getByTestId('track-timeline-track-db')).toHaveAttribute('data-ruler-width', '44');
+  });
+
+  it('shows mapped frequency rulers in spectrum and both without breaking pointer coordinates', async () => {
+    await renderProject();
+    const spectrumTab = screen.getByRole('tab', { name: '频谱' });
+    fireEvent.mouseDown(spectrumTab, { button: 0, ctrlKey: false });
+    fireEvent.click(spectrumTab);
+    const spectrumRuler = await screen.findByTestId('track-spectrum-ruler-track-db');
+    expect(spectrumRuler).toHaveAttribute('data-sample-rate', '1000');
+    expect(screen.getAllByTestId(/^spectrum-ruler-tick-track-db-0-/)).toHaveLength(3);
+    expect(screen.getByTestId('spectrum-ruler-tick-track-db-0-2')).toHaveAttribute('data-frequency-hz', '100');
+    const timeline = screen.getByTestId('track-timeline-track-db');
+    expect(timeline).toHaveAttribute('data-ruler-width', '44');
+    vi.spyOn(timeline, 'getBoundingClientRect').mockReturnValue({ ...DOM_RECT, left: 100 });
+    fireEvent.mouseDown(timeline, { clientX: 344 });
+    expect(audioEngine.seek).toHaveBeenLastCalledWith(2);
+
+    await openViewMenu();
+    expect(screen.getByTestId('view-show-vertical-rulers')).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByTestId('view-show-vertical-rulers'));
+    await waitFor(() => expect(screen.queryByTestId('track-spectrum-ruler-track-db')).not.toBeInTheDocument());
+    expect(timeline).toHaveAttribute('data-ruler-width', '0');
+    fireEvent.mouseDown(timeline, { clientX: 300 });
+    expect(audioEngine.seek).toHaveBeenLastCalledWith(2);
+
+    await openViewMenu();
+    fireEvent.click(screen.getByTestId('view-show-vertical-rulers'));
+    await screen.findByTestId('track-spectrum-ruler-track-db');
+    const bothTab = screen.getByRole('tab', { name: '叠加' });
+    fireEvent.mouseDown(bothTab, { button: 0, ctrlKey: false });
+    fireEvent.click(bothTab);
+    const combined = await screen.findByTestId('track-combined-ruler-track-db');
+    expect(combined).toHaveAttribute('data-ruler-width', '64');
+    expect(screen.getByTestId('track-linear-ruler-track-db')).toBeInTheDocument();
+    expect(screen.getByTestId('track-spectrum-ruler-track-db')).toBeInTheDocument();
+    expect(timeline).toHaveAttribute('data-ruler-width', '64');
+    fireEvent.mouseDown(timeline, { clientX: 364 });
+    expect(audioEngine.seek).toHaveBeenLastCalledWith(2);
+    await waitFor(() => {
+      const layout = loadWorkspaceStore().presets[0].layout;
+      expect(layout.showVerticalRulers).toBe(true);
+      expect(layout.viewMode).toBe('both');
+    });
   });
 
   it('toggles RMS from the View menu, redraws and restores it with the Workspace', async () => {

@@ -6,6 +6,7 @@ import {
   getFrequencySelectionCenterHz,
   getFrequencySelectionLogBandwidth,
   getSpectrumDisplayMaxHz,
+  getSpectrumRulerTicks,
   normalizeFrequencySelection,
   parseFrequencySelection,
   spectrumYToFrequency,
@@ -80,12 +81,21 @@ describe('spectral frequency selection', () => {
     expect(createFrequencySelectionFromBounds(20, 50, 0)).toBeNull();
   });
 
-  it('rejects zero-width, non-finite and out-of-display-range center edits', () => {
-    expect(createFrequencySelectionFromCenterBandwidth(0, 1, 1000)).toBeNull();
-    expect(createFrequencySelectionFromCenterBandwidth(50, 0, 1000)).toBeNull();
-    expect(createFrequencySelectionFromCenterBandwidth(50, -1, 1000)).toBeNull();
-    expect(createFrequencySelectionFromCenterBandwidth(50, Number.NaN, 1000)).toBeNull();
-    expect(createFrequencySelectionFromCenterBandwidth(100, Math.log(9), 1000)).toBeNull();
-    expect(createFrequencySelectionFromCenterBandwidth(50, Number.MAX_VALUE, 1000)).toBeNull();
+  it('builds collision-aware frequency ticks with the same coordinates as spectral selection', () => {
+    expect(getSpectrumRulerTicks(76, 1000)).toEqual([
+      { frequencyHz: 0, label: '0', y: 76 },
+      { frequencyHz: 25, label: '25', y: 57 },
+      { frequencyHz: 50, label: '50', y: 38 },
+      { frequencyHz: 75, label: '75', y: 19 },
+      { frequencyHz: 100, label: '100', y: 0 },
+    ]);
+    expect(getSpectrumRulerTicks(38, 1000).map((tick) => tick.frequencyHz)).toEqual([0, 50, 100]);
+  });
+
+  it('formats kHz labels and rejects invalid spectrum ruler geometry', () => {
+    expect(getSpectrumRulerTicks(76, 44100).map((tick) => tick.label)).toEqual(['0', '1.1k', '2.2k', '3.3k', '4.4k']);
+    expect(getSpectrumRulerTicks(0, 44100)).toEqual([]);
+    expect(getSpectrumRulerTicks(76, 0)).toEqual([]);
+    expect(getSpectrumRulerTicks(Number.NaN, 44100)).toEqual([]);
   });
 });

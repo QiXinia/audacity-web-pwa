@@ -97,3 +97,32 @@ export function frequencyToSpectrumY(
   if (maxHz <= 0 || !Number.isFinite(height) || height <= 0 || !Number.isFinite(frequencyHz)) return 0;
   return clamp(height - (clamp(frequencyHz, 0, maxHz) / maxHz) * height, 0, height);
 }
+
+export interface SpectrumRulerTick {
+  frequencyHz: number;
+  label: string;
+  y: number;
+}
+
+function formatSpectrumRulerFrequency(frequencyHz: number): string {
+  if (frequencyHz >= 1000) {
+    const kHz = frequencyHz / 1000;
+    return `${Number(kHz.toFixed(1))}k`;
+  }
+  return `${Number(frequencyHz.toFixed(frequencyHz < 10 ? 1 : 0))}`;
+}
+
+/** Ticks share the exact linear frequency mapping used by spectral selections. */
+export function getSpectrumRulerTicks(height: number, sampleRate: number): SpectrumRulerTick[] {
+  const maxHz = getSpectrumDisplayMaxHz(sampleRate);
+  if (maxHz <= 0 || !Number.isFinite(height) || height <= 0) return [];
+  const fractions = height >= 60 ? [0, 0.25, 0.5, 0.75, 1] : [0, 0.5, 1];
+  return fractions.map((fraction) => {
+    const frequencyHz = maxHz * fraction;
+    return {
+      frequencyHz,
+      label: formatSpectrumRulerFrequency(frequencyHz),
+      y: frequencyToSpectrumY(frequencyHz, height, sampleRate),
+    };
+  });
+}

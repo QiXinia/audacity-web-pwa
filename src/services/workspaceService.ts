@@ -7,6 +7,7 @@ export interface WorkspaceLayout {
   showMixer: boolean;
   showClipping: boolean;
   showRMS: boolean;
+  showVerticalRulers: boolean;
   viewMode: ViewMode;
   halfWave: boolean;
   horizontalZoom: number;
@@ -37,6 +38,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
       showMixer: false,
       showClipping: false,
       showRMS: false,
+      showVerticalRulers: true,
       viewMode: 'waveform',
       halfWave: false,
       horizontalZoom: 100,
@@ -52,6 +54,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
       showMixer: false,
       showClipping: false,
       showRMS: false,
+      showVerticalRulers: true,
       viewMode: 'both',
       halfWave: false,
       horizontalZoom: 100,
@@ -67,6 +70,7 @@ const DEFAULT_PRESETS: WorkspacePreset[] = [
       showMixer: true,
       showClipping: false,
       showRMS: false,
+      showVerticalRulers: true,
       viewMode: 'both',
       halfWave: false,
       horizontalZoom: 100,
@@ -92,6 +96,9 @@ function normalizeLayout(value: Partial<WorkspaceLayout> | undefined, fallback: 
     showMixer: typeof value?.showMixer === 'boolean' ? value.showMixer : fallback.showMixer,
     showClipping: typeof value?.showClipping === 'boolean' ? value.showClipping : fallback.showClipping,
     showRMS: typeof value?.showRMS === 'boolean' ? value.showRMS : fallback.showRMS,
+    showVerticalRulers: typeof value?.showVerticalRulers === 'boolean'
+      ? value.showVerticalRulers
+      : fallback.showVerticalRulers,
     viewMode: modes.includes(value?.viewMode as ViewMode) ? value!.viewMode as ViewMode : fallback.viewMode,
     halfWave: typeof value?.halfWave === 'boolean' ? value.halfWave : fallback.halfWave,
     horizontalZoom: Number.isFinite(value?.horizontalZoom)

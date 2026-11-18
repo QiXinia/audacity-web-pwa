@@ -193,6 +193,7 @@ import { processSpectralEditChannels, type SpectralEditKind, type SpectralEditSe
 import {
   frequencyToSpectrumY,
   getSpectrumDisplayMaxHz,
+  getSpectrumRulerTicks,
   normalizeFrequencySelection,
   spectrumYToFrequency,
   type FrequencySelection,
@@ -553,6 +554,7 @@ export default function AudioEditorPage() {
   const [showMixer, setShowMixer] = useState(activeWorkspace.layout.showMixer);
   const [showClipping, setShowClipping] = useState(activeWorkspace.layout.showClipping);
   const [showRMS, setShowRMS] = useState(activeWorkspace.layout.showRMS);
+  const [showVerticalRulers, setShowVerticalRulers] = useState(activeWorkspace.layout.showVerticalRulers);
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
   const [stereoHeightsPreferences, setStereoHeightsPreferences] = useState(() => (
@@ -743,11 +745,12 @@ export default function AudioEditorPage() {
     showMixer,
     showClipping,
     showRMS,
+    showVerticalRulers,
     viewMode,
     halfWave,
     horizontalZoom,
     verticalZoom,
-  }), [showTrackPanel, showMixer, showClipping, showRMS, viewMode, halfWave, horizontalZoom, verticalZoom]);
+  }), [showTrackPanel, showMixer, showClipping, showRMS, showVerticalRulers, viewMode, halfWave, horizontalZoom, verticalZoom]);
 
   // Workspace customizations are local and automatically restored on reopen.
   useEffect(() => {
@@ -917,6 +920,7 @@ export default function AudioEditorPage() {
         setShowMixer(workspace.layout.showMixer);
         setShowClipping(workspace.layout.showClipping);
         setShowRMS(workspace.layout.showRMS);
+        setShowVerticalRulers(workspace.layout.showVerticalRulers);
         setScrollX(proj.viewState.scrollX);
         setSelection(proj.selection);
         setCursorPosition(proj.cursorPosition);
@@ -1959,6 +1963,7 @@ export default function AudioEditorPage() {
     setShowMixer(layout.showMixer);
     setShowClipping(layout.showClipping);
     setShowRMS(layout.showRMS);
+    setShowVerticalRulers(layout.showVerticalRulers);
     setViewMode(layout.viewMode);
     setHalfWave(layout.halfWave);
     setHorizontalZoom(normalizeHorizontalZoom(layout.horizontalZoom));
@@ -6834,8 +6839,8 @@ export default function AudioEditorPage() {
   const timelineDuration = Math.max(projectDuration, 30);
   const pxPerSec = horizontalZoom;
   const totalWidth = Math.max(timelineDuration * pxPerSec, 1000);
-  const rulerWidth = viewMode === 'waveform' || viewMode === 'waveformDb' || viewMode === 'waveformDbLinear'
-    ? DB_WAVE_RULER_WIDTH
+  const rulerWidth = showVerticalRulers
+    ? DB_WAVE_RULER_WIDTH + (viewMode === 'both' ? 20 : 0)
     : 0;
   const timelineContentWidth = totalWidth + rulerWidth;
   const activeWorkspaceName = activeWorkspace.name;
@@ -6946,6 +6951,13 @@ export default function AudioEditorPage() {
                 data-testid="view-show-rms"
               >
                 显示波形 RMS
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={showVerticalRulers}
+                onClick={() => setShowVerticalRulers((visible) => !visible)}
+                data-testid="view-show-vertical-rulers"
+              >
+                显示纵向标尺
               </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>水平缩放 {Math.round(horizontalZoom)}%</DropdownMenuLabel>
@@ -9589,6 +9601,8 @@ function TrackTimeline({
         isSelected ? 'bg-accent/5' : ''
       }`}
       style={{ height: trackHeight, width: totalWidth + rulerWidth }}
+      data-testid={`track-timeline-${track.id}`}
+      data-ruler-width={rulerWidth}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -9603,7 +9617,37 @@ function TrackTimeline({
         }}
       />
 
-      {rulerWidth > 0 && (
+      {rulerWidth > 0 && (viewMode === 'spectrum' ? (
+        <TrackSpectrumRuler
+          trackId={track.id}
+          trackName={track.name}
+          width={rulerWidth}
+          trackHeight={trackHeight}
+          waveformHeight={trackHeight - 24}
+          sampleRate={sampleRate}
+          isStereo={stereoClipIds.length > 0}
+          channelHeightRatio={channelHeightRatio}
+          asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
+        />
+      ) : viewMode === 'both' ? (
+        <TrackCombinedRuler
+          trackId={track.id}
+          trackName={track.name}
+          width={rulerWidth}
+          trackHeight={trackHeight}
+          waveformHeight={trackHeight - 24}
+          sampleRate={sampleRate}
+          dbRange={dbRange}
+          halfWave={halfWave}
+          onViewModeChange={onViewModeChange}
+          onHalfWaveChange={onHalfWaveChange}
+          onVerticalZoomChange={onVerticalZoomChange}
+          verticalZoom={verticalZoom}
+          isStereo={stereoClipIds.length > 0}
+          channelHeightRatio={channelHeightRatio}
+          asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
+        />
+      ) : (
         <TrackWaveRuler
           trackId={track.id}
           trackName={track.name}
@@ -9621,7 +9665,7 @@ function TrackTimeline({
           channelHeightRatio={channelHeightRatio}
           asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
         />
-      )}
+      ))}
 
       {/* Clips */}
       <div className="absolute inset-y-0" style={{ left: rulerWidth, width: totalWidth }}>
@@ -9682,6 +9726,7 @@ function TrackWaveRuler({
   isStereo,
   channelHeightRatio,
   asymmetricStereoHeightsEnabled,
+  embedded = false,
 }: {
   trackId: string;
   trackName: string;
@@ -9698,6 +9743,7 @@ function TrackWaveRuler({
   isStereo: boolean;
   channelHeightRatio: number;
   asymmetricStereoHeightsEnabled: boolean;
+  embedded?: boolean;
 }) {
   const ratio = isStereo
     ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, waveformHeight)
@@ -9716,7 +9762,7 @@ function TrackWaveRuler({
 
   return (
     <div
-      className="sticky left-0 z-[28] select-none border-r border-[#59636c] bg-[#20262b] text-[#bdc6ce]"
+      className={`${embedded ? 'relative shrink-0' : 'sticky left-0 z-[28]'} select-none border-r border-[#59636c] bg-[#20262b] text-[#bdc6ce]`}
       style={{ width, height: trackHeight }}
       data-testid={`${isLinearAmp ? 'track-linear-ruler' : 'track-db-ruler'}-${trackId}`}
       data-db-range={isLinearAmp ? undefined : dbRange}
@@ -9877,6 +9923,165 @@ function TrackWaveRuler({
           }));
         })}
       </div>
+    </div>
+  );
+}
+
+/** Audacity VerticalRulersPanel also exposes a frequency ruler for spectrogram tracks. */
+function TrackSpectrumRuler({
+  trackId,
+  trackName,
+  width,
+  trackHeight,
+  waveformHeight,
+  sampleRate,
+  isStereo,
+  channelHeightRatio,
+  asymmetricStereoHeightsEnabled,
+  embedded = false,
+}: {
+  trackId: string;
+  trackName: string;
+  width: number;
+  trackHeight: number;
+  waveformHeight: number;
+  sampleRate: number;
+  isStereo: boolean;
+  channelHeightRatio: number;
+  asymmetricStereoHeightsEnabled: boolean;
+  embedded?: boolean;
+}) {
+  const ratio = isStereo
+    ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, waveformHeight)
+    : 0.5;
+  const upperHeight = isStereo ? Math.round(waveformHeight * ratio) : waveformHeight;
+  const bands = isStereo
+    ? [
+        { channel: 0, top: 0, height: upperHeight },
+        { channel: 1, top: upperHeight, height: waveformHeight - upperHeight },
+      ]
+    : [{ channel: 0, top: 0, height: waveformHeight }];
+
+  return (
+    <div
+      className={`${embedded ? 'relative shrink-0' : 'sticky left-0 z-[28]'} select-none border-r border-[#59636c] bg-[#20262b] text-[#bdc6ce]`}
+      style={{ width, height: trackHeight }}
+      data-testid={`track-spectrum-ruler-${trackId}`}
+      data-sample-rate={sampleRate}
+      data-channel-count={isStereo ? 2 : 1}
+      data-stereo-ratio={ratio}
+      role="group"
+      aria-label={`${trackName} 频率标尺，上限 ${getSpectrumDisplayMaxHz(sampleRate)} Hz`}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <div className="flex h-5 items-center justify-between gap-0.5 border-b border-[#59636c] px-1 text-[8px] font-medium">
+        <span className="truncate">{trackName}</span>
+        <span className="shrink-0 text-[#8f9aa3]">Hz</span>
+      </div>
+      <div className="pointer-events-none absolute inset-x-0 top-5" style={{ height: waveformHeight }}>
+        {bands.map((band) => getSpectrumRulerTicks(band.height, sampleRate).map((tick, index) => {
+          const labelTop = Math.min(Math.max(tick.y - 4, 0), Math.max(0, band.height - 8));
+          return (
+            <div
+              key={`${band.channel}-${tick.frequencyHz}`}
+              className="absolute inset-x-0 h-0"
+              style={{ top: band.top + tick.y }}
+              data-testid={`spectrum-ruler-tick-${trackId}-${band.channel}-${index}`}
+              data-channel={band.channel}
+              data-frequency-hz={tick.frequencyHz}
+              data-y={band.top + tick.y}
+              aria-hidden="true"
+            >
+              <span className="absolute right-0 top-0 h-px w-2 bg-[#7c8790]" />
+              <span
+                className="absolute left-0.5 top-0 whitespace-nowrap bg-[#20262b]/85 text-[7px] leading-none"
+                style={{ top: labelTop - tick.y }}
+              >
+                {tick.label}
+              </span>
+            </div>
+          );
+        }))}
+      </div>
+    </div>
+  );
+}
+
+/** The Web "both" view overlays the two renderers, so it exposes both vertical scales. */
+function TrackCombinedRuler({
+  trackId,
+  trackName,
+  width,
+  trackHeight,
+  waveformHeight,
+  sampleRate,
+  dbRange,
+  halfWave,
+  onViewModeChange,
+  onHalfWaveChange,
+  onVerticalZoomChange,
+  verticalZoom,
+  isStereo,
+  channelHeightRatio,
+  asymmetricStereoHeightsEnabled,
+}: {
+  trackId: string;
+  trackName: string;
+  width: number;
+  trackHeight: number;
+  waveformHeight: number;
+  sampleRate: number;
+  dbRange: number;
+  halfWave: boolean;
+  onViewModeChange: (mode: ViewMode) => void;
+  onHalfWaveChange: (value: boolean) => void;
+  onVerticalZoomChange: (value: number) => void;
+  verticalZoom: number;
+  isStereo: boolean;
+  channelHeightRatio: number;
+  asymmetricStereoHeightsEnabled: boolean;
+}) {
+  const spectrumWidth = 20;
+  return (
+    <div
+      className="sticky left-0 z-[28] flex select-none bg-[#20262b] text-[#bdc6ce]"
+      style={{ width, height: trackHeight }}
+      data-testid={`track-combined-ruler-${trackId}`}
+      data-ruler-width={width}
+      role="group"
+      aria-label={`${trackName} 振幅与频率标尺`}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <TrackWaveRuler
+        trackId={trackId}
+        trackName={trackName}
+        width={width - spectrumWidth}
+        trackHeight={trackHeight}
+        waveformHeight={waveformHeight}
+        dbRange={dbRange}
+        viewMode="waveform"
+        halfWave={halfWave}
+        onViewModeChange={onViewModeChange}
+        onHalfWaveChange={onHalfWaveChange}
+        onVerticalZoomChange={onVerticalZoomChange}
+        verticalZoom={verticalZoom}
+        isStereo={isStereo}
+        channelHeightRatio={channelHeightRatio}
+        asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
+        embedded
+      />
+      <TrackSpectrumRuler
+        trackId={trackId}
+        trackName={trackName}
+        width={spectrumWidth}
+        trackHeight={trackHeight}
+        waveformHeight={waveformHeight}
+        sampleRate={sampleRate}
+        isStereo={isStereo}
+        channelHeightRatio={channelHeightRatio}
+        asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
+        embedded
+      />
     </div>
   );
 }
