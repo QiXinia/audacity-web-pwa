@@ -43,6 +43,7 @@ import {
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
+import { DeleteBehaviorPanel } from '@/components/DeleteBehaviorPanel';
 import {
   Dialog,
   DialogContent,
@@ -378,6 +379,15 @@ import {
 import { splitClipAtSilences as disjoinClipAtSilences } from '@/lib/clipSilence';
 import { applySelectionEdit, type SelectionRippleMode } from '@/lib/selectionEdit';
 import {
+  loadDeletePreferences,
+  needsDeleteOnboarding,
+  resolveDeleteRippleMode,
+  saveDeletePreferences,
+  type CloseGapBehavior,
+  type DeletePreferences,
+  type SelectedDeleteBehavior,
+} from '@/lib/deletePreferences';
+import {
   collectClipSnapPoints,
   DEFAULT_SNAP_TOLERANCE_PIXELS,
   snapClipSelectionDelta,
@@ -578,6 +588,13 @@ export default function AudioEditorPage() {
   const [renderingPitchAndSpeedClipId, setRenderingPitchAndSpeedClipId] = useState<string | null>(null);
   const [splittingSilenceClipId, setSplittingSilenceClipId] = useState<string | null>(null);
   const [selectionEditOperation, setSelectionEditOperation] = useState<string | null>(null);
+  const [deletePreferences, setDeletePreferences] = useState<DeletePreferences>(() => loadDeletePreferences());
+  const [deleteOnboarding, setDeleteOnboarding] = useState<{
+    operation: 'cut' | 'delete';
+    deleteBehavior: SelectedDeleteBehavior;
+    closeGapBehavior: CloseGapBehavior;
+  } | null>(null);
+  const [deleteFollowupOpen, setDeleteFollowupOpen] = useState(false);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const clipSelectionAnchorRef = useRef<ClipKey | null>(null);
   const [workspaceStore, setWorkspaceStore] = useState(loadWorkspaceStore);
@@ -903,6 +920,9 @@ export default function AudioEditorPage() {
           event.preventDefault();
           setRenamingClipKey(clipKeyId(selected));
         }
+      } else if ((event.key === 'Delete' || event.key === 'Backspace') && selection) {
+        event.preventDefault();
+        void handleDeleteSelection();
       } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedClips.length > 0) {
         event.preventDefault();
         void handleDeleteSelectedClips();
@@ -2905,8 +2925,42 @@ export default function AudioEditorPage() {
   }
 
   async function handleCut() {
-    // Audacity's default CloseGapBehavior is ClipRipple.
-    await handleSelectionEdit('cut', 'per-clip');
+    await handlePreferredSelectionEdit('cut');
+  }
+
+  async function handleDeleteSelection() {
+    await handlePreferredSelectionEdit('delete');
+  }
+
+  async function handlePreferredSelectionEdit(operation: 'cut' | 'delete') {
+    if (!project || !selection || selectionEditOperation) return;
+    if (needsDeleteOnboarding(deletePreferences)) {
+      // Audacity's onboarding starts with Leave gap and retains the configured ripple fallback.
+      setDeleteOnboarding({
+        operation,
+        deleteBehavior: 'leave-gap',
+        closeGapBehavior: deletePreferences.closeGapBehavior,
+      });
+      return;
+    }
+    await handleSelectionEdit(operation, resolveDeleteRippleMode(deletePreferences));
+  }
+
+  async function applyDeleteOnboarding() {
+    if (!deleteOnboarding) return;
+    const pending = deleteOnboarding;
+    const next: DeletePreferences = {
+      deleteBehavior: pending.deleteBehavior,
+      closeGapBehavior: pending.closeGapBehavior,
+    };
+    if (!saveDeletePreferences(next)) {
+      toast.error('浏览器存储不可用，Delete 偏好未保存；未修改音频');
+      return;
+    }
+    setDeletePreferences(next);
+    setDeleteOnboarding(null);
+    await handleSelectionEdit(pending.operation, resolveDeleteRippleMode(next));
+    setDeleteFollowupOpen(true);
   }
 
   async function handleSelectionEdit(
@@ -7044,7 +7098,8 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={handleUndo} disabled={!canUndo}>撤销</DropdownMenuItem>
               <DropdownMenuItem onClick={handleRedo} disabled={!canRedo}>重做</DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleCut} disabled={!selection}>剪切</DropdownMenuItem>
+              <DropdownMenuItem data-testid="cut-selection" onClick={handleCut} disabled={!selection}>剪切 (Ctrl+X)</DropdownMenuItem>
+              <DropdownMenuItem data-testid="delete-selection" onClick={() => void handleDeleteSelection()} disabled={!selection}>删除 (Delete)</DropdownMenuItem>
               <DropdownMenuItem onClick={handleCopy} disabled={!selection}>复制</DropdownMenuItem>
               <DropdownMenuItem onClick={handlePaste}>粘贴</DropdownMenuItem>
               {renderSelectionEditMenus()}
@@ -7660,9 +7715,13 @@ export default function AudioEditorPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem onClick={handleCut} disabled={!selection}>
+              <DropdownMenuItem data-testid="toolbar-cut-selection" onClick={handleCut} disabled={!selection}>
                 <Scissors className="mr-2 size-4" />
                 剪切 (Ctrl+X)
+              </DropdownMenuItem>
+              <DropdownMenuItem data-testid="toolbar-delete-selection" onClick={() => void handleDeleteSelection()} disabled={!selection}>
+                <Trash2 className="mr-2 size-4" />
+                删除 (Delete)
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleCopy} disabled={!selection}>
                 <Copy className="mr-2 size-4" />
@@ -8655,6 +8714,80 @@ export default function AudioEditorPage() {
                 <Button type="submit" disabled={!workspaceName.trim()}>保存 Workspace</Button>
               </DialogFooter>
             </form>
+          </DialogContent>
+        </Dialog>
+
+        {deleteOnboarding && (
+          <Dialog
+            open
+            onOpenChange={(open) => { if (!open) setDeleteOnboarding(null); }}
+          >
+            <DialogContent data-testid="delete-onboarding-dialog" className="max-w-3xl" showCloseButton={false}>
+              <DialogHeader>
+                <DialogTitle>Choose behavior when deleting a portion of a clip</DialogTitle>
+                <DialogDescription>
+                  首次使用普通 {deleteOnboarding.operation === 'cut' ? 'Cut' : 'Delete'} 前请选择行为；取消不会保存偏好或修改音频。
+                </DialogDescription>
+              </DialogHeader>
+              <DeleteBehaviorPanel
+                idPrefix="delete-onboarding"
+                deleteBehavior={deleteOnboarding.deleteBehavior}
+                closeGapBehavior={deleteOnboarding.closeGapBehavior}
+                onDeleteBehaviorChange={(deleteBehavior) => setDeleteOnboarding((current) => (
+                  current ? { ...current, deleteBehavior } : current
+                ))}
+                onCloseGapBehaviorChange={(closeGapBehavior) => setDeleteOnboarding((current) => (
+                  current ? { ...current, closeGapBehavior } : current
+                ))}
+              />
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  data-testid="delete-onboarding-cancel"
+                  onClick={() => setDeleteOnboarding(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  data-testid="delete-onboarding-apply"
+                  disabled={selectionEditOperation !== null}
+                  onClick={() => void applyDeleteOnboarding()}
+                >
+                  Apply
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+
+        <Dialog open={deleteFollowupOpen} onOpenChange={setDeleteFollowupOpen}>
+          <DialogContent data-testid="delete-preference-followup" className="max-w-md" showCloseButton={false}>
+            <DialogHeader>
+              <DialogTitle>Delete preference</DialogTitle>
+              <DialogDescription>Your delete behavior has been set</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 text-sm text-muted-foreground">
+              <p>You can change this at any time in Preferences.</p>
+              <p>Cut/Delete and… 菜单仍可直接使用 leave gap、per clip、per track 和 all tracks 四种模式。</p>
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                data-testid="delete-followup-preferences"
+                onClick={() => {
+                  setDeleteFollowupOpen(false);
+                  navigate('/settings');
+                }}
+              >
+                Preferences
+              </Button>
+              <Button type="button" data-testid="delete-followup-ok" onClick={() => setDeleteFollowupOpen(false)}>
+                OK
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
 

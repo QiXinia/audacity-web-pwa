@@ -56,6 +56,14 @@ import {
   saveMeterDbRange,
   type MeterDbRange,
 } from '@/lib/meterPreferences';
+import {
+  loadDeletePreferences,
+  saveDeletePreferences,
+  type CloseGapBehavior,
+  type DeletePreferences,
+  type SelectedDeleteBehavior,
+} from '@/lib/deletePreferences';
+import { DeleteBehaviorPanel } from '@/components/DeleteBehaviorPanel';
 
 const DEFAULT_SAMPLE_RATES = [
   { value: '22050', label: '22050 Hz (低质量)' },
@@ -87,6 +95,7 @@ export default function SettingsPage() {
   const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt' | 'unsupported'>('prompt');
   const [workspaceStore] = useState(loadWorkspaceStore);
   const [meterDbRange, setMeterDbRange] = useState<MeterDbRange>(() => getMeterDbRange());
+  const [deletePreferences, setDeletePreferences] = useState<DeletePreferences>(() => loadDeletePreferences());
   const [stereoHeightsPreferences, setStereoHeightsPreferences] = useState<AsymmetricStereoHeightsPreferences>(() => {
     const store = loadWorkspaceStore();
     return loadStereoHeightsPreferences(undefined, store.presets.map((preset) => preset.name));
@@ -169,6 +178,22 @@ export default function SettingsPage() {
       return;
     }
     toast.error('浏览器存储不可用，电平表 dB 范围未保存');
+  }
+
+  function updateDeletePreferences(next: DeletePreferences) {
+    if (saveDeletePreferences(next)) {
+      setDeletePreferences(next);
+      return;
+    }
+    toast.error('浏览器存储不可用，Delete 偏好未保存');
+  }
+
+  function updateDeleteBehavior(deleteBehavior: SelectedDeleteBehavior) {
+    updateDeletePreferences({ ...deletePreferences, deleteBehavior });
+  }
+
+  function updateCloseGapBehavior(closeGapBehavior: CloseGapBehavior) {
+    updateDeletePreferences({ ...deletePreferences, closeGapBehavior });
   }
 
   async function handleClearAllData() {
@@ -316,6 +341,30 @@ export default function SettingsPage() {
                   默认 -60 dB；低于所选下限的峰值显示为 -∞。选择 -96 dB 可观察 16-bit 低电平信号。
                 </p>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Audacity Edit Preferences: delete behavior */}
+          <Card data-testid="delete-behavior-settings-card">
+            <CardHeader>
+              <CardTitle>Choose behavior when deleting a portion of a clip</CardTitle>
+              <CardDescription>Delete behavior · Audacity Edit Preferences</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                普通 Cut/Delete 使用此处保存的行为；首次使用且尚未选择时，编辑器会先显示同样的引导。
+                Cut/Delete and… 菜单仍可显式执行任意模式，不会改写此偏好。
+              </p>
+              <DeleteBehaviorPanel
+                idPrefix="delete-behavior-settings"
+                deleteBehavior={deletePreferences.deleteBehavior}
+                closeGapBehavior={deletePreferences.closeGapBehavior}
+                onDeleteBehaviorChange={updateDeleteBehavior}
+                onCloseGapBehaviorChange={updateCloseGapBehavior}
+              />
+              <p className="text-xs text-muted-foreground">
+                默认 CloseGapBehavior 为 per-clip；Leave gap 与 Close gap 的选择会保存在当前浏览器。
+              </p>
             </CardContent>
           </Card>
 
