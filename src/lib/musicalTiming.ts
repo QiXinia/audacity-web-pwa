@@ -1,4 +1,5 @@
 import type { IProject } from '@/types/project';
+import { applyProjectTempoToTracks } from '@/lib/clipTempo';
 
 export const MIN_TEMPO = 1;
 export const MAX_TEMPO = 999;
@@ -49,7 +50,12 @@ export function barDuration(tempo: unknown, timeSignature: unknown): number {
 
 export function updateProjectTempo(project: IProject, value: unknown): IProject {
   const tempo = validateTempo(value);
-  return tempo === null || tempo === project.tempo ? project : { ...project, tempo };
+  if (tempo === null || tempo === project.tempo) return project;
+  return {
+    ...project,
+    tempo,
+    tracks: applyProjectTempoToTracks(project.tracks, project.tempo, tempo),
+  };
 }
 
 export function updateProjectTimeSignature(

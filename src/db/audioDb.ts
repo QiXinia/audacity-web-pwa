@@ -84,6 +84,15 @@ export function deserializeTracks(data: string): ITrack[] {
           ? Math.max(-1200, Math.min(1200, Math.round(clip.pitchCents ?? 0)))
           : 0,
         optimizeForVoice: clip.optimizeForVoice === true,
+        ...(clip.stretchToMatchTempo === undefined ? {} : {
+          stretchToMatchTempo: clip.stretchToMatchTempo === true,
+        }),
+        rawAudioTempo: Number.isFinite(clip.rawAudioTempo) && (clip.rawAudioTempo ?? 0) > 0
+          ? clip.rawAudioTempo
+          : undefined,
+        clipTempo: Number.isFinite(clip.clipTempo) && (clip.clipTempo ?? 0) > 0
+          ? clip.clipTempo
+          : undefined,
       })),
     }));
   } catch {

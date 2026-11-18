@@ -65,6 +65,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -483,6 +484,7 @@ import VocoderDialog from './sections/VocoderDialog';
 import AutoDuckEffectDialog from './sections/AutoDuckEffectDialog';
 import CrossfadeTracksDialog from './sections/CrossfadeTracksDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
+import { isClipStretchToMatchTempo, toggleClipStretchToMatchTempo } from '@/lib/clipTempo';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
   decayDbfs,
@@ -1977,6 +1979,19 @@ export default function AudioEditorPage() {
     } finally {
       setRenderingPitchAndSpeedClipId(null);
     }
+  }
+
+  async function toggleStretchWithTempoChanges(trackId: string, clipId: string) {
+    if (!project || recordingState === 'recording' || renderingPitchAndSpeedClipId) return;
+    const clip = project.tracks.find((track) => track.id === trackId)
+      ?.clips.find((candidate) => candidate.id === clipId);
+    if (!clip) return;
+    const enabled = !isClipStretchToMatchTempo(clip);
+    audioEngine.stopPlayback();
+    await commitClipEdit(
+      toggleClipStretchToMatchTempo(project, { trackId, clipId }),
+      enabled ? '启用 Stretch with tempo changes' : '停用 Stretch with tempo changes',
+    );
   }
 
   function openClipPitchAndSpeed(trackId: string, clipId: string) {
@@ -8297,6 +8312,8 @@ export default function AudioEditorPage() {
                 onPitchAndSpeed={(clipId) => openClipPitchAndSpeed(track.id, clipId)}
                 onResetPitchAndSpeed={(clipId) => resetClipPitchAndSpeed(track.id, clipId)}
                 onRenderPitchAndSpeed={(clipId) => renderClipPitchAndSpeed(track.id, clipId)}
+                onToggleStretchWithTempoChanges={(clipId) => toggleStretchWithTempoChanges(track.id, clipId)}
+                tempoChangesDisabled={recordingState === 'recording'}
                 renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
                 onSelectionChange={handleSelectionChange}
                 onSpectralSelectionChange={handleSpectralSelectionChange}
@@ -9612,6 +9629,8 @@ function TrackTimeline({
   onPitchAndSpeed,
   onResetPitchAndSpeed,
   onRenderPitchAndSpeed,
+  onToggleStretchWithTempoChanges,
+  tempoChangesDisabled,
   renderingPitchAndSpeedClipId,
   onSelectionChange,
   onSpectralSelectionChange,
@@ -9652,6 +9671,8 @@ function TrackTimeline({
   onPitchAndSpeed: (clipId: string) => void;
   onResetPitchAndSpeed: (clipId: string) => void;
   onRenderPitchAndSpeed: (clipId: string) => void;
+  onToggleStretchWithTempoChanges: (clipId: string) => void;
+  tempoChangesDisabled: boolean;
   renderingPitchAndSpeedClipId: string | null;
   onSelectionChange: (start: number, end: number) => void;
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
@@ -9798,6 +9819,8 @@ function TrackTimeline({
           onPitchAndSpeed={() => onPitchAndSpeed(clip.id)}
           onResetPitchAndSpeed={() => onResetPitchAndSpeed(clip.id)}
           onRenderPitchAndSpeed={() => onRenderPitchAndSpeed(clip.id)}
+          onToggleStretchWithTempoChanges={() => onToggleStretchWithTempoChanges(clip.id)}
+          tempoChangesDisabled={tempoChangesDisabled}
           renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
           onSelect={(mode) => onSelectClip(clip.id, mode)}
           onSpectralSelectionChange={onSpectralSelectionChange}
@@ -10227,6 +10250,8 @@ function ClipItem({
   onPitchAndSpeed,
   onResetPitchAndSpeed,
   onRenderPitchAndSpeed,
+  onToggleStretchWithTempoChanges,
+  tempoChangesDisabled,
   renderingPitchAndSpeedClipId,
   onSelect,
   onSpectralSelectionChange,
@@ -10263,6 +10288,8 @@ function ClipItem({
   onPitchAndSpeed: () => void;
   onResetPitchAndSpeed: () => void;
   onRenderPitchAndSpeed: () => void;
+  onToggleStretchWithTempoChanges: () => void;
+  tempoChangesDisabled: boolean;
   renderingPitchAndSpeedClipId: string | null;
   onSelect: (mode: ClipSelectionMode) => void;
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
@@ -10695,10 +10722,15 @@ function ClipItem({
       className="au-clip group absolute top-1 bottom-1 overflow-hidden rounded-[3px] border text-[#20252a]"
       data-selected={isSelected}
       data-audio-buffer-id={clip.audioBufferId}
+      data-start-time={clip.startTime}
+      data-duration={clip.duration}
       data-rendering-pitch-speed={isRenderingPitchAndSpeed ? 'true' : undefined}
       data-pitch-cents={getClipPitchCents(clip)}
       data-optimize-for-voice={getClipOptimizeForVoice(clip)}
       data-stretch-ratio={getClipStretchRatio(clip)}
+      data-stretch-to-match-tempo={isClipStretchToMatchTempo(clip)}
+      data-clip-tempo={clip.clipTempo ?? ''}
+      data-raw-audio-tempo={clip.rawAudioTempo ?? ''}
       role="button"
       tabIndex={0}
       aria-label={`${clip.name || '音频片段'}，开始 ${formatTime(clip.startTime)}，时长 ${formatTime(clip.duration)}，速度 ${Math.round(100 * getClipStretchRatio(clip))}%`}
@@ -10896,6 +10928,13 @@ function ClipItem({
     </div>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-60">
+        <ContextMenuCheckboxItem
+          checked={isClipStretchToMatchTempo(clip)}
+          disabled={tempoChangesDisabled || renderingPitchAndSpeedClipId !== null}
+          onSelect={onToggleStretchWithTempoChanges}
+        >
+          Stretch with tempo changes
+        </ContextMenuCheckboxItem>
         <ContextMenuItem
           disabled={renderingPitchAndSpeedClipId !== null}
           onSelect={onPitchAndSpeed}

@@ -34,6 +34,12 @@ export interface IClip {
   pitchCents?: number;
   /** Audacity 4 PitchAndSpeedPreset::OptimizeForVoice (browser approximation). */
   optimizeForVoice?: boolean;
+  /** Audacity 4 Stretch with tempo changes; legacy clips default to true. */
+  stretchToMatchTempo?: boolean;
+  /** Source BPM used by Audacity 4 clip/project tempo matching. */
+  rawAudioTempo?: number;
+  /** Frozen or current project BPM; stretchRatio remains the actual playback ratio. */
+  clipTempo?: number;
   gain: number;
   fadeIn: number;
   fadeOut: number;
