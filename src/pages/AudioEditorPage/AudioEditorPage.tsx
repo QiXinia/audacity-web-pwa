@@ -68,7 +68,12 @@ import {
   ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
 import {
@@ -485,6 +490,7 @@ import AutoDuckEffectDialog from './sections/AutoDuckEffectDialog';
 import CrossfadeTracksDialog from './sections/CrossfadeTracksDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { isClipStretchToMatchTempo, toggleClipStretchToMatchTempo } from '@/lib/clipTempo';
+import { CLIP_COLORS, getClipColor, getClipColorIndex, setClipColor } from '@/lib/clipColor';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
   decayDbfs,
@@ -1992,6 +1998,12 @@ export default function AudioEditorPage() {
       toggleClipStretchToMatchTempo(project, { trackId, clipId }),
       enabled ? '启用 Stretch with tempo changes' : '停用 Stretch with tempo changes',
     );
+  }
+
+  async function changeClipColor(trackId: string, clipId: string, colorIndex: number) {
+    if (!project || renderingPitchAndSpeedClipId) return;
+    const updated = setClipColor(project, { trackId, clipId }, colorIndex);
+    await commitClipEdit(updated, '修改片段颜色');
   }
 
   function openClipPitchAndSpeed(trackId: string, clipId: string) {
@@ -8313,6 +8325,7 @@ export default function AudioEditorPage() {
                 onResetPitchAndSpeed={(clipId) => resetClipPitchAndSpeed(track.id, clipId)}
                 onRenderPitchAndSpeed={(clipId) => renderClipPitchAndSpeed(track.id, clipId)}
                 onToggleStretchWithTempoChanges={(clipId) => toggleStretchWithTempoChanges(track.id, clipId)}
+                onClipColorChange={(clipId, colorIndex) => changeClipColor(track.id, clipId, colorIndex)}
                 tempoChangesDisabled={recordingState === 'recording'}
                 renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
                 onSelectionChange={handleSelectionChange}
@@ -9630,6 +9643,7 @@ function TrackTimeline({
   onResetPitchAndSpeed,
   onRenderPitchAndSpeed,
   onToggleStretchWithTempoChanges,
+  onClipColorChange,
   tempoChangesDisabled,
   renderingPitchAndSpeedClipId,
   onSelectionChange,
@@ -9672,6 +9686,7 @@ function TrackTimeline({
   onResetPitchAndSpeed: (clipId: string) => void;
   onRenderPitchAndSpeed: (clipId: string) => void;
   onToggleStretchWithTempoChanges: (clipId: string) => void;
+  onClipColorChange: (clipId: string, colorIndex: number) => void;
   tempoChangesDisabled: boolean;
   renderingPitchAndSpeedClipId: string | null;
   onSelectionChange: (start: number, end: number) => void;
@@ -9820,6 +9835,7 @@ function TrackTimeline({
           onResetPitchAndSpeed={() => onResetPitchAndSpeed(clip.id)}
           onRenderPitchAndSpeed={() => onRenderPitchAndSpeed(clip.id)}
           onToggleStretchWithTempoChanges={() => onToggleStretchWithTempoChanges(clip.id)}
+          onClipColorChange={(colorIndex) => onClipColorChange(clip.id, colorIndex)}
           tempoChangesDisabled={tempoChangesDisabled}
           renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
           onSelect={(mode) => onSelectClip(clip.id, mode)}
@@ -10251,6 +10267,7 @@ function ClipItem({
   onResetPitchAndSpeed,
   onRenderPitchAndSpeed,
   onToggleStretchWithTempoChanges,
+  onClipColorChange,
   tempoChangesDisabled,
   renderingPitchAndSpeedClipId,
   onSelect,
@@ -10289,6 +10306,7 @@ function ClipItem({
   onResetPitchAndSpeed: () => void;
   onRenderPitchAndSpeed: () => void;
   onToggleStretchWithTempoChanges: () => void;
+  onClipColorChange: (colorIndex: number) => void;
   tempoChangesDisabled: boolean;
   renderingPitchAndSpeedClipId: string | null;
   onSelect: (mode: ClipSelectionMode) => void;
@@ -10714,6 +10732,7 @@ function ClipItem({
 
   const isRenderingPitchAndSpeed = renderingPitchAndSpeedClipId === clipKeyId({ trackId: track.id, clipId: clip.id });
   const pitchAndSpeedModified = hasClipPitchOrSpeed(clip);
+  const clipColor = getClipColor(clip, trackColor);
 
   return (
     <ContextMenu onOpenChange={(open) => { if (open && !isSelected) onSelect('replace'); }}>
@@ -10731,6 +10750,8 @@ function ClipItem({
       data-stretch-to-match-tempo={isClipStretchToMatchTempo(clip)}
       data-clip-tempo={clip.clipTempo ?? ''}
       data-raw-audio-tempo={clip.rawAudioTempo ?? ''}
+      data-clip-color-index={getClipColorIndex(clip)}
+      data-clip-color={clipColor}
       role="button"
       tabIndex={0}
       aria-label={`${clip.name || '音频片段'}，开始 ${formatTime(clip.startTime)}，时长 ${formatTime(clip.duration)}，速度 ${Math.round(100 * getClipStretchRatio(clip))}%`}
@@ -10738,7 +10759,7 @@ function ClipItem({
       style={{
         left: displayLeft,
         width: displayWidth,
-        backgroundColor: `color-mix(in srgb, ${trackColor} 76%, white)`,
+        backgroundColor: `color-mix(in srgb, ${clipColor} 76%, white)`,
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -10765,7 +10786,7 @@ function ClipItem({
       {/* Audacity 4 clip header */}
       <div
         className="absolute inset-x-0 top-0 z-10 flex h-5 cursor-grab touch-none select-none items-center gap-1 truncate px-1.5 text-[10px] font-medium active:cursor-grabbing"
-        style={{ backgroundColor: trackColor }}
+        style={{ backgroundColor: clipColor }}
         title="拖动移动片段；成组选择时同步移动"
         onPointerDown={handleMoveStart}
         onPointerMove={handleMoveMove}
@@ -10928,6 +10949,37 @@ function ClipItem({
     </div>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-60">
+        <ContextMenuSub>
+          <ContextMenuSubTrigger
+            data-testid="clip-color-menu"
+            disabled={renderingPitchAndSpeedClipId !== null}
+          >
+            Clip color
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-52">
+            <ContextMenuRadioGroup
+              value={String(getClipColorIndex(clip))}
+              onValueChange={(value) => onClipColorChange(Number(value))}
+            >
+              <ContextMenuRadioItem value="0" data-testid="clip-color-auto">
+                <span aria-hidden="true" className="size-3 rounded-sm border border-black/10" style={{ backgroundColor: trackColor }} />
+                Same as track color
+              </ContextMenuRadioItem>
+              <ContextMenuSeparator />
+              {CLIP_COLORS.map((entry) => (
+                <ContextMenuRadioItem
+                  key={entry.index}
+                  value={String(entry.index)}
+                  data-testid={`clip-color-${entry.index}`}
+                >
+                  <span aria-hidden="true" className="size-3 rounded-sm border border-black/10" style={{ backgroundColor: entry.color }} />
+                  {entry.name}
+                </ContextMenuRadioItem>
+              ))}
+            </ContextMenuRadioGroup>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSeparator />
         <ContextMenuCheckboxItem
           checked={isClipStretchToMatchTempo(clip)}
           disabled={tempoChangesDisabled || renderingPitchAndSpeedClipId !== null}

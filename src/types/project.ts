@@ -40,6 +40,8 @@ export interface IClip {
   rawAudioTempo?: number;
   /** Frozen or current project BPM; stretchRatio remains the actual playback ratio. */
   clipTempo?: number;
+  /** Audacity 4 ClipColorIndex: 0/undefined inherits the track; 1…9 selects a theme color. */
+  colorIndex?: number;
   gain: number;
   fadeIn: number;
   fadeOut: number;

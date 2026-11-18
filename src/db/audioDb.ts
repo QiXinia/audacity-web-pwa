@@ -2,6 +2,7 @@
 
 import Dexie, { type Table } from 'dexie';
 import type { IProjectSummary, ITrack, IClip } from '@/types/project';
+import { normalizeClipColorIndex } from '@/lib/clipColor';
 
 export interface ProjectRecord extends IProjectSummary {
   tracksData: string; // JSON serialized ITrack[]
@@ -93,6 +94,7 @@ export function deserializeTracks(data: string): ITrack[] {
         clipTempo: Number.isFinite(clip.clipTempo) && (clip.clipTempo ?? 0) > 0
           ? clip.clipTempo
           : undefined,
+        colorIndex: normalizeClipColorIndex(clip.colorIndex),
       })),
     }));
   } catch {
