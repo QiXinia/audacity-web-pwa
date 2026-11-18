@@ -375,6 +375,7 @@ import {
   type ClipKey,
   type ClipSelectionMode,
 } from '@/lib/clipEditing';
+import { splitClipAtSilences as disjoinClipAtSilences } from '@/lib/clipSilence';
 import {
   collectClipSnapPoints,
   DEFAULT_SNAP_TOLERANCE_PIXELS,
@@ -574,6 +575,7 @@ export default function AudioEditorPage() {
   const [pitchAndSpeedClipKey, setPitchAndSpeedClipKey] = useState<ClipKey | null>(null);
   const [renamingClipKey, setRenamingClipKey] = useState<string | null>(null);
   const [renderingPitchAndSpeedClipId, setRenderingPitchAndSpeedClipId] = useState<string | null>(null);
+  const [splittingSilenceClipId, setSplittingSilenceClipId] = useState<string | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const clipSelectionAnchorRef = useRef<ClipKey | null>(null);
   const [workspaceStore, setWorkspaceStore] = useState(loadWorkspaceStore);
@@ -891,7 +893,7 @@ export default function AudioEditorPage() {
         event.preventDefault();
         fitProjectToWidth();
       } else if (event.key === 'F2' && !modified && !event.altKey && !event.shiftKey
-        && selectedClips.length === 1 && !renderingPitchAndSpeedClipId) {
+        && selectedClips.length === 1 && !renderingPitchAndSpeedClipId && !splittingSilenceClipId) {
         const selected = selectedClips[0] as ClipKey | undefined;
         const clipExists = selected && project?.tracks.some((track) => track.id === selected.trackId
           && track.clips.some((clip) => clip.id === selected.clipId));
@@ -921,6 +923,7 @@ export default function AudioEditorPage() {
     playbackState,
     recordingState,
     renderingPitchAndSpeedClipId,
+    splittingSilenceClipId,
     isMixingAndRendering,
     isMutingTracks,
     scrollX,
@@ -1996,6 +1999,36 @@ export default function AudioEditorPage() {
       toast.error(`Render pitch and speed 失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setRenderingPitchAndSpeedClipId(null);
+    }
+  }
+
+  async function splitClipAtSilences(trackId: string, clipId: string) {
+    if (!project || renderingPitchAndSpeedClipId || splittingSilenceClipId) return;
+    const key = { trackId, clipId };
+    const clip = project.tracks.find((track) => track.id === trackId)
+      ?.clips.find((candidate) => candidate.id === clipId);
+    if (!clip) return;
+
+    const operationId = clipKeyId(key);
+    setSplittingSilenceClipId(operationId);
+    audioEngine.stopPlayback();
+    try {
+      const channels = await projectService.loadAudioChannels(clip.audioBufferId, project.sampleRate);
+      if (!channels) throw new Error(`片段“${clip.name || clip.id}”的音频不可用`);
+      const result = disjoinClipAtSilences(project, key, channels, generateId);
+      if (!result.didChange) {
+        toast.info('未找到所有声道同时精确为零且至少 0.01 秒的静音区间');
+        return;
+      }
+      await commitClipEdit(result.project, 'Split at silences');
+      setSelectedClips([]);
+      clipSelectionAnchorRef.current = null;
+      toast.success(`Split at silences · 移除 ${result.regions.length} 个静音区间`);
+    } catch (error) {
+      logger.error('Split at silences failed', error);
+      toast.error(`Split at silences 失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setSplittingSilenceClipId(null);
     }
   }
 
@@ -8344,6 +8377,8 @@ export default function AudioEditorPage() {
                 onRenderPitchAndSpeed={(clipId) => renderClipPitchAndSpeed(track.id, clipId)}
                 onToggleStretchWithTempoChanges={(clipId) => toggleStretchWithTempoChanges(track.id, clipId)}
                 onClipColorChange={(clipId, colorIndex) => changeClipColor(track.id, clipId, colorIndex)}
+                onSplitAtSilences={(clipId) => splitClipAtSilences(track.id, clipId)}
+                splittingSilenceClipId={splittingSilenceClipId}
                 renamingClipKey={renamingClipKey}
                 onRenameClipStart={(clipId) => {
                   selectClip(track.id, clipId, 'replace');
@@ -9669,6 +9704,8 @@ function TrackTimeline({
   onRenderPitchAndSpeed,
   onToggleStretchWithTempoChanges,
   onClipColorChange,
+  onSplitAtSilences,
+  splittingSilenceClipId,
   renamingClipKey,
   onRenameClipStart,
   onRenameClip,
@@ -9716,6 +9753,8 @@ function TrackTimeline({
   onRenderPitchAndSpeed: (clipId: string) => void;
   onToggleStretchWithTempoChanges: (clipId: string) => void;
   onClipColorChange: (clipId: string, colorIndex: number) => void;
+  onSplitAtSilences: (clipId: string) => void;
+  splittingSilenceClipId: string | null;
   renamingClipKey: string | null;
   onRenameClipStart: (clipId: string) => void;
   onRenameClip: (clipId: string, newTitle: string) => void;
@@ -9869,6 +9908,8 @@ function TrackTimeline({
           onRenderPitchAndSpeed={() => onRenderPitchAndSpeed(clip.id)}
           onToggleStretchWithTempoChanges={() => onToggleStretchWithTempoChanges(clip.id)}
           onClipColorChange={(colorIndex) => onClipColorChange(clip.id, colorIndex)}
+          onSplitAtSilences={() => onSplitAtSilences(clip.id)}
+          splittingSilenceClipId={splittingSilenceClipId}
           isRenaming={renamingClipKey === clipKeyId({ trackId: track.id, clipId: clip.id })}
           onRenameStart={() => onRenameClipStart(clip.id)}
           onRename={(newTitle) => onRenameClip(clip.id, newTitle)}
@@ -10305,6 +10346,8 @@ function ClipItem({
   onRenderPitchAndSpeed,
   onToggleStretchWithTempoChanges,
   onClipColorChange,
+  onSplitAtSilences,
+  splittingSilenceClipId,
   isRenaming,
   onRenameStart,
   onRename,
@@ -10348,6 +10391,8 @@ function ClipItem({
   onRenderPitchAndSpeed: () => void;
   onToggleStretchWithTempoChanges: () => void;
   onClipColorChange: (colorIndex: number) => void;
+  onSplitAtSilences: () => void;
+  splittingSilenceClipId: string | null;
   isRenaming: boolean;
   onRenameStart: () => void;
   onRename: (newTitle: string) => void;
@@ -10799,6 +10844,8 @@ function ClipItem({
   }
 
   const isRenderingPitchAndSpeed = renderingPitchAndSpeedClipId === clipKeyId({ trackId: track.id, clipId: clip.id });
+  const isSplittingAtSilences = splittingSilenceClipId === clipKeyId({ trackId: track.id, clipId: clip.id });
+  const clipOperationInProgress = renderingPitchAndSpeedClipId !== null || splittingSilenceClipId !== null;
   const pitchAndSpeedModified = hasClipPitchOrSpeed(clip);
   const clipColor = getClipColor(clip, trackColor);
 
@@ -10810,8 +10857,11 @@ function ClipItem({
       data-selected={isSelected}
       data-audio-buffer-id={clip.audioBufferId}
       data-start-time={clip.startTime}
+      data-offset={clip.offset}
       data-duration={clip.duration}
+      data-original-duration={clip.originalDuration}
       data-rendering-pitch-speed={isRenderingPitchAndSpeed ? 'true' : undefined}
+      data-splitting-silences={isSplittingAtSilences ? 'true' : undefined}
       data-pitch-cents={getClipPitchCents(clip)}
       data-optimize-for-voice={getClipOptimizeForVoice(clip)}
       data-stretch-ratio={getClipStretchRatio(clip)}
@@ -10863,7 +10913,7 @@ function ClipItem({
         onPointerUp={handleMoveEnd}
         onPointerCancel={() => setMoveDrag(null)}
         onDoubleClick={(e) => {
-          if (renderingPitchAndSpeedClipId) return;
+          if (clipOperationInProgress) return;
           e.preventDefault();
           e.stopPropagation();
           onRenameStart();
@@ -11052,7 +11102,7 @@ function ClipItem({
       <ContextMenuContent className="w-60">
         <ContextMenuItem
           data-testid="clip-rename-menu"
-          disabled={hasMultipleSelections || Boolean(renderingPitchAndSpeedClipId)}
+          disabled={hasMultipleSelections || clipOperationInProgress}
           onSelect={() => {
             // Radix restores trigger focus after onSelect; start editing after that handoff.
             window.setTimeout(onRenameStart, 0);
@@ -11063,7 +11113,7 @@ function ClipItem({
         <ContextMenuSub>
           <ContextMenuSubTrigger
             data-testid="clip-color-menu"
-            disabled={renderingPitchAndSpeedClipId !== null}
+            disabled={clipOperationInProgress}
           >
             Clip color
           </ContextMenuSubTrigger>
@@ -11091,28 +11141,36 @@ function ClipItem({
           </ContextMenuSubContent>
         </ContextMenuSub>
         <ContextMenuSeparator />
+        <ContextMenuItem
+          data-testid="clip-split-silences-menu"
+          disabled={hasMultipleSelections || clipOperationInProgress}
+          onSelect={onSplitAtSilences}
+        >
+          {isSplittingAtSilences ? 'Splitting at silences…' : 'Split at silences'}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
         <ContextMenuCheckboxItem
           checked={isClipStretchToMatchTempo(clip)}
-          disabled={tempoChangesDisabled || renderingPitchAndSpeedClipId !== null}
+          disabled={tempoChangesDisabled || clipOperationInProgress}
           onSelect={onToggleStretchWithTempoChanges}
         >
           Stretch with tempo changes
         </ContextMenuCheckboxItem>
         <ContextMenuItem
-          disabled={renderingPitchAndSpeedClipId !== null}
+          disabled={clipOperationInProgress}
           onSelect={onPitchAndSpeed}
         >
           Pitch and speed…
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
-          disabled={!pitchAndSpeedModified || renderingPitchAndSpeedClipId !== null}
+          disabled={!pitchAndSpeedModified || clipOperationInProgress}
           onSelect={onResetPitchAndSpeed}
         >
           Reset pitch and speed
         </ContextMenuItem>
         <ContextMenuItem
-          disabled={!pitchAndSpeedModified || renderingPitchAndSpeedClipId !== null}
+          disabled={!pitchAndSpeedModified || clipOperationInProgress}
           onSelect={onRenderPitchAndSpeed}
         >
           {isRenderingPitchAndSpeed ? 'Rendering pitch and speed…' : 'Render pitch and speed'}
