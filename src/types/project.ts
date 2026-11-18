@@ -57,6 +57,19 @@ export interface IEffect {
   params: Record<string, number>;
 }
 
+export type SpectrogramScale = 'linear' | 'logarithmic' | 'mel' | 'bark' | 'erb' | 'period';
+export type SpectrogramColorScheme = 'roseus' | 'classic' | 'grayscale' | 'inverse-grayscale';
+
+export interface ISpectrogramSettings {
+  scale: SpectrogramScale;
+  minFreq: number;
+  maxFreq: number;
+  gainDb: number;
+  rangeDb: number;
+  highBoostDbPerDec: number;
+  colorScheme: SpectrogramColorScheme;
+}
+
 export interface ITrack {
   id: string;
   name: string;
@@ -69,6 +82,9 @@ export interface ITrack {
   color: string;
   clips: IClip[];
   effects: IEffect[];
+  /** Audacity per-track Spectrogram settings; legacy tracks inherit the official global defaults. */
+  spectrogramUseGlobalSettings?: boolean;
+  spectrogramSettings?: ISpectrogramSettings;
 }
 
 export interface IViewState {

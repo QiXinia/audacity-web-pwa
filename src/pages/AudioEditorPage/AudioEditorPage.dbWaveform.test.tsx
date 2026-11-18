@@ -36,6 +36,11 @@ function makeProject(channelMode: 'stereo' | 'mono' = 'stereo'): IProject {
       armed: false,
       color: '#7aa2f7',
       effects: [],
+      spectrogramUseGlobalSettings: false,
+      spectrogramSettings: {
+        scale: 'linear', minFreq: 0, maxFreq: 100, gainDb: 0, rangeDb: 100,
+        highBoostDbPerDec: 0, colorScheme: 'classic',
+      },
       clips: [{
         id: 'clip-db',
         audioBufferId: channelMode === 'stereo' ? 'buffer-stereo' : 'buffer-mono',

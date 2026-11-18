@@ -32,6 +32,11 @@ function makeProject(): IProject {
       armed: false,
       color: '#7aa2f7',
       effects: [],
+      spectrogramUseGlobalSettings: false,
+      spectrogramSettings: {
+        scale: 'linear', minFreq: 0, maxFreq: 100, gainDb: 0, rangeDb: 100,
+        highBoostDbPerDec: 0, colorScheme: 'classic',
+      },
       clips: [{
         id: 'clip-one',
         audioBufferId: 'buffer-one',
@@ -347,5 +352,65 @@ describe('AudioEditorPage spectral rectangle selection', () => {
     expect(saved.selection).toEqual({ start: 2, end: 6 });
     expect(saved.spectralSelection?.lowHz).toBeCloseTo(100 * 12 / 38);
     expect(saved.spectralSelection?.highHz).toBeCloseTo(100 * 31 / 38);
+  });
+
+  it('opens official track Spectrogram settings, validates, saves overrides and restores global defaults', async () => {
+    await showSpectrum();
+    mocks.saveProject.mockClear();
+    fireEvent.click(screen.getByTestId('track-spectrogram-settings-track-one'));
+    expect(await screen.findByTestId('track-spectrogram-settings-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('spectrogram-use-global')).not.toBeChecked();
+    expect(screen.getByTestId('spectrogram-scale')).toHaveValue('linear');
+
+    fireEvent.change(screen.getByTestId('spectrogram-maxFreq'), { target: { value: '150' } });
+    fireEvent.click(screen.getByTestId('spectrogram-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('track-spectrogram-settings-dialog')).not.toBeInTheDocument());
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('track-spectrogram-settings-track-one'));
+    await screen.findByTestId('track-spectrogram-settings-dialog');
+    expect(screen.getByTestId('spectrogram-maxFreq')).toHaveValue(100);
+    fireEvent.change(screen.getByTestId('spectrogram-scale'), { target: { value: 'logarithmic' } });
+    fireEvent.change(screen.getByTestId('spectrogram-maxFreq'), { target: { value: '200' } });
+    fireEvent.click(screen.getByTestId('spectrogram-apply'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('至少为 1 Hz');
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('spectrogram-minFreq'), { target: { value: '20' } });
+    fireEvent.change(screen.getByTestId('spectrogram-gainDb'), { target: { value: '35' } });
+    fireEvent.change(screen.getByTestId('spectrogram-rangeDb'), { target: { value: '60' } });
+    fireEvent.change(screen.getByTestId('spectrogram-highBoostDbPerDec'), { target: { value: '12' } });
+    fireEvent.change(screen.getByTestId('spectrogram-color-scheme'), { target: { value: 'grayscale' } });
+    fireEvent.click(screen.getByTestId('spectrogram-apply'));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId('track-spectrogram-settings-dialog')).not.toBeInTheDocument());
+    const saved = mocks.saveProject.mock.calls.at(-1)?.[0] as IProject;
+    expect(saved.tracks[0]?.spectrogramUseGlobalSettings).toBe(false);
+    expect(saved.tracks[0]?.spectrogramSettings).toEqual({
+      scale: 'logarithmic', minFreq: 20, maxFreq: 200, gainDb: 35, rangeDb: 60,
+      highBoostDbPerDec: 12, colorScheme: 'grayscale',
+    });
+    const canvas = screen.getByTestId('waveform-canvas-clip-one');
+    expect(canvas).toHaveAttribute('data-spectrogram-scale', 'logarithmic');
+    expect(canvas).toHaveAttribute('data-spectrogram-min-frequency', '20');
+    expect(canvas).toHaveAttribute('data-spectrogram-max-frequency', '200');
+    expect(canvas).toHaveAttribute('data-spectrogram-gain', '35');
+    expect(canvas).toHaveAttribute('data-spectrogram-range', '60');
+    expect(canvas).toHaveAttribute('data-spectrogram-high-boost', '12');
+    expect(canvas).toHaveAttribute('data-spectrogram-color-scheme', 'grayscale');
+    expect(Number(screen.getByTestId('spectrum-ruler-tick-track-one-0-4').getAttribute('data-frequency-hz'))).toBeCloseTo(200);
+
+    fireEvent.click(screen.getByTestId('track-spectrogram-settings-track-one'));
+    await screen.findByTestId('track-spectrogram-settings-dialog');
+    fireEvent.click(screen.getByTestId('spectrogram-use-global'));
+    expect(screen.getByTestId('spectrogram-scale')).toHaveValue('mel');
+    expect(screen.getByTestId('spectrogram-maxFreq')).toHaveValue(500);
+    fireEvent.click(screen.getByTestId('spectrogram-apply'));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(2));
+    const restored = mocks.saveProject.mock.calls.at(-1)?.[0] as IProject;
+    expect(restored.tracks[0]?.spectrogramUseGlobalSettings).toBe(true);
+    expect(restored.tracks[0]?.spectrogramSettings).toBeUndefined();
+    expect(canvas).toHaveAttribute('data-spectrogram-scale', 'mel');
+    expect(canvas).toHaveAttribute('data-spectrogram-max-frequency', '500');
   });
 });

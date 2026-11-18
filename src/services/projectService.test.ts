@@ -124,7 +124,7 @@ describe('Project spectral frequency selection persistence', () => {
     record.spectralSelectionData = '{"lowHz":9000,"highHz":100}';
     expect(converter.recordToProject(record).spectralSelection).toEqual({
       lowHz: 100,
-      highHz: 4410,
+      highHz: 9000,
     });
 
     record.spectralSelectionData = '{broken';

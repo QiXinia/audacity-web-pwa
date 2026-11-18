@@ -209,7 +209,6 @@ import { processShelfFilterChannels, type ShelfFilterSettings } from '@/lib/shel
 import { processSpectralEditChannels, type SpectralEditKind, type SpectralEditSettings } from '@/lib/spectralEditEffect';
 import {
   frequencyToSpectrumY,
-  getSpectrumDisplayMaxHz,
   getSpectrumRulerTicks,
   normalizeFrequencySelection,
   spectrumYToFrequency,
@@ -452,7 +451,7 @@ import {
   saveChannelHeightRatio,
   saveStereoHeightsPreferences,
 } from '@/lib/stereoHeights';
-import type { IProject, ITrack, IClip, IEffect, IAnalysisLabel, ViewMode, EffectType, SnapMode } from '@/types/project';
+import type { IProject, ITrack, IClip, IEffect, IAnalysisLabel, ISpectrogramSettings, ViewMode, EffectType, SnapMode } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
 import ToneGeneratorDialog from './sections/ToneGeneratorDialog';
@@ -512,6 +511,7 @@ import { ChangeSpeedDialog } from './sections/ChangeSpeedDialog';
 import { ChangePitchDialog } from './sections/ChangePitchDialog';
 import { ClipPitchAndSpeedDialog } from './sections/ClipPitchAndSpeedDialog';
 import { ClipPropertiesDialog } from './sections/ClipPropertiesDialog';
+import { TrackSpectrogramSettingsDialog } from './sections/TrackSpectrogramSettingsDialog';
 import {
   applyClipPitchAndSpeed,
   getClipOptimizeForVoice,
@@ -533,6 +533,13 @@ import AutoDuckEffectDialog from './sections/AutoDuckEffectDialog';
 import CrossfadeTracksDialog from './sections/CrossfadeTracksDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { isClipStretchToMatchTempo, toggleClipStretchToMatchTempo } from '@/lib/clipTempo';
+import {
+  getSpectrogramColorValue,
+  getSpectrogramHighBoostDb,
+  getSpectrogramRgb,
+  getTrackSpectrogramSettings,
+  updateTrackSpectrogramSettings,
+} from '@/lib/spectrogramSettings';
 import { CLIP_COLORS, getClipColor, getClipColorIndex, setClipColor } from '@/lib/clipColor';
 import { renameClipTitle } from '@/lib/clipTitle';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
@@ -644,6 +651,7 @@ export default function AudioEditorPage() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedClips, setSelectedClips] = useState<ClipKey[]>([]);
   const [clipPropertiesKey, setClipPropertiesKey] = useState<ClipKey | null>(null);
+  const [spectrogramSettingsTrackId, setSpectrogramSettingsTrackId] = useState<string | null>(null);
   const [pitchAndSpeedClipKey, setPitchAndSpeedClipKey] = useState<ClipKey | null>(null);
   const [renamingClipKey, setRenamingClipKey] = useState<string | null>(null);
   const [renderingPitchAndSpeedClipId, setRenderingPitchAndSpeedClipId] = useState<string | null>(null);
@@ -1072,7 +1080,11 @@ export default function AudioEditorPage() {
         setSelection(proj.selection);
         setCursorPosition(proj.cursorPosition);
         audioEngine.seek(proj.cursorPosition);
-        setSpectralSelection(normalizeFrequencySelection(proj.spectralSelection, proj.sampleRate));
+        setSpectralSelection(normalizeFrequencySelection(
+          proj.spectralSelection,
+          proj.sampleRate,
+          getTrackSpectrogramSettings(proj.tracks[0], proj.sampleRate),
+        ));
         const restoredLoop = normalizeLoopRegion(proj.loopRegion);
         setLoopRegion(restoredLoop);
         setLoopEnabled(restoredLoop ? (proj.loopEnabled ?? false) : false);
@@ -2168,6 +2180,17 @@ export default function AudioEditorPage() {
     setClipPropertiesKey({ trackId, clipId });
   }
 
+  async function handleTrackSpectrogramSettings(
+    trackId: string,
+    settings: ISpectrogramSettings,
+    useGlobalSettings: boolean,
+  ) {
+    if (!project) return;
+    const updated = updateTrackSpectrogramSettings(project, trackId, settings, useGlobalSettings);
+    if (updated === project) return;
+    await commitClipEdit(updated, useGlobalSettings ? '恢复全局 Spectrogram 设置' : '调整轨道 Spectrogram 设置');
+  }
+
   function openClipPitchAndSpeed(trackId: string, clipId: string) {
     selectClip(trackId, clipId, 'replace');
     setClipPropertiesKey(null);
@@ -2965,6 +2988,10 @@ export default function AudioEditorPage() {
     setSpectralSelection(normalizeFrequencySelection(
       restoredProject.spectralSelection,
       restoredProject.sampleRate,
+      getTrackSpectrogramSettings(
+        restoredProject.tracks.find((track) => track.id === selectedTrackId) ?? restoredProject.tracks[0],
+        restoredProject.sampleRate,
+      ),
     ));
     setSelectedClips((current) => current.filter((key) => validClipKeys.has(clipKeyId(key))));
     setSelectedTrackId((current) => current && validTrackIds.has(current)
@@ -4684,7 +4711,14 @@ export default function AudioEditorPage() {
       };
       setProject(updated);
       setSelection(updated.selection);
-      setSpectralSelection(normalizeFrequencySelection(updated.spectralSelection, updated.sampleRate));
+      setSpectralSelection(normalizeFrequencySelection(
+        updated.spectralSelection,
+        updated.sampleRate,
+        getTrackSpectrogramSettings(
+          updated.tracks.find((track) => track.id === selectedTrackId) ?? updated.tracks[0],
+          updated.sampleRate,
+        ),
+      ));
       pushHistoryCmd({
         id: generateId(),
         label: labels[settings.kind],
@@ -6245,7 +6279,14 @@ export default function AudioEditorPage() {
       ? null
       : { start: Math.min(start, end), end: Math.max(start, end) };
     const nextFrequency = nextSelection
-      ? normalizeFrequencySelection({ lowHz: firstHz, highHz: secondHz }, project.sampleRate)
+      ? normalizeFrequencySelection(
+        { lowHz: firstHz, highHz: secondHz },
+        project.sampleRate,
+        getTrackSpectrogramSettings(
+          project.tracks.find((track) => track.id === selectedTrackId) ?? project.tracks[0],
+          project.sampleRate,
+        ),
+      )
       : null;
     const committedSelection = nextFrequency ? nextSelection : null;
     setSelection(committedSelection);
@@ -9017,6 +9058,7 @@ export default function AudioEditorPage() {
                 viewMode={viewMode}
                 halfWave={halfWave}
                 onViewModeChange={setViewMode}
+                onOpenSpectrogramSettings={() => setSpectrogramSettingsTrackId(track.id)}
                 onHalfWaveChange={setHalfWave}
                 onVerticalZoomChange={setVerticalZoom}
                 selection={selection}
@@ -9252,6 +9294,7 @@ export default function AudioEditorPage() {
           <SpectralSelectionBar
             selection={spectralSelection}
             sampleRate={project.sampleRate}
+            track={project.tracks.find((track) => track.id === selectedTrackId) ?? project.tracks[0]}
             onChange={(next) => handleSpectralSelectionChange(
               selection.start,
               selection.end,
@@ -9899,6 +9942,20 @@ export default function AudioEditorPage() {
           onApply={handleApplyChangeSpeed}
         />
 
+        {spectrogramSettingsTrackId && (() => {
+          const track = project.tracks.find((candidate) => candidate.id === spectrogramSettingsTrackId);
+          if (!track) return null;
+          return (
+            <TrackSpectrogramSettingsDialog
+              open
+              onOpenChange={(open) => { if (!open) setSpectrogramSettingsTrackId(null); }}
+              track={track}
+              sampleRate={project.sampleRate}
+              onApply={(settings, useGlobalSettings) => handleTrackSpectrogramSettings(track.id, settings, useGlobalSettings)}
+            />
+          );
+        })()}
+
         {clipPropertiesKey && (() => {
           const track = project.tracks.find((candidate) => candidate.id === clipPropertiesKey.trackId);
           const clip = track?.clips.find((candidate) => candidate.id === clipPropertiesKey.clipId);
@@ -10462,6 +10519,7 @@ function TrackTimeline({
   viewMode,
   halfWave,
   onViewModeChange,
+  onOpenSpectrogramSettings,
   onHalfWaveChange,
   onVerticalZoomChange,
   selection,
@@ -10519,6 +10577,7 @@ function TrackTimeline({
   viewMode: ViewMode;
   halfWave: boolean;
   onViewModeChange: (mode: ViewMode) => void;
+  onOpenSpectrogramSettings: () => void;
   onHalfWaveChange: (value: boolean) => void;
   onVerticalZoomChange: (value: number) => void;
   selection: { start: number; end: number } | null;
@@ -10566,6 +10625,7 @@ function TrackTimeline({
   onChannelHeightRatioCommit: (ratio: number) => void;
 }) {
   const trackHeight = 100;
+  const spectrogramSettings = getTrackSpectrogramSettings(track, sampleRate);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState(0);
   const [stereoClipIds, setStereoClipIds] = useState<string[]>([]);
@@ -10654,6 +10714,8 @@ function TrackTimeline({
           trackHeight={trackHeight}
           waveformHeight={trackHeight - 24}
           sampleRate={sampleRate}
+          settings={spectrogramSettings}
+          onOpenSettings={onOpenSpectrogramSettings}
           isStereo={stereoClipIds.length > 0}
           channelHeightRatio={channelHeightRatio}
           asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
@@ -10666,6 +10728,8 @@ function TrackTimeline({
           trackHeight={trackHeight}
           waveformHeight={trackHeight - 24}
           sampleRate={sampleRate}
+          spectrogramSettings={spectrogramSettings}
+          onOpenSpectrogramSettings={onOpenSpectrogramSettings}
           dbRange={dbRange}
           halfWave={halfWave}
           onViewModeChange={onViewModeChange}
@@ -10984,6 +11048,8 @@ function TrackSpectrumRuler({
   trackHeight,
   waveformHeight,
   sampleRate,
+  settings,
+  onOpenSettings,
   isStereo,
   channelHeightRatio,
   asymmetricStereoHeightsEnabled,
@@ -10996,6 +11062,8 @@ function TrackSpectrumRuler({
   trackHeight: number;
   waveformHeight: number;
   sampleRate: number;
+  settings: ISpectrogramSettings;
+  onOpenSettings: () => void;
   isStereo: boolean;
   channelHeightRatio: number;
   asymmetricStereoHeightsEnabled: boolean;
@@ -11019,20 +11087,35 @@ function TrackSpectrumRuler({
       style={{ width, height: trackHeight }}
       data-testid={`track-spectrum-ruler-${trackId}`}
       data-sample-rate={sampleRate}
+      data-spectrogram-scale={settings.scale}
+      data-spectrogram-min-frequency={settings.minFreq}
+      data-spectrogram-max-frequency={settings.maxFreq}
       data-channel-count={isStereo ? 2 : 1}
       data-stereo-ratio={ratio}
       role="group"
-      aria-label={`${trackName} 频率标尺，上限 ${getSpectrumDisplayMaxHz(sampleRate)} Hz`}
+      aria-label={`${trackName} 频率标尺，${settings.scale}，${settings.minFreq}–${settings.maxFreq} Hz`}
       onMouseDown={(event) => event.stopPropagation()}
     >
       {showHeader && (
         <div className="flex h-5 items-center justify-between gap-0.5 border-b border-[#59636c] px-1 text-[8px] font-medium">
           <span className="truncate">{trackName}</span>
-          <span className="shrink-0 text-[#8f9aa3]">Hz</span>
+          <span className="flex shrink-0 items-center gap-0.5 text-[#8f9aa3]">
+            Hz
+            <button
+              type="button"
+              data-testid={`track-spectrogram-settings-${trackId}`}
+              aria-label={`${trackName} Spectrogram settings`}
+              title="Spectrogram settings"
+              className="grid size-4 place-items-center rounded-sm hover:bg-[#434a50] hover:text-white"
+              onClick={(event) => { event.stopPropagation(); onOpenSettings(); }}
+            >
+              <Settings className="size-2.5" />
+            </button>
+          </span>
         </div>
       )}
       <div className={`pointer-events-none absolute inset-x-0 ${showHeader ? 'top-5' : 'top-0'}`} style={{ height: waveformHeight }}>
-        {bands.map((band) => getSpectrumRulerTicks(band.height, sampleRate).map((tick, index) => {
+        {bands.map((band) => getSpectrumRulerTicks(band.height, sampleRate, settings).map((tick, index) => {
           const labelTop = Math.min(Math.max(tick.y - 4, 0), Math.max(0, band.height - 8));
           return (
             <div
@@ -11067,6 +11150,8 @@ function TrackCombinedRuler({
   width,
   trackHeight,
   sampleRate,
+  spectrogramSettings,
+  onOpenSpectrogramSettings,
   dbRange,
   halfWave,
   onViewModeChange,
@@ -11083,6 +11168,8 @@ function TrackCombinedRuler({
   trackHeight: number;
   waveformHeight: number;
   sampleRate: number;
+  spectrogramSettings: ISpectrogramSettings;
+  onOpenSpectrogramSettings: () => void;
   dbRange: number;
   halfWave: boolean;
   onViewModeChange: (mode: ViewMode) => void;
@@ -11134,6 +11221,8 @@ function TrackCombinedRuler({
         trackHeight={trackHeight - waveRulerHeight}
         waveformHeight={paneHeight}
         sampleRate={sampleRate}
+        settings={spectrogramSettings}
+        onOpenSettings={onOpenSpectrogramSettings}
         isStereo={isStereo}
         channelHeightRatio={channelHeightRatio}
         asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
@@ -11287,6 +11376,7 @@ function ClipItem({
   const canvasHeight = trackHeight - 24;
   const isMultiView = viewMode === 'both';
   const paneHeight = isMultiView ? canvasHeight / 2 : canvasHeight;
+  const spectrogramSettings = getTrackSpectrogramSettings(track, sampleRate);
   const isStereoClip = audioChannels?.length === 2;
   const effectiveChannelHeightRatio = isStereoClip
     ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, paneHeight)
@@ -11393,11 +11483,12 @@ function ClipItem({
           bandHeight,
           sampleRate,
           1,
+          spectrogramSettings,
         );
       }
       ctx.restore();
     }
-  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, showRMS, isStereoClip, effectiveChannelHeightRatio, isMultiView, paneHeight]);
+  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, showRMS, isStereoClip, effectiveChannelHeightRatio, isMultiView, paneHeight, spectrogramSettings.scale, spectrogramSettings.minFreq, spectrogramSettings.maxFreq, spectrogramSettings.gainDb, spectrogramSettings.rangeDb, spectrogramSettings.highBoostDbPerDec, spectrogramSettings.colorScheme]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
@@ -11416,8 +11507,8 @@ function ClipItem({
     if (selectedEnd <= selectedStart) return null;
     const rectLeft = (selectedStart - clip.startTime) * pxPerSec;
     const rectRight = (selectedEnd - clip.startTime) * pxPerSec;
-    const top = frequencyToSpectrumY(spectralSelection.highHz, spectrumHeight, sampleRate);
-    const bottom = frequencyToSpectrumY(spectralSelection.lowHz, spectrumHeight, sampleRate);
+    const top = frequencyToSpectrumY(spectralSelection.highHz, spectrumHeight, sampleRate, spectrogramSettings);
+    const bottom = frequencyToSpectrumY(spectralSelection.lowHz, spectrumHeight, sampleRate, spectrogramSettings);
     return bottom > top
       ? { left: rectLeft, width: rectRight - rectLeft, top, height: bottom - top }
       : null;
@@ -11556,7 +11647,7 @@ function ClipItem({
     const y = clamp(e.clientY - rect.top, 0, rect.height);
     return {
       time: clip.startTime + x / pxPerSec,
-      frequencyHz: spectrumYToFrequency(y, rect.height, sampleRate),
+      frequencyHz: spectrumYToFrequency(y, rect.height, sampleRate, spectrogramSettings),
     };
   }
 
@@ -11711,6 +11802,13 @@ function ClipItem({
       data-raw-audio-tempo={clip.rawAudioTempo ?? ''}
       data-clip-color-index={getClipColorIndex(clip)}
       data-clip-group-id={clip.groupId ?? -1}
+      data-spectrogram-scale={spectrogramSettings.scale}
+      data-spectrogram-min-frequency={spectrogramSettings.minFreq}
+      data-spectrogram-max-frequency={spectrogramSettings.maxFreq}
+      data-spectrogram-gain={spectrogramSettings.gainDb}
+      data-spectrogram-range={spectrogramSettings.rangeDb}
+      data-spectrogram-high-boost={spectrogramSettings.highBoostDbPerDec}
+      data-spectrogram-color-scheme={spectrogramSettings.colorScheme}
       data-clip-color={clipColor}
       data-clip-name={clip.name ?? ''}
       data-rename-active={isRenaming ? 'true' : undefined}
@@ -11845,6 +11943,13 @@ function ClipItem({
         data-waveform-pane-height={viewMode === 'spectrum' ? 0 : paneHeight}
         data-spectrum-pane-height={viewMode === 'spectrum' || isMultiView ? paneHeight : 0}
         data-spectrum-top={isMultiView ? paneHeight : 0}
+        data-spectrogram-scale={spectrogramSettings.scale}
+        data-spectrogram-min-frequency={spectrogramSettings.minFreq}
+        data-spectrogram-max-frequency={spectrogramSettings.maxFreq}
+        data-spectrogram-gain={spectrogramSettings.gainDb}
+        data-spectrogram-range={spectrogramSettings.rangeDb}
+        data-spectrogram-high-boost={spectrogramSettings.highBoostDbPerDec}
+        data-spectrogram-color-scheme={spectrogramSettings.colorScheme}
       />
       {isMultiView && (
         <div
@@ -12244,43 +12349,41 @@ function drawSpectrumMini(
   height: number,
   sampleRate: number,
   alpha: number,
+  settings: ISpectrogramSettings,
 ) {
-  // Compute spectrogram-like overview
   const windowSize = 2048;
   const hopSize = Math.floor(data.length / width) || 1;
   const specData = wasmProcessor.spectrogram(data, windowSize, hopSize);
   const specLen = windowSize / 2 + 1;
+  const numFrames = Math.floor(specData.length / specLen);
+  if (numFrames <= 0 || width <= 0 || height <= 0) return;
 
   ctx.globalAlpha = alpha;
-
-  const numFrames = Math.floor(specData.length / specLen);
   const pxPerFrame = width / numFrames;
-
-  // Linear overview of the first 20% of Nyquist; shared with rectangle coordinates.
   const hzPerBin = sampleRate / windowSize;
-  const displayBins = Math.min(
-    specLen,
-    Math.floor(getSpectrumDisplayMaxHz(sampleRate) / hzPerBin) + 1,
-  );
+  const maxBin = Math.min(specLen - 1, Math.floor(settings.maxFreq / hzPerBin));
 
-  for (let f = 0; f < numFrames; f++) {
-    const x = f * pxPerFrame;
-    const frameStart = f * specLen;
-
-    for (let b = 0; b < displayBins; b++) {
-      const mag = specData[frameStart + b];
-      // Convert to dB
-      const db = 20 * Math.log10(Math.max(mag, 0.0001));
-      // Normalize -100 to 0 dB
-      const normalized = (db + 100) / 100;
-
-      if (normalized > 0.05) {
-        const y = height - (b / displayBins) * height;
-        const hue = 240 - normalized * 200; // blue to red
-        const lightness = 30 + normalized * 40;
-        ctx.fillStyle = `hsla(${hue}, 80%, ${lightness}%, ${normalized * 0.8})`;
-        ctx.fillRect(Math.floor(x), Math.floor(y - 1), Math.ceil(pxPerFrame), 2);
+  // Audacity findValue: every display row reads the bins in its actual scale-mapped frequency interval.
+  for (let frame = 0; frame < numFrames; frame++) {
+    const x = frame * pxPerFrame;
+    const frameStart = frame * specLen;
+    for (let pixelY = 0; pixelY < height; pixelY++) {
+      const highHz = spectrumYToFrequency(pixelY, height, sampleRate, settings);
+      const lowHz = spectrumYToFrequency(pixelY + 1, height, sampleRate, settings);
+      const firstBin = Math.max(0, Math.min(maxBin, Math.floor(lowHz / hzPerBin + 0.5)));
+      const limitBin = Math.min(maxBin + 1, Math.max(firstBin + 1, Math.floor(highHz / hzPerBin + 0.5)));
+      let maximumDb = -Infinity;
+      for (let bin = firstBin; bin < limitBin; bin++) {
+        const magnitude = specData[frameStart + bin];
+        if (!Number.isFinite(magnitude)) continue;
+        const db = 20 * Math.log10(Math.max(magnitude, 1e-10))
+          + getSpectrogramHighBoostDb(bin, windowSize, sampleRate, settings.highBoostDbPerDec);
+        maximumDb = Math.max(maximumDb, db);
       }
+      const value = getSpectrogramColorValue(maximumDb, settings);
+      const [red, green, blue] = getSpectrogramRgb(value, settings.colorScheme);
+      ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
+      ctx.fillRect(Math.floor(x), pixelY, Math.ceil(pxPerFrame), 1);
     }
   }
 

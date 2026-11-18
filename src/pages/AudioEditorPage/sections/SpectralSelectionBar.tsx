@@ -16,12 +16,15 @@ import {
   getSpectrumDisplayMaxHz,
   type FrequencySelection,
 } from '@/lib/spectralSelection';
+import { getTrackSpectrogramSettings } from '@/lib/spectrogramSettings';
+import type { ITrack } from '@/types/project';
 
 type EditMode = 'center-width' | 'low-high';
 
 interface SpectralSelectionBarProps {
   selection: FrequencySelection;
   sampleRate: number;
+  track?: ITrack;
   onChange: (selection: FrequencySelection) => void;
 }
 
@@ -32,13 +35,15 @@ function draftValue(value: number | null): string {
 export default function SpectralSelectionBar({
   selection,
   sampleRate,
+  track,
   onChange,
 }: SpectralSelectionBarProps) {
   const [mode, setMode] = useState<EditMode>('center-width');
   const [firstText, setFirstText] = useState('');
   const [secondText, setSecondText] = useState('');
   const [error, setError] = useState('');
-  const maxHz = getSpectrumDisplayMaxHz(sampleRate);
+  const settings = getTrackSpectrogramSettings(track, sampleRate);
+  const maxHz = getSpectrumDisplayMaxHz(sampleRate, settings);
   const centerHz = getFrequencySelectionCenterHz(selection);
   const logBandwidth = getFrequencySelectionLogBandwidth(selection);
 
@@ -58,10 +63,10 @@ export default function SpectralSelectionBar({
     const first = firstText.trim() === '' ? Number.NaN : Number(firstText);
     const second = secondText.trim() === '' ? Number.NaN : Number(secondText);
     const next = mode === 'center-width'
-      ? createFrequencySelectionFromCenterBandwidth(first, second, sampleRate)
-      : createFrequencySelectionFromBounds(first, second, sampleRate);
+      ? createFrequencySelectionFromCenterBandwidth(first, second, sampleRate, settings)
+      : createFrequencySelectionFromBounds(first, second, sampleRate, settings);
     if (!next) {
-      setError(`请输入有效选区：0 ≤ low < high ≤ ${maxHz} Hz；几何中心与对数带宽必须大于 0。`);
+      setError(`请输入有效选区：${settings.minFreq} ≤ low < high ≤ ${maxHz} Hz；几何中心与对数带宽必须大于 0。`);
       return;
     }
     setError('');
@@ -80,7 +85,7 @@ export default function SpectralSelectionBar({
     >
       <div className="flex min-w-36 flex-col gap-0.5">
         <span className="font-semibold text-[#e4e5e7]">Spectral Selection</span>
-        <span className="text-[#aab0b6]">Canvas 显示范围 0–{maxHz} Hz</span>
+        <span className="text-[#aab0b6]">Canvas 显示范围 {settings.minFreq}–{maxHz} Hz</span>
       </div>
       <Select value={mode} onValueChange={(value) => setMode(value as EditMode)}>
         <SelectTrigger aria-label="频率编辑模式" className="h-7 w-44 text-[10px]">
@@ -99,7 +104,7 @@ export default function SpectralSelectionBar({
             className="au-time-field h-7 w-36 rounded-sm px-2 font-mono text-[11px]"
             data-testid="spectral-selection-primary-input"
             inputMode="decimal"
-            min={centerMode ? undefined : 0}
+            min={centerMode ? undefined : settings.minFreq}
             max={centerMode ? undefined : maxHz}
             step="any"
             type="number"
@@ -114,7 +119,7 @@ export default function SpectralSelectionBar({
             className="au-time-field h-7 w-36 rounded-sm px-2 font-mono text-[11px]"
             data-testid="spectral-selection-secondary-input"
             inputMode="decimal"
-            min={centerMode ? undefined : 0}
+            min={centerMode ? undefined : settings.minFreq}
             max={centerMode ? undefined : maxHz}
             step="any"
             type="number"

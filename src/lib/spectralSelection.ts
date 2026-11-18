@@ -1,30 +1,40 @@
 // Audacity spectral selection is a frequency range independent of the time range.
-// The current spectrogram overview displays the first 20% of Nyquist linearly.
 import { clamp } from '@/lib/audioUtils';
+import {
+  getDefaultSpectrogramSettings,
+  normalizeSpectrogramSettings,
+  spectrogramFrequencyToY,
+  spectrogramPositionToFrequency,
+  spectrogramYToFrequency,
+} from '@/lib/spectrogramSettings';
+import type { ISpectrogramSettings } from '@/types/project';
 
 export interface FrequencySelection {
   lowHz: number;
   highHz: number;
 }
 
-export const SPECTRUM_DISPLAY_NYQUIST_FRACTION = 0.2;
-
-export function getSpectrumDisplayMaxHz(sampleRate: number): number {
+export function getSpectrumDisplayMaxHz(
+  sampleRate: number,
+  settings?: Partial<ISpectrogramSettings>,
+): number {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) return 0;
-  return (sampleRate / 2) * SPECTRUM_DISPLAY_NYQUIST_FRACTION;
+  return normalizeSpectrogramSettings(settings ?? getDefaultSpectrogramSettings(sampleRate), sampleRate).maxFreq;
 }
 
 export function normalizeFrequencySelection(
   value: unknown,
   sampleRate: number,
+  settings?: Partial<ISpectrogramSettings>,
 ): FrequencySelection | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<FrequencySelection>;
   if (!Number.isFinite(candidate.lowHz) || !Number.isFinite(candidate.highHz)) return null;
-  const maxHz = getSpectrumDisplayMaxHz(sampleRate);
-  if (maxHz <= 0) return null;
-  const lowHz = clamp(Math.min(candidate.lowHz!, candidate.highHz!), 0, maxHz);
-  const highHz = clamp(Math.max(candidate.lowHz!, candidate.highHz!), 0, maxHz);
+  const resolved = normalizeSpectrogramSettings(settings, sampleRate);
+  const maxHz = resolved.maxFreq;
+  if (maxHz <= resolved.minFreq) return null;
+  const lowHz = clamp(Math.min(candidate.lowHz!, candidate.highHz!), resolved.minFreq, maxHz);
+  const highHz = clamp(Math.max(candidate.lowHz!, candidate.highHz!), resolved.minFreq, maxHz);
   return highHz > lowHz ? { lowHz, highHz } : null;
 }
 
@@ -46,10 +56,12 @@ export function createFrequencySelectionFromBounds(
   lowHz: number,
   highHz: number,
   sampleRate: number,
+  settings?: Partial<ISpectrogramSettings>,
 ): FrequencySelection | null {
-  const maxHz = getSpectrumDisplayMaxHz(sampleRate);
-  if (!Number.isFinite(lowHz) || !Number.isFinite(highHz) || maxHz <= 0) return null;
-  if (lowHz < 0 || highHz <= lowHz || highHz > maxHz) return null;
+  const resolved = normalizeSpectrogramSettings(settings, sampleRate);
+  const maxHz = resolved.maxFreq;
+  if (!Number.isFinite(lowHz) || !Number.isFinite(highHz) || maxHz <= resolved.minFreq) return null;
+  if (lowHz < resolved.minFreq || highHz <= lowHz || highHz > maxHz) return null;
   return { lowHz, highHz };
 }
 
@@ -57,21 +69,23 @@ export function createFrequencySelectionFromCenterBandwidth(
   centerHz: number,
   logBandwidth: number,
   sampleRate: number,
+  settings?: Partial<ISpectrogramSettings>,
 ): FrequencySelection | null {
   if (!Number.isFinite(centerHz) || !Number.isFinite(logBandwidth)) return null;
   if (centerHz <= 0 || logBandwidth <= 0) return null;
   const ratio = Math.exp(logBandwidth / 2);
   if (!Number.isFinite(ratio) || ratio <= 1) return null;
-  return createFrequencySelectionFromBounds(centerHz / ratio, centerHz * ratio, sampleRate);
+  return createFrequencySelectionFromBounds(centerHz / ratio, centerHz * ratio, sampleRate, settings);
 }
 
 export function parseFrequencySelection(
   data: string | null | undefined,
   sampleRate: number,
+  settings?: Partial<ISpectrogramSettings>,
 ): FrequencySelection | null {
   if (!data) return null;
   try {
-    return normalizeFrequencySelection(JSON.parse(data), sampleRate);
+    return normalizeFrequencySelection(JSON.parse(data), sampleRate, settings);
   } catch {
     return null;
   }
@@ -81,21 +95,18 @@ export function spectrumYToFrequency(
   y: number,
   height: number,
   sampleRate: number,
+  settings?: Partial<ISpectrogramSettings>,
 ): number {
-  const maxHz = getSpectrumDisplayMaxHz(sampleRate);
-  if (maxHz <= 0 || !Number.isFinite(height) || height <= 0 || !Number.isFinite(y)) return 0;
-  const ratio = 1 - clamp(y, 0, height) / height;
-  return clamp(ratio * maxHz, 0, maxHz);
+  return spectrogramYToFrequency(y, height, sampleRate, settings);
 }
 
 export function frequencyToSpectrumY(
   frequencyHz: number,
   height: number,
   sampleRate: number,
+  settings?: Partial<ISpectrogramSettings>,
 ): number {
-  const maxHz = getSpectrumDisplayMaxHz(sampleRate);
-  if (maxHz <= 0 || !Number.isFinite(height) || height <= 0 || !Number.isFinite(frequencyHz)) return 0;
-  return clamp(height - (clamp(frequencyHz, 0, maxHz) / maxHz) * height, 0, height);
+  return spectrogramFrequencyToY(frequencyHz, height, sampleRate, settings);
 }
 
 export interface SpectrumRulerTick {
@@ -112,17 +123,21 @@ function formatSpectrumRulerFrequency(frequencyHz: number): string {
   return `${Number(frequencyHz.toFixed(frequencyHz < 10 ? 1 : 0))}`;
 }
 
-/** Ticks share the exact linear frequency mapping used by spectral selections. */
-export function getSpectrumRulerTicks(height: number, sampleRate: number): SpectrumRulerTick[] {
-  const maxHz = getSpectrumDisplayMaxHz(sampleRate);
-  if (maxHz <= 0 || !Number.isFinite(height) || height <= 0) return [];
+/** Ticks share the exact Audacity NumberScale mapping used by selections and pixels. */
+export function getSpectrumRulerTicks(
+  height: number,
+  sampleRate: number,
+  settings?: Partial<ISpectrogramSettings>,
+): SpectrumRulerTick[] {
+  const resolved = normalizeSpectrogramSettings(settings, sampleRate);
+  if (!(resolved.maxFreq > resolved.minFreq) || !Number.isFinite(height) || height <= 0) return [];
   const fractions = height >= 60 ? [0, 0.25, 0.5, 0.75, 1] : [0, 0.5, 1];
   return fractions.map((fraction) => {
-    const frequencyHz = maxHz * fraction;
+    const frequencyHz = spectrogramPositionToFrequency(fraction, sampleRate, resolved);
     return {
       frequencyHz,
       label: formatSpectrumRulerFrequency(frequencyHz),
-      y: frequencyToSpectrumY(frequencyHz, height, sampleRate),
+      y: frequencyToSpectrumY(frequencyHz, height, sampleRate, resolved),
     };
   });
 }
