@@ -372,4 +372,29 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     expect(ruler).toHaveAttribute('data-half-wave', 'true');
     expect(screen.getByTestId('db-ruler-tick-track-db-0-positive-n60')).toHaveTextContent('60');
   });
+
+  it('toggles RMS from the View menu, redraws and restores it with the Workspace', async () => {
+    await renderProject();
+    expect(screen.getByTestId('waveform-canvas-clip-db')).toHaveAttribute('data-show-rms', 'false');
+    await waitFor(() => expect(mocks.drawWaveform).toHaveBeenCalled());
+    expect(mocks.drawWaveform.mock.calls.some((call) => call[12] === false)).toBe(true);
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '视图' }));
+    const menuItem = await screen.findByTestId('view-show-rms');
+    expect(menuItem).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(menuItem);
+
+    await waitFor(() => expect(screen.getByTestId('waveform-canvas-clip-db')).toHaveAttribute('data-show-rms', 'true'));
+    await waitFor(() => expect(mocks.drawWaveform.mock.calls.some((call) => call[12] === true)).toBe(true));
+    await waitFor(() => {
+      const active = loadWorkspaceStore().presets.find((preset) => preset.id === loadWorkspaceStore().activeId);
+      expect(active?.layout.showRMS).toBe(true);
+    });
+
+    cleanup();
+    mocks.drawWaveform.mockClear();
+    await renderProject();
+    expect(screen.getByTestId('waveform-canvas-clip-db')).toHaveAttribute('data-show-rms', 'true');
+    await waitFor(() => expect(mocks.drawWaveform.mock.calls.some((call) => call[12] === true)).toBe(true));
+  });
 });

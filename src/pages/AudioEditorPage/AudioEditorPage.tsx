@@ -552,6 +552,7 @@ export default function AudioEditorPage() {
   const [showTrackPanel, setShowTrackPanel] = useState(activeWorkspace.layout.showTrackPanel);
   const [showMixer, setShowMixer] = useState(activeWorkspace.layout.showMixer);
   const [showClipping, setShowClipping] = useState(activeWorkspace.layout.showClipping);
+  const [showRMS, setShowRMS] = useState(activeWorkspace.layout.showRMS);
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
   const [stereoHeightsPreferences, setStereoHeightsPreferences] = useState(() => (
@@ -741,11 +742,12 @@ export default function AudioEditorPage() {
     showTrackPanel,
     showMixer,
     showClipping,
+    showRMS,
     viewMode,
     halfWave,
     horizontalZoom,
     verticalZoom,
-  }), [showTrackPanel, showMixer, showClipping, viewMode, halfWave, horizontalZoom, verticalZoom]);
+  }), [showTrackPanel, showMixer, showClipping, showRMS, viewMode, halfWave, horizontalZoom, verticalZoom]);
 
   // Workspace customizations are local and automatically restored on reopen.
   useEffect(() => {
@@ -914,6 +916,7 @@ export default function AudioEditorPage() {
         setShowTrackPanel(workspace.layout.showTrackPanel);
         setShowMixer(workspace.layout.showMixer);
         setShowClipping(workspace.layout.showClipping);
+        setShowRMS(workspace.layout.showRMS);
         setScrollX(proj.viewState.scrollX);
         setSelection(proj.selection);
         setCursorPosition(proj.cursorPosition);
@@ -1955,6 +1958,7 @@ export default function AudioEditorPage() {
     setShowTrackPanel(layout.showTrackPanel);
     setShowMixer(layout.showMixer);
     setShowClipping(layout.showClipping);
+    setShowRMS(layout.showRMS);
     setViewMode(layout.viewMode);
     setHalfWave(layout.halfWave);
     setHorizontalZoom(normalizeHorizontalZoom(layout.horizontalZoom));
@@ -6935,6 +6939,14 @@ export default function AudioEditorPage() {
               <DropdownMenuItem onClick={() => setShowClipping((visible) => !visible)}>
                 {showClipping ? '隐藏' : '显示'}波形削波
               </DropdownMenuItem>
+              <DropdownMenuCheckboxItem
+                checked={showRMS}
+                onClick={() => setShowRMS((visible) => !visible)}
+                disabled={viewMode === 'spectrum'}
+                data-testid="view-show-rms"
+              >
+                显示波形 RMS
+              </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>水平缩放 {Math.round(horizontalZoom)}%</DropdownMenuLabel>
               <DropdownMenuItem
@@ -8188,6 +8200,7 @@ export default function AudioEditorPage() {
                 scrollX={scrollX}
                 verticalZoom={verticalZoom}
                 showClipping={showClipping}
+                showRMS={showRMS}
                 isSelected={selectedTrackId === track.id}
                 selectedClips={selectedClips}
                 onSelectClip={(clipId, mode) => selectClip(track.id, clipId, mode)}
@@ -9482,6 +9495,7 @@ function TrackTimeline({
   scrollX,
   verticalZoom,
   showClipping,
+  showRMS,
   isSelected,
   selectedClips,
   onSelectClip,
@@ -9517,6 +9531,7 @@ function TrackTimeline({
   scrollX: number;
   verticalZoom: number;
   showClipping: boolean;
+  showRMS: boolean;
   isSelected: boolean;
   selectedClips: ClipKey[];
   onSelectClip: (clipId: string, mode: ClipSelectionMode) => void;
@@ -9621,6 +9636,7 @@ function TrackTimeline({
           trackHeight={trackHeight}
           verticalZoom={verticalZoom}
           showClipping={showClipping}
+          showRMS={showRMS}
           viewMode={viewMode}
           halfWave={halfWave}
           dbRange={dbRange}
@@ -9875,6 +9891,7 @@ function ClipItem({
   trackHeight,
   verticalZoom,
   showClipping,
+  showRMS,
   viewMode,
   halfWave,
   dbRange,
@@ -9906,6 +9923,7 @@ function ClipItem({
   trackHeight: number;
   verticalZoom: number;
   showClipping: boolean;
+  showRMS: boolean;
   viewMode: ViewMode;
   halfWave: boolean;
   dbRange: number;
@@ -10037,6 +10055,7 @@ function ClipItem({
           showClipping,
           viewMode === 'waveformDb' ? dbRange : undefined,
           halfWave,
+          showRMS,
         );
       }
 
@@ -10057,7 +10076,7 @@ function ClipItem({
       }
       ctx.restore();
     }
-  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, isStereoClip, effectiveChannelHeightRatio]);
+  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, showRMS, isStereoClip, effectiveChannelHeightRatio]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
@@ -10358,6 +10377,7 @@ function ClipItem({
         data-view-mode={viewMode}
         data-db-range={viewMode === 'waveformDb' || viewMode === 'waveformDbLinear' ? dbRange : undefined}
         data-half-wave={halfWave}
+        data-show-rms={showRMS}
         data-channel-count={audioChannels?.length ?? 0}
         data-stereo-ratio={effectiveChannelHeightRatio}
       />
