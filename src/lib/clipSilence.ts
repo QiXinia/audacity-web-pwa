@@ -50,6 +50,7 @@ export function splitClipAtSilences(
   key: ClipKey,
   channels: readonly Float32Array[],
   createId: () => string,
+  range?: { start: number; end: number },
 ): { project: IProject; didChange: boolean; regions: ClipSilenceRegion[] } {
   const noChange = { project, didChange: false, regions: [] };
   if (
@@ -57,6 +58,11 @@ export function splitClipAtSilences(
     || !Number.isFinite(project.sampleRate)
     || project.sampleRate <= 0
   ) return noChange;
+  const normalizedRange = range
+    && Number.isFinite(range.start) && Number.isFinite(range.end)
+    ? { start: Math.min(range.start, range.end), end: Math.max(range.start, range.end) }
+    : null;
+  if (range && !normalizedRange) return noChange;
 
   const trackIndex = project.tracks.findIndex((track) => track.id === key.trackId);
   if (trackIndex < 0) return noChange;
@@ -75,8 +81,19 @@ export function splitClipAtSilences(
   );
   if (visibleEnd <= visibleStart) return noChange;
 
+  const toSourceFrame = (timelineTime: number) => visibleStart + Math.round(
+    (timelineTime - clip.startTime) * ratio * sampleRate,
+  );
+  const scanStart = normalizedRange
+    ? Math.max(visibleStart, Math.min(visibleEnd, toSourceFrame(normalizedRange.start)))
+    : visibleStart;
+  const scanEnd = normalizedRange
+    ? Math.max(scanStart, Math.min(visibleEnd, toSourceFrame(normalizedRange.end)))
+    : visibleEnd;
+  if (scanEnd <= scanStart) return noChange;
+
   const minSilenceFrames = Math.max(1, Math.round(CLIP_SILENCE_MIN_SECONDS * sampleRate));
-  const regions = findExactSilenceRegions(channels, visibleStart, visibleEnd, minSilenceFrames);
+  const regions = findExactSilenceRegions(channels, scanStart, scanEnd, minSilenceFrames);
   if (regions.length === 0) return noChange;
 
   const clips: IClip[] = [];

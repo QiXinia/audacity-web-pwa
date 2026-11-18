@@ -193,6 +193,53 @@ describe('Audacity 4 Split at silences', () => {
     expect(splitClipAtSilences(source, { trackId: 'missing', clipId: key.clipId }, [pcm], ids())).toEqual({ project: source, didChange: false, regions: [] });
   });
 
+  it('limits range Disjoin to the selection and preserves audio and silence outside it', () => {
+    const pcm = new Float32Array(470);
+    pcm.fill(0.5, 0, 10);
+    pcm.fill(-0.5, 460);
+    const source = makeProject();
+    const result = splitClipAtSilences(source, key, [pcm], ids(), { start: 1.1, end: 1.3 });
+    expect(result.didChange).toBe(true);
+    expect(result.regions).toEqual([{ startFrame: 100, endFrame: 300 }]);
+    const [left, right, untouched] = result.project.tracks[0].clips;
+    expect(left).toMatchObject({ startTime: 1, offset: 0, duration: 0.1, fadeIn: 0.01, fadeOut: 0 });
+    expect(right).toMatchObject({ startTime: 1.3, offset: 0.3, duration: 0.17, fadeIn: 0, fadeOut: 0.02 });
+    expect(untouched.id).toBe('other');
+    expect(source.tracks[0].clips[0]).toMatchObject({ startTime: 1, offset: 0, duration: 0.47 });
+  });
+
+  it('maps a stretched range in raw source frames and preserves unselected silence', () => {
+    const pcm = new Float32Array(200);
+    pcm.fill(0.5);
+    pcm.fill(0, 60, 120);
+    const clip = makeClip({
+      startTime: 2, offset: 0.02, duration: 0.08, originalDuration: 0.2, stretchRatio: 2,
+    });
+    const result = splitClipAtSilences(
+      makeProject(clip),
+      key,
+      [pcm],
+      ids(),
+      { start: 2.025, end: 2.045 },
+    );
+    expect(result.regions).toEqual([{ startFrame: 70, endFrame: 110 }]);
+    const [left, right] = result.project.tracks[0].clips;
+    expect(left).toMatchObject({ startTime: 2, offset: 0.02, duration: 0.025, stretchRatio: 2 });
+    expect(right.startTime).toBeCloseTo(2.045, 10);
+    expect(right).toMatchObject({ offset: 0.11, duration: 0.035, stretchRatio: 2 });
+  });
+
+  it('returns a no-op when the requested range contains no long exact silence', () => {
+    const pcm = new Float32Array(470);
+    pcm.fill(0.5, 0, 10);
+    pcm.fill(-0.5, 460);
+    const source = makeProject();
+    expect(splitClipAtSilences(source, key, [pcm], ids(), { start: 1, end: 1.005 }))
+      .toEqual({ project: source, didChange: false, regions: [] });
+    expect(splitClipAtSilences(source, key, [pcm], ids(), { start: 2, end: 3 }))
+      .toEqual({ project: source, didChange: false, regions: [] });
+  });
+
   it('exposes exact frame boundaries independently of project editing', () => {
     const pcm = new Float32Array(25);
     pcm.fill(1, 0, 5);

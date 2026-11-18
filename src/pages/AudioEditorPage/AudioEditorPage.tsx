@@ -44,6 +44,7 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { DeleteBehaviorPanel } from '@/components/DeleteBehaviorPanel';
+import { SelectionContextMenu } from '@/components/SelectionContextMenu';
 import {
   Dialog,
   DialogContent,
@@ -378,6 +379,12 @@ import {
 } from '@/lib/clipEditing';
 import { splitClipAtSilences as disjoinClipAtSilences } from '@/lib/clipSilence';
 import { applySelectionEdit, type SelectionRippleMode } from '@/lib/selectionEdit';
+import { planRangeJoin, splitRangeSelection } from '@/lib/selectionStructure';
+import {
+  insertBlankSpaceOnTracks,
+  pasteClipIntoTrack,
+  type SelectionPasteMode,
+} from '@/lib/selectionPaste';
 import {
   loadDeletePreferences,
   needsDeleteOnboarding,
@@ -588,6 +595,9 @@ export default function AudioEditorPage() {
   const [renderingPitchAndSpeedClipId, setRenderingPitchAndSpeedClipId] = useState<string | null>(null);
   const [splittingSilenceClipId, setSplittingSilenceClipId] = useState<string | null>(null);
   const [selectionEditOperation, setSelectionEditOperation] = useState<string | null>(null);
+  const [selectionUtilityOperation, setSelectionUtilityOperation] = useState<string | null>(null);
+  const [selectionContextMenu, setSelectionContextMenu] = useState<{ x: number; y: number; trackId: string } | null>(null);
+  const [hasAudioClipboard, setHasAudioClipboard] = useState(false);
   const [deletePreferences, setDeletePreferences] = useState<DeletePreferences>(() => loadDeletePreferences());
   const [deleteOnboarding, setDeleteOnboarding] = useState<{
     operation: 'cut' | 'delete';
@@ -828,6 +838,21 @@ export default function AudioEditorPage() {
     checkMicPermission();
   }, [projectId]);
 
+  useEffect(() => {
+    let active = true;
+    setSelectionContextMenu(null);
+    setHasAudioClipboard(false);
+    void (async () => {
+      try {
+        const entry = await audioDb.clipboard.get('current');
+        if (active) setHasAudioClipboard(Boolean(entry));
+      } catch {
+        if (active) setHasAudioClipboard(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [projectId]);
+
   // Register callbacks
   useEffect(() => {
     audioEngine.setCursorChangeCallback((pos) => {
@@ -946,6 +971,8 @@ export default function AudioEditorPage() {
     recordingState,
     renderingPitchAndSpeedClipId,
     splittingSilenceClipId,
+    selectionEditOperation,
+    selectionUtilityOperation,
     isMixingAndRendering,
     isMutingTracks,
     scrollX,
@@ -2921,7 +2948,20 @@ export default function AudioEditorPage() {
       data: serializeAudioClipboard(clipboardData),
       createdAt: Date.now(),
     });
+    setHasAudioClipboard(true);
     return true;
+  }
+
+  async function openSelectionContextMenu(trackId: string, x: number, y: number) {
+    if (!selection || selection.end <= selection.start) return;
+    setSelectedTrackId(trackId);
+    setSelectionContextMenu({ trackId, x, y });
+    try {
+      const entry = await audioDb.clipboard.get('current');
+      setHasAudioClipboard(Boolean(entry));
+    } catch {
+      setHasAudioClipboard(false);
+    }
   }
 
   async function handleCut() {
@@ -3051,6 +3091,22 @@ export default function AudioEditorPage() {
           </DropdownMenuSubContent>
         </DropdownMenuSub>
         <DropdownMenuSub>
+          <DropdownMenuSubTrigger disabled={disabled || !hasAudioClipboard} data-testid="selection-paste-menu">
+            Paste and…
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-80">
+            <DropdownMenuItem data-testid="selection-paste-overlap" disabled={disabled || !hasAudioClipboard} onSelect={() => void handlePaste('overlap')}>
+              Paste and overlap
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="selection-paste-per-track" disabled={disabled || !hasAudioClipboard} onSelect={() => void handlePaste('per-track')}>
+              Paste and make room on this track
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="selection-paste-all-tracks" disabled={disabled || !hasAudioClipboard} onSelect={() => void handlePaste('all-tracks')}>
+              Paste and make room on all tracks
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
           <DropdownMenuSubTrigger disabled={disabled} data-testid="selection-delete-menu">
             Delete and…
           </DropdownMenuSubTrigger>
@@ -3073,6 +3129,174 @@ export default function AudioEditorPage() {
     );
   }
 
+  async function splitRangeAtBoundaries() {
+    if (!project || !selection || selectionUtilityOperation) return;
+    if (recordingState === 'recording') {
+      toast.info('请先停止录音，再分割选区');
+      return;
+    }
+    setSelectionUtilityOperation('split');
+    try {
+      const result = splitRangeSelection(
+        project,
+        selection,
+        project.tracks.map((track) => track.id),
+        generateId,
+      );
+      if (!result.didChange) {
+        toast.info('选区边界没有需要分割的 Clip');
+        return;
+      }
+      await commitClipEdit(result.project, 'Split');
+      toast.success('已按选区边界分割');
+    } catch (error) {
+      console.error('Range split failed:', error);
+      toast.error('分割选区失败，请重试');
+    } finally {
+      setSelectionUtilityOperation(null);
+    }
+  }
+
+  async function splitRangeAtSilences() {
+    if (!project || !selection || selectionUtilityOperation) return;
+    if (recordingState === 'recording') {
+      toast.info('请先停止录音，再按静音分割');
+      return;
+    }
+    setSelectionUtilityOperation('disjoin');
+    try {
+      const targets = project.tracks.flatMap((track) => track.clips
+        .filter((clip) => clip.startTime < selection.end && clip.startTime + clip.duration > selection.start)
+        .map((clip) => ({ trackId: track.id, clipId: clip.id, clip })));
+      let updated = project;
+      let removedRegions = 0;
+      for (const target of targets) {
+        const channels = await projectService.loadAudioChannels(target.clip.audioBufferId, project.sampleRate);
+        if (!channels || channels.length === 0) throw new Error(`Missing audio for clip ${target.clipId}`);
+        const result = disjoinClipAtSilences(
+          updated,
+          { trackId: target.trackId, clipId: target.clipId },
+          channels,
+          generateId,
+          selection,
+        );
+        if (result.didChange) {
+          updated = result.project;
+          removedRegions += result.regions.length;
+        }
+      }
+      if (updated === project) {
+        toast.info('选区内没有至少 0.01 秒的全声道精确零静音');
+        return;
+      }
+      await commitClipEdit(updated, 'Split at silences');
+      toast.success(`已删除 ${removedRegions} 段选区内静音`);
+    } catch (error) {
+      console.error('Range disjoin failed:', error);
+      toast.error('按静音分割失败，请重试');
+    } finally {
+      setSelectionUtilityOperation(null);
+    }
+  }
+
+  async function joinRangeClips() {
+    if (!project || !selection || selectionUtilityOperation) return;
+    if (recordingState === 'recording') {
+      toast.info('请先停止录音，再合并 Clip');
+      return;
+    }
+    const groups = planRangeJoin(project, selection, project.tracks.map((track) => track.id));
+    if (groups.length === 0) {
+      toast.info('每条轨道至少需要两个与选区相交的 Clip 才能 Join');
+      return;
+    }
+    setSelectionUtilityOperation('join');
+    try {
+      let updated = project;
+      const joinedSelection: ClipKey[] = [];
+      const sampleRate = project.sampleRate;
+      for (const group of groups) {
+        const totalSamples = Math.round((group.end - group.start) * sampleRate);
+        if (totalSamples <= 0) continue;
+        const rendered = [] as Array<{
+          clip: IClip;
+          effective: NonNullable<Awaited<ReturnType<typeof loadEffectiveClipChannels>>>;
+        }>;
+        for (const clip of group.clips) {
+          const effective = await loadEffectiveClipChannels(clip, sampleRate);
+          if (!effective) throw new Error(`Missing audio for clip ${clip.id}`);
+          rendered.push({ clip, effective });
+        }
+        const channelCount = Math.max(1, ...rendered.map(({ effective }) => effective.channels.length));
+        const channels = Array.from({ length: channelCount }, () => new Float32Array(totalSamples));
+        for (const { clip, effective } of rendered) {
+          const destinationStart = Math.round((clip.startTime - group.start) * sampleRate);
+          const clipFrames = Math.min(
+            Math.max(0, Math.round(clip.duration * sampleRate)),
+            Math.max(0, totalSamples - destinationStart),
+          );
+          const sourceStart = Math.floor(effective.sourceOffset * sampleRate);
+          const fadeInFrames = Math.min(clipFrames, Math.round(clip.fadeIn * sampleRate));
+          const fadeOutFrames = Math.min(clipFrames, Math.round(clip.fadeOut * sampleRate));
+          const clipGain = dbToGain(clip.gain);
+          for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+            const source = effective.channels[channelIndex];
+            if (!source) continue;
+            const destination = channels[channelIndex]!;
+            for (let frame = 0; frame < clipFrames; frame += 1) {
+              const sourceValue = source[sourceStart + frame] ?? 0;
+              let frameGain = clipGain;
+              if (fadeInFrames > 0 && frame < fadeInFrames) frameGain *= frame / fadeInFrames;
+              if (fadeOutFrames > 0 && frame >= clipFrames - fadeOutFrames) {
+                frameGain *= (clipFrames - 1 - frame) / fadeOutFrames;
+              }
+              destination[destinationStart + frame] = sourceValue * frameGain;
+            }
+          }
+        }
+        const audioBufferId = await storeProjectBuffer(updated.id, channels, sampleRate);
+        const first = group.clips[0]!;
+        const joinedClip: IClip = {
+          id: generateId(),
+          audioBufferId,
+          startTime: group.start,
+          offset: 0,
+          duration: totalSamples / sampleRate,
+          originalDuration: totalSamples / sampleRate,
+          stretchRatio: 1,
+          gain: 0,
+          fadeIn: 0,
+          fadeOut: 0,
+          name: first.name,
+          colorIndex: first.colorIndex,
+        };
+        const joinedIds = new Set(group.clips.map((clip) => clip.id));
+        updated = {
+          ...updated,
+          tracks: updated.tracks.map((track) => track.id === group.trackId
+            ? {
+              ...track,
+              clips: [...track.clips.filter((clip) => !joinedIds.has(clip.id)), joinedClip]
+                .sort((left, right) => left.startTime - right.startTime || left.id.localeCompare(right.id)),
+            }
+            : track),
+        };
+        joinedSelection.push({ trackId: group.trackId, clipId: joinedClip.id });
+      }
+      if (joinedSelection.length === 0) return;
+      await commitClipEdit(updated, 'Join');
+      setSelectedClips(joinedSelection);
+      setSelectedTrackId(joinedSelection[0]!.trackId);
+      clipSelectionAnchorRef.current = joinedSelection[0]!;
+      toast.success(`已合并 ${joinedSelection.length} 条轨道上的 Clip`);
+    } catch (error) {
+      console.error('Range join failed:', error);
+      toast.error('合并 Clip 失败，请重试');
+    } finally {
+      setSelectionUtilityOperation(null);
+    }
+  }
+
   async function handleCopy() {
     if (!project || !selection) return;
     try {
@@ -3087,31 +3311,42 @@ export default function AudioEditorPage() {
     }
   }
 
-  async function handlePaste() {
-    if (!project) return;
+  async function handlePaste(mode: SelectionPasteMode = 'overlap') {
+    if (!project || selectionEditOperation || selectionUtilityOperation) return;
+    if (recordingState === 'recording') {
+      toast.info('请先停止录音，再粘贴');
+      return;
+    }
     try {
-      
       const entry = await audioDb.clipboard.get('current');
       if (!entry) {
+        setHasAudioClipboard(false);
         toast.info('剪贴板为空');
         return;
       }
       const before = JSON.parse(JSON.stringify(project)) as IProject;
       const clipboardData = parseAudioClipboard(entry.data);
-      const result = await pasteAtCursor(project, clipboardData, cursorPosition);
+      const result = await pasteAtCursor(project, clipboardData, cursorPosition, mode);
       if (result) {
+        const labels: Record<SelectionPasteMode, string> = {
+          overlap: 'Paste and overlap',
+          'per-track': 'Paste and make room on this track',
+          'all-tracks': 'Paste and make room on all tracks',
+        };
         setProject(result);
-        projectService.saveProject(result);
+        await projectService.saveProject(result);
         pushHistoryCmd({
           id: generateId(),
-          label: '粘贴',
+          label: labels[mode],
           execute: () => result,
           undo: () => before,
         });
+        await historyManager.flush();
         updateHistoryState();
-        toast.success('已粘贴');
+        toast.success(labels[mode]);
       }
-    } catch {
+    } catch (error) {
+      console.error('Paste failed:', error);
       toast.error('粘贴失败');
     }
   }
@@ -5900,15 +6135,25 @@ export default function AudioEditorPage() {
     proj: IProject,
     clipboardData: AudioClipboardData,
     cursorPos: number,
+    mode: SelectionPasteMode = 'overlap',
   ): Promise<IProject | null> {
     if (clipboardData.tracks.length === 0) return null;
 
-    const updated = JSON.parse(JSON.stringify(proj)) as IProject;
+    let updated = JSON.parse(JSON.stringify(proj)) as IProject;
     const destinationIndices = planClipboardPasteTrackIndices(
       updated.tracks.map((track) => track.id),
       selectedTrackId,
       clipboardData.tracks.length,
     );
+    if (mode === 'all-tracks') {
+      updated = insertBlankSpaceOnTracks(
+        updated,
+        cursorPos,
+        clipboardData.duration,
+        updated.tracks.map((track) => track.id),
+        generateId,
+      ).project;
+    }
 
     // Paste into the selected track and following tracks, creating only the
     // additional tracks needed to preserve every clipboard source track.
@@ -5916,6 +6161,7 @@ export default function AudioEditorPage() {
       const trackClip = clipboardData.tracks[i];
       const destinationIndex = destinationIndices[i]!;
       let targetTrack = destinationIndex >= 0 ? updated.tracks[destinationIndex] : undefined;
+      let actualDestinationIndex = destinationIndex;
 
       if (!targetTrack) {
         const newTrack = {
@@ -5933,6 +6179,7 @@ export default function AudioEditorPage() {
         };
         updated.tracks.push(newTrack);
         targetTrack = newTrack;
+        actualDestinationIndex = updated.tracks.length - 1;
       }
 
       // Store every channel without downmixing.
@@ -5952,8 +6199,13 @@ export default function AudioEditorPage() {
         name: '粘贴',
       };
 
-      targetTrack.clips.push(newClip);
-      targetTrack.clips.sort((a, b) => a.startTime - b.startTime);
+      targetTrack = pasteClipIntoTrack(
+        targetTrack,
+        newClip,
+        mode === 'per-track' ? 'insert' : 'overlap',
+        generateId,
+      );
+      updated.tracks[actualDestinationIndex] = targetTrack;
     }
 
     return updated;
@@ -7101,7 +7353,7 @@ export default function AudioEditorPage() {
               <DropdownMenuItem data-testid="cut-selection" onClick={handleCut} disabled={!selection}>剪切 (Ctrl+X)</DropdownMenuItem>
               <DropdownMenuItem data-testid="delete-selection" onClick={() => void handleDeleteSelection()} disabled={!selection}>删除 (Delete)</DropdownMenuItem>
               <DropdownMenuItem onClick={handleCopy} disabled={!selection}>复制</DropdownMenuItem>
-              <DropdownMenuItem onClick={handlePaste}>粘贴</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handlePaste()}>粘贴</DropdownMenuItem>
               {renderSelectionEditMenus()}
               <DropdownMenuItem onClick={() => void splitClipsAtCursor()} disabled={!canSplitAtCursor}>在光标处分割 (Ctrl+I)</DropdownMenuItem>
               <DropdownMenuItem onClick={handleTrim} disabled={!selection}>裁剪到选区</DropdownMenuItem>
@@ -7727,7 +7979,7 @@ export default function AudioEditorPage() {
                 <Copy className="mr-2 size-4" />
                 复制 (Ctrl+C)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handlePaste}>
+              <DropdownMenuItem onClick={() => handlePaste()}>
                 <Clipboard className="mr-2 size-4" />
                 粘贴 (Ctrl+V)
               </DropdownMenuItem>
@@ -8442,6 +8694,7 @@ export default function AudioEditorPage() {
                 tempoChangesDisabled={recordingState === 'recording'}
                 renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
                 onSelectionChange={(start, end) => handleSelectionChange(start, end, track.id)}
+                onSelectionContextMenu={(trackId, x, y) => void openSelectionContextMenu(trackId, x, y)}
                 onSpectralSelectionChange={handleSpectralSelectionChange}
                 onCursorChange={handleCursorChange}
                 onSnapTime={resolveTimelineSnap}
@@ -9425,6 +9678,24 @@ export default function AudioEditorPage() {
           onApply={handleApplyAutoDuck}
         />
 
+        <SelectionContextMenu
+          open={Boolean(selectionContextMenu && selection)}
+          x={selectionContextMenu?.x ?? 0}
+          y={selectionContextMenu?.y ?? 0}
+          hasClipboard={hasAudioClipboard}
+          disabled={recordingState === 'recording' || Boolean(selectionEditOperation) || Boolean(selectionUtilityOperation)}
+          onOpenChange={(open) => { if (!open) setSelectionContextMenu(null); }}
+          onCut={() => void handleCut()}
+          onCopy={() => void handleCopy()}
+          onPaste={(mode) => void handlePaste(mode)}
+          onDuplicate={() => void handleDuplicateSelection()}
+          onDelete={() => void handleDeleteSelection()}
+          onEdit={(operation, mode) => void handleSelectionEdit(operation, mode)}
+          onSplit={() => void splitRangeAtBoundaries()}
+          onDisjoin={() => void splitRangeAtSilences()}
+          onJoin={() => void joinRangeClips()}
+        />
+
         {/* Export Dialog */}
         <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
           <DialogContent>
@@ -9840,6 +10111,7 @@ function TrackTimeline({
   tempoChangesDisabled,
   renderingPitchAndSpeedClipId,
   onSelectionChange,
+  onSelectionContextMenu,
   onSpectralSelectionChange,
   onCursorChange,
   onSnapTime,
@@ -9889,6 +10161,7 @@ function TrackTimeline({
   tempoChangesDisabled: boolean;
   renderingPitchAndSpeedClipId: string | null;
   onSelectionChange: (start: number, end: number) => void;
+  onSelectionContextMenu: (trackId: string, x: number, y: number) => void;
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
   onSnapTime: (time: number, bypassSnap: boolean) => number;
@@ -9909,6 +10182,7 @@ function TrackTimeline({
   }, []);
 
   function handleMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left - rulerWidth;
     const rawPosition = clamp(x / pxPerSec, 0, totalWidth / pxPerSec);
@@ -9931,6 +10205,20 @@ function TrackTimeline({
     setIsDragging(false);
   }
 
+  function handleContextMenuCapture(e: React.MouseEvent<HTMLDivElement>) {
+    if (!selection || selection.end <= selection.start) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const localX = e.clientX - rect.left;
+    if (localX < rulerWidth) return;
+    const time = (localX - rulerWidth) / pxPerSec;
+    const epsilon = 1e-7;
+    if (time < selection.start - epsilon || time > selection.end + epsilon) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    onSelectionContextMenu(track.id, e.clientX, e.clientY);
+  }
+
   return (
     <div
       className={`relative border-b border-border transition-colors ${
@@ -9939,10 +10227,17 @@ function TrackTimeline({
       style={{ height: trackHeight, width: totalWidth + rulerWidth }}
       data-testid={`track-timeline-${track.id}`}
       data-ruler-width={rulerWidth}
+      onMouseDownCapture={(e) => {
+        if (e.button !== 0) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
+      onContextMenuCapture={handleContextMenuCapture}
     >
       {/* Track background pattern */}
       <div
