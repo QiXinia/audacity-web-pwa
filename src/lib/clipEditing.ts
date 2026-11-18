@@ -4,6 +4,9 @@ import { clamp } from '@/lib/audioUtils';
 export const MIN_CLIP_DURATION = 0.05;
 export const MIN_STRETCH_RATIO = 0.25;
 export const MAX_STRETCH_RATIO = 4;
+// Pitch and speed supports 1…1000%; edge dragging retains its narrower 25…400% range.
+const MIN_PLAYBACK_STRETCH_RATIO = 0.01;
+const MAX_PLAYBACK_STRETCH_RATIO = 10;
 
 export interface ClipKey {
   trackId: string;
@@ -18,7 +21,7 @@ export function clipKeyId(key: ClipKey): string {
 export function getClipStretchRatio(clip: IClip): number {
   const ratio = clip.stretchRatio ?? 1;
   return Number.isFinite(ratio) && ratio > 0
-    ? clamp(ratio, MIN_STRETCH_RATIO, MAX_STRETCH_RATIO)
+    ? clamp(ratio, MIN_PLAYBACK_STRETCH_RATIO, MAX_PLAYBACK_STRETCH_RATIO)
     : 1;
 }
 

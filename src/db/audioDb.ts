@@ -80,6 +80,10 @@ export function deserializeTracks(data: string): ITrack[] {
         stretchRatio: Number.isFinite(clip.stretchRatio) && (clip.stretchRatio ?? 0) > 0
           ? clip.stretchRatio
           : 1,
+        pitchCents: Number.isFinite(clip.pitchCents)
+          ? Math.max(-1200, Math.min(1200, Math.round(clip.pitchCents ?? 0)))
+          : 0,
+        optimizeForVoice: clip.optimizeForVoice === true,
       })),
     }));
   } catch {

@@ -208,6 +208,30 @@ describe('AudioEngine stereo mixdown', () => {
     expect(left[1999]).toBe(0);
     expect(right[1999]).toBe(0);
   });
+
+  it('includes clip pitch and voice preset in export processing and cache identity', async () => {
+    const engine = new AudioEngine();
+    const sampleRate = 8000;
+    const source = new Float32Array(4000);
+    for (let index = 0; index < source.length; index += 1) {
+      source[index] = 0.4 * Math.sin(2 * Math.PI * 440 * index / sampleRate);
+    }
+    const original = source.slice();
+    engine.cacheBuffer('pitched', [source], sampleRate);
+    const base = { audioBufferId: 'pitched', duration: 0.4, originalDuration: 0.5, stretchRatio: 1.25 };
+    const [neutral] = await engine.renderMixdownStereo([
+      makeTrack(0, { clips: [makeClip({ ...base, pitchCents: 0 })] }),
+    ], 0.5, sampleRate);
+    const [shifted] = await engine.renderMixdownStereo([
+      makeTrack(0, { clips: [makeClip({ ...base, pitchCents: 1200 })] }),
+    ], 0.5, sampleRate);
+    const [voice] = await engine.renderMixdownStereo([
+      makeTrack(0, { clips: [makeClip({ ...base, pitchCents: 1200, optimizeForVoice: true })] }),
+    ], 0.5, sampleRate);
+    expect(shifted).not.toEqual(neutral);
+    expect(voice).not.toEqual(shifted);
+    expect(source).toEqual(original);
+  });
 });
 
 describe('AudioEngine effect parameter wiring', () => {

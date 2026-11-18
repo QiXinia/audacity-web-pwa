@@ -24,10 +24,16 @@ function linearStretchChannel(input: Float32Array, outputLength: number): Float3
  * WSOLA fallback used when WASM is unavailable.
  * speed > 1 shortens audio; speed < 1 lengthens it, while preserving pitch.
  */
+export interface TimeStretchOptions {
+  windowSize?: number;
+  searchRadius?: number;
+}
+
 export function timeStretchChannelsJs(
   channels: Float32Array[],
   speed: number,
   sampleRate: number,
+  options: TimeStretchOptions = {},
 ): Float32Array[] {
   if (channels.length === 0) return [];
   const inputFrames = channels[0].length;
@@ -44,10 +50,14 @@ export function timeStretchChannelsJs(
     return channels.map((channel) => linearStretchChannel(channel, outputLength));
   }
 
-  let windowSize = Math.min(
+  const requestedWindowSize = options.windowSize ?? Math.min(
     2048,
     nextPowerOfTwo(Math.max(64, Math.round(sampleRate * 0.046))),
   );
+  if (!Number.isSafeInteger(requestedWindowSize) || requestedWindowSize < 64) {
+    throw new Error('Stretch window must be an integer of at least 64 samples');
+  }
+  let windowSize = requestedWindowSize;
   while (windowSize > inputFrames && windowSize > 64) windowSize >>= 1;
   if (windowSize < 64) {
     return channels.map((channel) => linearStretchChannel(channel, outputLength));
@@ -55,7 +65,10 @@ export function timeStretchChannelsJs(
 
   const overlap = windowSize >> 1;
   const synthesisHop = overlap;
-  const searchRadius = Math.max(16, overlap >> 2);
+  const searchRadius = options.searchRadius ?? Math.max(16, overlap >> 2);
+  if (!Number.isSafeInteger(searchRadius) || searchRadius < 0) {
+    throw new Error('Stretch search radius must be a non-negative integer');
+  }
   const window = new Float32Array(windowSize);
   for (let i = 0; i < windowSize; i++) {
     window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (windowSize - 1));

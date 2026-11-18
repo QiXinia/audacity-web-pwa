@@ -4,6 +4,7 @@ import { logger } from '@/lib/logger';
 import { wasmProcessor } from '@/wasm/processor';
 import { clamp, interleaveChannels } from '@/lib/audioUtils';
 import { getClipStretchRatio } from '@/lib/clipEditing';
+import { processClipPitchAndSpeedChannels } from '@/lib/clipPitchSpeed';
 import {
   buildClipLoopChannels,
   getLoopPlaybackStart,
@@ -260,10 +261,7 @@ export class AudioEngine {
     channelData: Float32Array[],
     sampleRate: number,
   ): Float32Array[] {
-    const ratio = getClipStretchRatio(clip);
-    return Math.abs(ratio - 1) < 0.000001
-      ? channelData
-      : wasmProcessor.timeStretch(channelData, ratio, sampleRate);
+    return processClipPitchAndSpeedChannels(clip, channelData, sampleRate);
   }
 
   private getClipPlaybackBuffer(clip: IClip, cachedEntry: AudioBufferCacheEntry): {
@@ -272,18 +270,20 @@ export class AudioEngine {
     sourceOffset: number;
   } {
     const ratio = getClipStretchRatio(clip);
-    if (Math.abs(ratio - 1) < 0.000001) {
+    const pitchCents = clip.pitchCents ?? 0;
+    const optimizeForVoice = clip.optimizeForVoice === true;
+    if (Math.abs(ratio - 1) < 0.000001 && pitchCents === 0 && !optimizeForVoice) {
       return {
         channelData: cachedEntry.channelData,
         sampleRate: cachedEntry.sampleRate,
         sourceOffset: clip.offset,
       };
     }
-    const key = `${clip.audioBufferId}:${ratio.toFixed(6)}:${cachedEntry.sampleRate}`;
+    const key = `${clip.audioBufferId}:${ratio.toFixed(6)}:${pitchCents}:${optimizeForVoice}:${cachedEntry.sampleRate}`;
     let processed = this.stretchedBufferCache.get(key);
     if (!processed) {
       processed = {
-        channelData: wasmProcessor.timeStretch(cachedEntry.channelData, ratio, cachedEntry.sampleRate),
+        channelData: this.processClipChannels(clip, cachedEntry.channelData, cachedEntry.sampleRate),
         sampleRate: cachedEntry.sampleRate,
       };
       if (this.stretchedBufferCache.size >= 20) {

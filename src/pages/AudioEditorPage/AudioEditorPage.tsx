@@ -455,6 +455,13 @@ import { GraphicEqDialog } from './sections/GraphicEqDialog';
 import { ChangeTempoDialog } from './sections/ChangeTempoDialog';
 import { ChangeSpeedDialog } from './sections/ChangeSpeedDialog';
 import { ChangePitchDialog } from './sections/ChangePitchDialog';
+import { ClipPitchAndSpeedDialog } from './sections/ClipPitchAndSpeedDialog';
+import {
+  applyClipPitchAndSpeed,
+  getClipOptimizeForVoice,
+  getClipPitchCents,
+  type ClipPitchAndSpeedSettings,
+} from '@/lib/clipPitchSpeed';
 import { SlidingStretchDialog } from './sections/SlidingStretchDialog';
 import { PaulstretchDialog } from './sections/PaulstretchDialog';
 import WahWahEffectDialog from './sections/WahWahEffectDialog';
@@ -545,6 +552,7 @@ export default function AudioEditorPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedClips, setSelectedClips] = useState<ClipKey[]>([]);
+  const [pitchAndSpeedClipKey, setPitchAndSpeedClipKey] = useState<ClipKey | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const clipSelectionAnchorRef = useRef<ClipKey | null>(null);
   const [workspaceStore, setWorkspaceStore] = useState(loadWorkspaceStore);
@@ -1907,6 +1915,18 @@ export default function AudioEditorPage() {
   async function handleClipReset(trackId: string, clipId: string) {
     if (!project) return;
     await commitClipEdit(resetClipStretch(project, keysForClip(trackId, clipId)), '恢复片段速度 100%');
+  }
+
+  async function handleClipPitchAndSpeed(settings: ClipPitchAndSpeedSettings) {
+    if (!project || !pitchAndSpeedClipKey) return;
+    const updated = applyClipPitchAndSpeed(project, pitchAndSpeedClipKey, settings);
+    await commitClipEdit(updated, '调整片段音高与速度');
+    toast.success('已更新片段音高与速度');
+  }
+
+  function openClipPitchAndSpeed(trackId: string, clipId: string) {
+    selectClip(trackId, clipId, 'replace');
+    setPitchAndSpeedClipKey({ trackId, clipId });
   }
 
   async function handleDeleteSelectedClips() {
@@ -8219,6 +8239,7 @@ export default function AudioEditorPage() {
                 onMoveClip={(clipId, delta, bypassSnap) => handleClipMove(track.id, clipId, delta, bypassSnap)}
                 onResolveClipDelta={(clipId, operation, delta, bypassSnap) => resolveClipSnapDelta(track.id, clipId, operation, delta, bypassSnap)}
                 onResetClip={(clipId) => handleClipReset(track.id, clipId)}
+                onPitchAndSpeed={(clipId) => openClipPitchAndSpeed(track.id, clipId)}
                 onSelectionChange={handleSelectionChange}
                 onSpectralSelectionChange={handleSpectralSelectionChange}
                 onCursorChange={handleCursorChange}
@@ -8984,6 +9005,22 @@ export default function AudioEditorPage() {
           onApply={handleApplyChangeSpeed}
         />
 
+        {pitchAndSpeedClipKey && (() => {
+          const track = project.tracks.find((candidate) => candidate.id === pitchAndSpeedClipKey.trackId);
+          const clip = track?.clips.find((candidate) => candidate.id === pitchAndSpeedClipKey.clipId);
+          // Removing the selected clip closes the official dialog as well.
+          if (!clip) return null;
+          return (
+            <ClipPitchAndSpeedDialog
+              open
+              onOpenChange={(open) => { if (!open) setPitchAndSpeedClipKey(null); }}
+              clip={clip}
+              isPlaying={playbackState === 'playing'}
+              onApply={handleClipPitchAndSpeed}
+            />
+          );
+        })()}
+
         <ChangePitchDialog
           open={changePitchDialogOpen}
           onOpenChange={setChangePitchDialogOpen}
@@ -9514,6 +9551,7 @@ function TrackTimeline({
   onMoveClip,
   onResolveClipDelta,
   onResetClip,
+  onPitchAndSpeed,
   onSelectionChange,
   onSpectralSelectionChange,
   onCursorChange,
@@ -9550,6 +9588,7 @@ function TrackTimeline({
   onMoveClip: (clipId: string, deltaSeconds: number, bypassSnap?: boolean) => void;
   onResolveClipDelta: (clipId: string, operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onResetClip: (clipId: string) => void;
+  onPitchAndSpeed: (clipId: string) => void;
   onSelectionChange: (start: number, end: number) => void;
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
@@ -9692,6 +9731,7 @@ function TrackTimeline({
           onMove={(delta, bypassSnap) => onMoveClip(clip.id, delta, bypassSnap)}
           onResolveDelta={(operation, delta, bypassSnap) => onResolveClipDelta(clip.id, operation, delta, bypassSnap)}
           onReset={() => onResetClip(clip.id)}
+          onPitchAndSpeed={() => onPitchAndSpeed(clip.id)}
           onSelect={(mode) => onSelectClip(clip.id, mode)}
           onSpectralSelectionChange={onSpectralSelectionChange}
           onCursorChange={onCursorChange}
@@ -10117,6 +10157,7 @@ function ClipItem({
   onMove,
   onResolveDelta,
   onReset,
+  onPitchAndSpeed,
   onSelect,
   onSpectralSelectionChange,
   onCursorChange,
@@ -10149,6 +10190,7 @@ function ClipItem({
   onMove: (deltaSeconds: number, bypassSnap?: boolean) => void;
   onResolveDelta: (operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onReset: () => void;
+  onPitchAndSpeed: () => void;
   onSelect: (mode: ClipSelectionMode) => void;
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
@@ -10574,9 +10616,12 @@ function ClipItem({
     <div
       className="au-clip group absolute top-1 bottom-1 overflow-hidden rounded-[3px] border text-[#20252a]"
       data-selected={isSelected}
+      data-pitch-cents={getClipPitchCents(clip)}
+      data-optimize-for-voice={getClipOptimizeForVoice(clip)}
+      data-stretch-ratio={getClipStretchRatio(clip)}
       role="button"
       tabIndex={0}
-      aria-label={`${clip.name || '音频片段'}，开始 ${formatTime(clip.startTime)}，时长 ${formatTime(clip.duration)}，速度 ${Math.round(100 / getClipStretchRatio(clip))}%`}
+      aria-label={`${clip.name || '音频片段'}，开始 ${formatTime(clip.startTime)}，时长 ${formatTime(clip.duration)}，速度 ${Math.round(100 * getClipStretchRatio(clip))}%`}
       aria-pressed={isSelected}
       style={{
         left: displayLeft,
@@ -10616,19 +10661,34 @@ function ClipItem({
         onPointerCancel={() => setMoveDrag(null)}
       >
         <span className="min-w-0 flex-1 truncate">{clip.name || '音频片段'}</span>
+        <button
+          type="button"
+          className={`shrink-0 rounded-sm p-0.5 hover:bg-[#20252a]/20 ${
+            getClipPitchCents(clip) !== 0 || getClipOptimizeForVoice(clip) ? 'bg-[#20252a]/20' : ''
+          }`}
+          aria-label={`Pitch and speed：${clip.name || '音频片段'}`}
+          title="Pitch and speed"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onPitchAndSpeed();
+          }}
+        >
+          <AudioWaveform className="size-3" aria-hidden="true" />
+        </button>
         {getClipStretchRatio(clip) !== 1 && (
           <button
             type="button"
             className="shrink-0 rounded-sm bg-[#20252a]/20 px-1 text-[9px] font-semibold hover:bg-[#20252a]/35"
             aria-label="恢复片段速度100%"
-            title={`速度 ${Math.round(100 / getClipStretchRatio(clip))}%，点击恢复 100%`}
+            title={`速度 ${Math.round(100 * getClipStretchRatio(clip))}%，点击恢复 100%`}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               onReset();
             }}
           >
-            {Math.round(100 / getClipStretchRatio(clip))}%
+            {Math.round(100 * getClipStretchRatio(clip))}%
           </button>
         )}
       </div>

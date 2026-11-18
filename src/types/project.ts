@@ -30,6 +30,10 @@ export interface IClip {
   originalDuration: number;
   /** Source seconds per timeline second: 2 = half duration, 0.5 = double duration. */
   stretchRatio?: number;
+  /** Audacity 4 non-destructive clip pitch in cents. */
+  pitchCents?: number;
+  /** Audacity 4 PitchAndSpeedPreset::OptimizeForVoice (browser approximation). */
+  optimizeForVoice?: boolean;
   gain: number;
   fadeIn: number;
   fadeOut: number;
