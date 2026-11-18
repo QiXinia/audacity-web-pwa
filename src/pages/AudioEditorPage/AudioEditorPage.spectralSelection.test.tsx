@@ -138,11 +138,21 @@ async function showSpectrum() {
   return screen.findByTestId('spectral-selection-surface-clip-one');
 }
 
-function mockSurface(surface: HTMLElement) {
+async function showMultiView() {
+  render(<AudioEditorPage />);
+  expect(await screen.findByText('Spectral rectangle integration')).toBeInTheDocument();
+  expect(await screen.findByText('Eight seconds')).toBeInTheDocument();
+  const bothTab = screen.getByRole('tab', { name: '叠加' });
+  fireEvent.mouseDown(bothTab, { button: 0, ctrlKey: false });
+  fireEvent.click(bothTab);
+  return screen.findByTestId('spectral-selection-surface-clip-one');
+}
+
+function mockSurface(surface: HTMLElement, height = 76) {
   Object.defineProperty(surface, 'getBoundingClientRect', {
     configurable: true,
     value: () => ({
-      left: 0, top: 0, right: 800, bottom: 76, width: 800, height: 76, x: 0, y: 0,
+      left: 0, top: 0, right: 800, bottom: height, width: 800, height, x: 0, y: 0,
       toJSON: () => ({}),
     }),
   });
@@ -306,5 +316,36 @@ describe('AudioEditorPage spectral rectangle selection', () => {
     await waitFor(() => expect(mocks.saveProject).toHaveBeenCalled());
     const saved = mocks.saveProject.mock.calls.at(-1)?.[0] as IProject;
     expect(saved.spectralSelection).toEqual({ lowHz: 0, highHz: 100 });
+  });
+
+  it('confines Multi-view frequency selection to the lower pane and persists its half-height mapping', async () => {
+    const surface = await showMultiView();
+    const canvas = screen.getByTestId('waveform-canvas-clip-one');
+    expect(canvas).toHaveAttribute('data-layout', 'split');
+    expect(canvas).toHaveAttribute('data-waveform-pane-height', '38');
+    expect(canvas).toHaveAttribute('data-spectrum-pane-height', '38');
+    expect(canvas).toHaveAttribute('data-spectrum-top', '38');
+    expect(surface).toHaveAttribute('data-layout', 'split');
+    expect(surface.style.top).toBe('58px');
+    expect(surface.style.height).toBe('38px');
+    mockSurface(surface, 38);
+
+    fireEvent.pointerDown(surface, { button: 0, pointerId: 9, clientX: 600, clientY: 7 });
+    fireEvent.pointerMove(surface, { pointerId: 9, clientX: 200, clientY: 26 });
+    fireEvent.pointerUp(surface, { pointerId: 9, clientX: 200, clientY: 26 });
+
+    expect((await screen.findByTestId('spectral-selection-status')).textContent).toContain('31.579–81.579 Hz');
+    const rectangle = screen.getByTestId('spectral-selection-rectangle');
+    expect(parseFloat(rectangle.style.left)).toBeCloseTo(200);
+    expect(parseFloat(rectangle.style.width)).toBeCloseTo(400);
+    expect(parseFloat(rectangle.style.top)).toBeCloseTo(7);
+    expect(parseFloat(rectangle.style.height)).toBeCloseTo(19);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalled());
+    const saved = mocks.saveProject.mock.calls.at(-1)?.[0] as IProject;
+    expect(saved.selection).toEqual({ start: 2, end: 6 });
+    expect(saved.spectralSelection?.lowHz).toBeCloseTo(100 * 12 / 38);
+    expect(saved.spectralSelection?.highHz).toBeCloseTo(100 * 31 / 38);
   });
 });

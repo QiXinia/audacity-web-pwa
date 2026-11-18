@@ -442,11 +442,25 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     fireEvent.mouseDown(bothTab, { button: 0, ctrlKey: false });
     fireEvent.click(bothTab);
     const combined = await screen.findByTestId('track-combined-ruler-track-db');
-    expect(combined).toHaveAttribute('data-ruler-width', '64');
+    expect(combined).toHaveAttribute('data-ruler-width', '44');
+    expect(combined).toHaveAttribute('data-layout', 'split');
+    expect(combined).toHaveAttribute('data-waveform-height', '38');
+    expect(combined).toHaveAttribute('data-spectrum-height', '38');
     expect(screen.getByTestId('track-linear-ruler-track-db')).toBeInTheDocument();
     expect(screen.getByTestId('track-spectrum-ruler-track-db')).toBeInTheDocument();
-    expect(timeline).toHaveAttribute('data-ruler-width', '64');
-    fireEvent.mouseDown(timeline, { clientX: 364 });
+    const canvas = screen.getByTestId('waveform-canvas-clip-db');
+    expect(canvas).toHaveAttribute('data-layout', 'split');
+    expect(canvas).toHaveAttribute('data-waveform-pane-height', '38');
+    expect(canvas).toHaveAttribute('data-spectrum-pane-height', '38');
+    expect(canvas).toHaveAttribute('data-spectrum-top', '38');
+    expect(screen.getByTestId('spectral-selection-surface-clip-db')).toHaveAttribute('data-layout', 'split');
+    expect(screen.getByTestId('spectral-selection-surface-clip-db').style.top).toBe('58px');
+    expect(screen.getByTestId('spectral-selection-surface-clip-db').style.height).toBe('38px');
+    expect(screen.getByTestId('stereo-channel-splitter-clip-db')).toHaveAttribute('data-channel-pane', 'waveform');
+    expect(screen.getByTestId('stereo-channel-splitter-spectrum-clip-db')).toHaveAttribute('data-channel-pane', 'spectrum');
+    await waitFor(() => expect(mocks.drawWaveform.mock.calls.some((call) => call[3] === 19 && call[8] === 1)).toBe(true));
+    expect(timeline).toHaveAttribute('data-ruler-width', '44');
+    fireEvent.mouseDown(timeline, { clientX: 344 });
     expect(audioEngine.seek).toHaveBeenLastCalledWith(2);
     await waitFor(() => {
       const layout = loadWorkspaceStore().presets[0].layout;

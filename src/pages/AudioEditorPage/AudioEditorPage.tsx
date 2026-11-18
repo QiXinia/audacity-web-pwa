@@ -6839,9 +6839,7 @@ export default function AudioEditorPage() {
   const timelineDuration = Math.max(projectDuration, 30);
   const pxPerSec = horizontalZoom;
   const totalWidth = Math.max(timelineDuration * pxPerSec, 1000);
-  const rulerWidth = showVerticalRulers
-    ? DB_WAVE_RULER_WIDTH + (viewMode === 'both' ? 20 : 0)
-    : 0;
+  const rulerWidth = showVerticalRulers ? DB_WAVE_RULER_WIDTH : 0;
   const timelineContentWidth = totalWidth + rulerWidth;
   const activeWorkspaceName = activeWorkspace.name;
   const activeWorkspaceBuiltIn = activeWorkspace.builtIn;
@@ -9939,6 +9937,7 @@ function TrackSpectrumRuler({
   channelHeightRatio,
   asymmetricStereoHeightsEnabled,
   embedded = false,
+  showHeader = true,
 }: {
   trackId: string;
   trackName: string;
@@ -9950,6 +9949,7 @@ function TrackSpectrumRuler({
   channelHeightRatio: number;
   asymmetricStereoHeightsEnabled: boolean;
   embedded?: boolean;
+  showHeader?: boolean;
 }) {
   const ratio = isStereo
     ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, waveformHeight)
@@ -9974,11 +9974,13 @@ function TrackSpectrumRuler({
       aria-label={`${trackName} 频率标尺，上限 ${getSpectrumDisplayMaxHz(sampleRate)} Hz`}
       onMouseDown={(event) => event.stopPropagation()}
     >
-      <div className="flex h-5 items-center justify-between gap-0.5 border-b border-[#59636c] px-1 text-[8px] font-medium">
-        <span className="truncate">{trackName}</span>
-        <span className="shrink-0 text-[#8f9aa3]">Hz</span>
-      </div>
-      <div className="pointer-events-none absolute inset-x-0 top-5" style={{ height: waveformHeight }}>
+      {showHeader && (
+        <div className="flex h-5 items-center justify-between gap-0.5 border-b border-[#59636c] px-1 text-[8px] font-medium">
+          <span className="truncate">{trackName}</span>
+          <span className="shrink-0 text-[#8f9aa3]">Hz</span>
+        </div>
+      )}
+      <div className={`pointer-events-none absolute inset-x-0 ${showHeader ? 'top-5' : 'top-0'}`} style={{ height: waveformHeight }}>
         {bands.map((band) => getSpectrumRulerTicks(band.height, sampleRate).map((tick, index) => {
           const labelTop = Math.min(Math.max(tick.y - 4, 0), Math.max(0, band.height - 8));
           return (
@@ -10007,13 +10009,12 @@ function TrackSpectrumRuler({
   );
 }
 
-/** The Web "both" view overlays the two renderers, so it exposes both vertical scales. */
+/** Audacity Multi-view splits the content into waveform and spectrogram panes. */
 function TrackCombinedRuler({
   trackId,
   trackName,
   width,
   trackHeight,
-  waveformHeight,
   sampleRate,
   dbRange,
   halfWave,
@@ -10041,23 +10042,28 @@ function TrackCombinedRuler({
   channelHeightRatio: number;
   asymmetricStereoHeightsEnabled: boolean;
 }) {
-  const spectrumWidth = 20;
+  const contentHeight = Math.max(0, trackHeight - 24);
+  const paneHeight = contentHeight / 2;
+  const waveRulerHeight = 20 + paneHeight;
   return (
     <div
-      className="sticky left-0 z-[28] flex select-none bg-[#20262b] text-[#bdc6ce]"
+      className="sticky left-0 z-[28] flex flex-col select-none bg-[#20262b] text-[#bdc6ce]"
       style={{ width, height: trackHeight }}
       data-testid={`track-combined-ruler-${trackId}`}
       data-ruler-width={width}
+      data-layout="split"
+      data-waveform-height={paneHeight}
+      data-spectrum-height={paneHeight}
       role="group"
-      aria-label={`${trackName} 振幅与频率标尺`}
+      aria-label={`${trackName} 振幅与频率上下分栏标尺`}
       onMouseDown={(event) => event.stopPropagation()}
     >
       <TrackWaveRuler
         trackId={trackId}
         trackName={trackName}
-        width={width - spectrumWidth}
-        trackHeight={trackHeight}
-        waveformHeight={waveformHeight}
+        width={width}
+        trackHeight={waveRulerHeight}
+        waveformHeight={paneHeight}
         dbRange={dbRange}
         viewMode="waveform"
         halfWave={halfWave}
@@ -10073,14 +10079,15 @@ function TrackCombinedRuler({
       <TrackSpectrumRuler
         trackId={trackId}
         trackName={trackName}
-        width={spectrumWidth}
-        trackHeight={trackHeight}
-        waveformHeight={waveformHeight}
+        width={width}
+        trackHeight={trackHeight - waveRulerHeight}
+        waveformHeight={paneHeight}
         sampleRate={sampleRate}
         isStereo={isStereo}
         channelHeightRatio={channelHeightRatio}
         asymmetricStereoHeightsEnabled={asymmetricStereoHeightsEnabled}
         embedded
+        showHeader={false}
       />
     </div>
   );
@@ -10177,9 +10184,11 @@ function ClipItem({
     currentRatio: number;
   } | null>(null);
   const canvasHeight = trackHeight - 24;
+  const isMultiView = viewMode === 'both';
+  const paneHeight = isMultiView ? canvasHeight / 2 : canvasHeight;
   const isStereoClip = audioChannels?.length === 2;
   const effectiveChannelHeightRatio = isStereoClip
-    ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, canvasHeight)
+    ? normalizeChannelHeightRatio(asymmetricStereoHeightsEnabled ? channelHeightRatio : 0.5, paneHeight)
     : 0.5;
 
   useEffect(() => {
@@ -10230,15 +10239,23 @@ function ClipItem({
     ctx.clearRect(0, 0, width, height);
 
     const stretchRatio = getClipStretchRatio(clip);
-    const firstChannelHeight = isStereoClip ? height * effectiveChannelHeightRatio : height;
+    const firstChannelHeight = isStereoClip ? paneHeight * effectiveChannelHeightRatio : paneHeight;
     const channelBands = isStereoClip
       ? [
           { data: audioChannels[0]!, top: 0, height: firstChannelHeight },
-          { data: audioChannels[1]!, top: firstChannelHeight, height: height - firstChannelHeight },
+          { data: audioChannels[1]!, top: firstChannelHeight, height: paneHeight - firstChannelHeight },
         ]
-      : [{ data: audioChannels[0]!, top: 0, height }];
+      : [{ data: audioChannels[0]!, top: 0, height: paneHeight }];
+    const renderBands = channelBands.flatMap((band) => [
+      ...(viewMode === 'waveform' || viewMode === 'waveformDb' || viewMode === 'waveformDbLinear' || isMultiView
+        ? [{ ...band, kind: 'waveform' as const }]
+        : []),
+      ...(viewMode === 'spectrum' || isMultiView
+        ? [{ ...band, top: band.top + (isMultiView ? paneHeight : 0), kind: 'spectrum' as const }]
+        : []),
+    ]);
 
-    for (const band of channelBands) {
+    for (const band of renderBands) {
       const bandHeight = Math.max(1, band.height);
       ctx.save();
       ctx.translate(0, band.top);
@@ -10246,7 +10263,7 @@ function ClipItem({
       ctx.rect(0, 0, width, bandHeight);
       ctx.clip();
 
-      if (viewMode === 'waveform' || viewMode === 'waveformDb' || viewMode === 'waveformDbLinear' || viewMode === 'both') {
+      if (band.kind === 'waveform') {
         drawWaveform(
           ctx,
           band.data,
@@ -10256,15 +10273,13 @@ function ClipItem({
           clip,
           sampleRate,
           verticalZoom,
-          viewMode === 'both' ? 0.8 : 1,
+          1,
           showClipping,
           viewMode === 'waveformDb' ? dbRange : undefined,
           halfWave,
           showRMS,
         );
-      }
-
-      if (viewMode === 'spectrum' || viewMode === 'both') {
+      } else {
         const sourceStart = Math.max(0, Math.floor(clip.offset * sampleRate));
         const sourceEnd = Math.min(
           band.data.length,
@@ -10276,12 +10291,12 @@ function ClipItem({
           width,
           bandHeight,
           sampleRate,
-          viewMode === 'both' ? 0.5 : 1,
+          1,
         );
       }
       ctx.restore();
     }
-  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, showRMS, isStereoClip, effectiveChannelHeightRatio]);
+  }, [audioChannels, pxPerSec, clip.duration, clip.offset, clip.stretchRatio, viewMode, halfWave, dbRange, trackColor, canvasHeight, sampleRate, verticalZoom, showClipping, showRMS, isStereoClip, effectiveChannelHeightRatio, isMultiView, paneHeight]);
 
   const left = clip.startTime * pxPerSec;
   const width = clip.duration * pxPerSec;
@@ -10292,7 +10307,7 @@ function ClipItem({
     2,
     width + (edgeDrag?.edge === 'left' ? -edgeDelta : edgeDelta) * pxPerSec,
   );
-  const spectrumHeight = trackHeight - 24;
+  const spectrumHeight = paneHeight;
   const spectralRect = selection && spectralSelection ? (() => {
     const clipEnd = clip.startTime + clip.duration;
     const selectedStart = Math.max(selection.start, clip.startTime);
@@ -10322,12 +10337,12 @@ function ClipItem({
 
   function handleChannelSplitterMove(e: React.PointerEvent<HTMLButtonElement>) {
     const drag = splitterDragRef.current;
-    if (!drag || drag.pointerId !== e.pointerId || canvasHeight <= 0) return;
+    if (!drag || drag.pointerId !== e.pointerId || paneHeight <= 0) return;
     e.preventDefault();
     e.stopPropagation();
     const next = normalizeChannelHeightRatio(
-      drag.startRatio + (e.clientY - drag.startClientY) / canvasHeight,
-      canvasHeight,
+      drag.startRatio + (e.clientY - drag.startClientY) / paneHeight,
+      paneHeight,
     );
     drag.currentRatio = next;
     onChannelHeightRatioChange(next);
@@ -10355,7 +10370,7 @@ function ClipItem({
     else return;
     e.preventDefault();
     e.stopPropagation();
-    const next = normalizeChannelHeightRatio(requested, canvasHeight);
+    const next = normalizeChannelHeightRatio(requested, paneHeight);
     onChannelHeightRatioChange(next);
     onChannelHeightRatioCommit(next);
   }
@@ -10511,6 +10526,50 @@ function ClipItem({
     onSelect(mode);
   }
 
+  function renderChannelSplitter(pane: 'primary' | 'spectrum') {
+    const isSpectrumPane = pane === 'spectrum';
+    return (
+      <button
+        key={pane}
+        type="button"
+        role="slider"
+        aria-label={`${clip.name} ${isSpectrumPane ? '频谱' : ''}立体声声道高度`}
+        aria-orientation="vertical"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(effectiveChannelHeightRatio * 100)}
+        aria-valuetext={`左声道 ${Math.round(effectiveChannelHeightRatio * 100)}%，右声道 ${Math.round((1 - effectiveChannelHeightRatio) * 100)}%`}
+        data-testid={isSpectrumPane ? `stereo-channel-splitter-spectrum-${clip.id}` : `stereo-channel-splitter-${clip.id}`}
+        data-channel-pane={isSpectrumPane ? 'spectrum' : 'waveform'}
+        data-channel-ratio={effectiveChannelHeightRatio}
+        disabled={!asymmetricStereoHeightsEnabled}
+        tabIndex={asymmetricStereoHeightsEnabled ? 0 : -1}
+        title={asymmetricStereoHeightsEnabled
+          ? '拖动调整左右声道高度；方向键微调，Home/End 到边界'
+          : '在设置中启用非对称立体声声道高度后可拖动'}
+        className={`absolute inset-x-0 z-[25] h-[9px] -translate-y-1/2 touch-none ${
+          asymmetricStereoHeightsEnabled ? 'cursor-row-resize' : 'cursor-default'
+        }`}
+        style={{ top: 20 + (isSpectrumPane ? paneHeight : 0) + effectiveChannelHeightRatio * paneHeight }}
+        onPointerDown={handleChannelSplitterStart}
+        onPointerMove={handleChannelSplitterMove}
+        onPointerUp={handleChannelSplitterEnd}
+        onPointerCancel={handleChannelSplitterEnd}
+        onKeyDown={handleChannelSplitterKeyDown}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onDragStart={(e) => e.preventDefault()}
+      >
+        <span className={`pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-[#20252a]/30 ${
+          asymmetricStereoHeightsEnabled ? '' : 'opacity-40'
+        }`} />
+      </button>
+    );
+  }
+
   return (
     <div
       className="au-clip group absolute top-1 bottom-1 overflow-hidden rounded-[3px] border text-[#20252a]"
@@ -10585,50 +10644,32 @@ function ClipItem({
         data-show-rms={showRMS}
         data-channel-count={audioChannels?.length ?? 0}
         data-stereo-ratio={effectiveChannelHeightRatio}
+        data-layout={isMultiView ? 'split' : 'single'}
+        data-waveform-pane-height={viewMode === 'spectrum' ? 0 : paneHeight}
+        data-spectrum-pane-height={viewMode === 'spectrum' || isMultiView ? paneHeight : 0}
+        data-spectrum-top={isMultiView ? paneHeight : 0}
       />
+      {isMultiView && (
+        <div
+          className="pointer-events-none absolute inset-x-0 z-10 h-px bg-[#20252a]/45"
+          style={{ top: 20 + paneHeight }}
+          data-testid={`multi-view-divider-${clip.id}`}
+          aria-hidden="true"
+        />
+      )}
       {isStereoClip && (
-        <button
-          type="button"
-          role="slider"
-          aria-label={`${clip.name} 立体声声道高度`}
-          aria-orientation="vertical"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(effectiveChannelHeightRatio * 100)}
-          aria-valuetext={`左声道 ${Math.round(effectiveChannelHeightRatio * 100)}%，右声道 ${Math.round((1 - effectiveChannelHeightRatio) * 100)}%`}
-          data-testid={`stereo-channel-splitter-${clip.id}`}
-          data-channel-ratio={effectiveChannelHeightRatio}
-          disabled={!asymmetricStereoHeightsEnabled}
-          tabIndex={asymmetricStereoHeightsEnabled ? 0 : -1}
-          title={asymmetricStereoHeightsEnabled
-            ? '拖动调整左右声道高度；方向键微调，Home/End 到边界'
-            : '在设置中启用非对称立体声声道高度后可拖动'}
-          className={`absolute inset-x-0 z-[25] h-[9px] -translate-y-1/2 touch-none ${
-            asymmetricStereoHeightsEnabled ? 'cursor-row-resize' : 'cursor-default'
-          }`}
-          style={{ top: 20 + effectiveChannelHeightRatio * canvasHeight }}
-          onPointerDown={handleChannelSplitterStart}
-          onPointerMove={handleChannelSplitterMove}
-          onPointerUp={handleChannelSplitterEnd}
-          onPointerCancel={handleChannelSplitterEnd}
-          onKeyDown={handleChannelSplitterKeyDown}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={(e) => e.stopPropagation()}
-          onDragStart={(e) => e.preventDefault()}
-        >
-          <span className={`pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-[#20252a]/30 ${
-            asymmetricStereoHeightsEnabled ? '' : 'opacity-40'
-          }`} />
-        </button>
+        <>
+          {renderChannelSplitter('primary')}
+          {isMultiView && renderChannelSplitter('spectrum')}
+        </>
       )}
 
       {(viewMode === 'spectrum' || viewMode === 'both') && (
         <div
-          className="absolute inset-x-0 bottom-1 top-5 z-[15] cursor-crosshair touch-none select-none"
+          className="absolute inset-x-0 z-[15] cursor-crosshair touch-none select-none"
+          style={{ top: 20 + (isMultiView ? paneHeight : 0), height: spectrumHeight }}
           data-testid={`spectral-selection-surface-${clip.id}`}
+          data-layout={isMultiView ? 'split' : 'single'}
           role="group"
           aria-label="频谱矩形选区，拖拽选择时间和频率"
           title="拖拽创建时间×频率选区；频率范围对应当前线性频谱显示范围"
