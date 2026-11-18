@@ -491,6 +491,7 @@ import CrossfadeTracksDialog from './sections/CrossfadeTracksDialog';
 import { updateProjectTempo, updateProjectTimeSignature } from '@/lib/musicalTiming';
 import { isClipStretchToMatchTempo, toggleClipStretchToMatchTempo } from '@/lib/clipTempo';
 import { CLIP_COLORS, getClipColor, getClipColorIndex, setClipColor } from '@/lib/clipColor';
+import { renameClipTitle } from '@/lib/clipTitle';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
   decayDbfs,
@@ -571,6 +572,7 @@ export default function AudioEditorPage() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedClips, setSelectedClips] = useState<ClipKey[]>([]);
   const [pitchAndSpeedClipKey, setPitchAndSpeedClipKey] = useState<ClipKey | null>(null);
+  const [renamingClipKey, setRenamingClipKey] = useState<string | null>(null);
   const [renderingPitchAndSpeedClipId, setRenderingPitchAndSpeedClipId] = useState<string | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const clipSelectionAnchorRef = useRef<ClipKey | null>(null);
@@ -888,6 +890,15 @@ export default function AudioEditorPage() {
       } else if (modified && key === 'f') {
         event.preventDefault();
         fitProjectToWidth();
+      } else if (event.key === 'F2' && !modified && !event.altKey && !event.shiftKey
+        && selectedClips.length === 1 && !renderingPitchAndSpeedClipId) {
+        const selected = selectedClips[0] as ClipKey | undefined;
+        const clipExists = selected && project?.tracks.some((track) => track.id === selected.trackId
+          && track.clips.some((clip) => clip.id === selected.clipId));
+        if (selected && clipExists) {
+          event.preventDefault();
+          setRenamingClipKey(clipKeyId(selected));
+        }
       } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedClips.length > 0) {
         event.preventDefault();
         void handleDeleteSelectedClips();
@@ -909,6 +920,7 @@ export default function AudioEditorPage() {
     verticalZoom,
     playbackState,
     recordingState,
+    renderingPitchAndSpeedClipId,
     isMixingAndRendering,
     isMutingTracks,
     scrollX,
@@ -2004,6 +2016,12 @@ export default function AudioEditorPage() {
     if (!project || renderingPitchAndSpeedClipId) return;
     const updated = setClipColor(project, { trackId, clipId }, colorIndex);
     await commitClipEdit(updated, '修改片段颜色');
+  }
+
+  async function changeClipTitle(trackId: string, clipId: string, newTitle: string) {
+    if (!project || renderingPitchAndSpeedClipId) return;
+    const updated = renameClipTitle(project, { trackId, clipId }, newTitle);
+    await commitClipEdit(updated, '重命名片段');
   }
 
   function openClipPitchAndSpeed(trackId: string, clipId: string) {
@@ -8326,6 +8344,13 @@ export default function AudioEditorPage() {
                 onRenderPitchAndSpeed={(clipId) => renderClipPitchAndSpeed(track.id, clipId)}
                 onToggleStretchWithTempoChanges={(clipId) => toggleStretchWithTempoChanges(track.id, clipId)}
                 onClipColorChange={(clipId, colorIndex) => changeClipColor(track.id, clipId, colorIndex)}
+                renamingClipKey={renamingClipKey}
+                onRenameClipStart={(clipId) => {
+                  selectClip(track.id, clipId, 'replace');
+                  setRenamingClipKey(clipKeyId({ trackId: track.id, clipId }));
+                }}
+                onRenameClip={(clipId, newTitle) => changeClipTitle(track.id, clipId, newTitle)}
+                onRenameClipEnd={() => setRenamingClipKey(null)}
                 tempoChangesDisabled={recordingState === 'recording'}
                 renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
                 onSelectionChange={handleSelectionChange}
@@ -9644,6 +9669,10 @@ function TrackTimeline({
   onRenderPitchAndSpeed,
   onToggleStretchWithTempoChanges,
   onClipColorChange,
+  renamingClipKey,
+  onRenameClipStart,
+  onRenameClip,
+  onRenameClipEnd,
   tempoChangesDisabled,
   renderingPitchAndSpeedClipId,
   onSelectionChange,
@@ -9687,6 +9716,10 @@ function TrackTimeline({
   onRenderPitchAndSpeed: (clipId: string) => void;
   onToggleStretchWithTempoChanges: (clipId: string) => void;
   onClipColorChange: (clipId: string, colorIndex: number) => void;
+  renamingClipKey: string | null;
+  onRenameClipStart: (clipId: string) => void;
+  onRenameClip: (clipId: string, newTitle: string) => void;
+  onRenameClipEnd: () => void;
   tempoChangesDisabled: boolean;
   renderingPitchAndSpeedClipId: string | null;
   onSelectionChange: (start: number, end: number) => void;
@@ -9836,6 +9869,10 @@ function TrackTimeline({
           onRenderPitchAndSpeed={() => onRenderPitchAndSpeed(clip.id)}
           onToggleStretchWithTempoChanges={() => onToggleStretchWithTempoChanges(clip.id)}
           onClipColorChange={(colorIndex) => onClipColorChange(clip.id, colorIndex)}
+          isRenaming={renamingClipKey === clipKeyId({ trackId: track.id, clipId: clip.id })}
+          onRenameStart={() => onRenameClipStart(clip.id)}
+          onRename={(newTitle) => onRenameClip(clip.id, newTitle)}
+          onRenameEnd={onRenameClipEnd}
           tempoChangesDisabled={tempoChangesDisabled}
           renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
           onSelect={(mode) => onSelectClip(clip.id, mode)}
@@ -10268,6 +10305,10 @@ function ClipItem({
   onRenderPitchAndSpeed,
   onToggleStretchWithTempoChanges,
   onClipColorChange,
+  isRenaming,
+  onRenameStart,
+  onRename,
+  onRenameEnd,
   tempoChangesDisabled,
   renderingPitchAndSpeedClipId,
   onSelect,
@@ -10307,6 +10348,10 @@ function ClipItem({
   onRenderPitchAndSpeed: () => void;
   onToggleStretchWithTempoChanges: () => void;
   onClipColorChange: (colorIndex: number) => void;
+  isRenaming: boolean;
+  onRenameStart: () => void;
+  onRename: (newTitle: string) => void;
+  onRenameEnd: () => void;
   tempoChangesDisabled: boolean;
   renderingPitchAndSpeedClipId: string | null;
   onSelect: (mode: ClipSelectionMode) => void;
@@ -10343,6 +10388,16 @@ function ClipItem({
     startRatio: number;
     currentRatio: number;
   } | null>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const renameCompletedRef = useRef(false);
+  useEffect(() => {
+    renameCompletedRef.current = false;
+    if (!isRenaming) return;
+    const input = renameInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [isRenaming, clip.id]);
   const canvasHeight = trackHeight - 24;
   const isMultiView = viewMode === 'both';
   const paneHeight = isMultiView ? canvasHeight / 2 : canvasHeight;
@@ -10686,6 +10741,19 @@ function ClipItem({
     onSelect(mode);
   }
 
+  function finishRename() {
+    if (renameCompletedRef.current) return;
+    renameCompletedRef.current = true;
+    onRename(renameInputRef.current?.value ?? clip.name ?? '');
+    onRenameEnd();
+  }
+
+  function cancelRename() {
+    if (renameCompletedRef.current) return;
+    renameCompletedRef.current = true;
+    onRenameEnd();
+  }
+
   function renderChannelSplitter(pane: 'primary' | 'spectrum') {
     const isSpectrumPane = pane === 'spectrum';
     return (
@@ -10752,6 +10820,8 @@ function ClipItem({
       data-raw-audio-tempo={clip.rawAudioTempo ?? ''}
       data-clip-color-index={getClipColorIndex(clip)}
       data-clip-color={clipColor}
+      data-clip-name={clip.name ?? ''}
+      data-rename-active={isRenaming ? 'true' : undefined}
       role="button"
       tabIndex={0}
       aria-label={`${clip.name || '音频片段'}，开始 ${formatTime(clip.startTime)}，时长 ${formatTime(clip.duration)}，速度 ${Math.round(100 * getClipStretchRatio(clip))}%`}
@@ -10792,8 +10862,39 @@ function ClipItem({
         onPointerMove={handleMoveMove}
         onPointerUp={handleMoveEnd}
         onPointerCancel={() => setMoveDrag(null)}
+        onDoubleClick={(e) => {
+          if (renderingPitchAndSpeedClipId) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onRenameStart();
+        }}
       >
-        <span className="min-w-0 flex-1 truncate">{clip.name || '音频片段'}</span>
+        {isRenaming ? (
+          <input
+            ref={renameInputRef}
+            type="text"
+            defaultValue={clip.name ?? ''}
+            data-testid={`clip-rename-input-${clip.id}`}
+            aria-label="Rename clip"
+            className="h-5 min-w-0 flex-1 cursor-text select-text rounded-[2px] border border-[#20252a]/50 bg-white/90 px-1 text-[10px] font-medium outline-none"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onBlur={finishRename}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                finishRename();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                cancelRename();
+              }
+            }}
+          />
+        ) : (
+          <span data-testid={`clip-title-${clip.id}`} className="min-w-0 flex-1 truncate">{clip.name ?? '音频片段'}</span>
+        )}
         <button
           type="button"
           className={`shrink-0 rounded-sm p-0.5 hover:bg-[#20252a]/20 ${
@@ -10949,6 +11050,16 @@ function ClipItem({
     </div>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-60">
+        <ContextMenuItem
+          data-testid="clip-rename-menu"
+          disabled={hasMultipleSelections || Boolean(renderingPitchAndSpeedClipId)}
+          onSelect={() => {
+            // Radix restores trigger focus after onSelect; start editing after that handoff.
+            window.setTimeout(onRenameStart, 0);
+          }}
+        >
+          Rename clip
+        </ContextMenuItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger
             data-testid="clip-color-menu"
