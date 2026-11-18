@@ -3,8 +3,11 @@ import {
   applyClipPitchAndSpeed,
   composeClipPitchCents,
   getClipSpeedPercentage,
+  hasClipPitchOrSpeed,
   normalizeClipSpeedPercentage,
   processClipPitchAndSpeedChannels,
+  renderClipPitchAndSpeedChannels,
+  replaceClipWithRenderedPitchAndSpeed,
   splitClipPitchCents,
 } from './clipPitchSpeed';
 
@@ -119,5 +122,86 @@ describe('Audacity 4 non-destructive clip PCM rendering', () => {
     expect(voice[1]).toHaveLength(voice[0].length);
     expect(voice[0]).not.toEqual(normal[0]);
     expect(Math.max(...voice[0].map(Math.abs))).toBeGreaterThan(0.01);
+  });
+});
+
+describe('Audacity 4 Render pitch and speed', () => {
+  it('bakes only the visible region into stereo PCM and resets just the target clip', () => {
+    const sampleRate = 8000;
+    const left = new Float32Array(sampleRate * 2);
+    for (let index = 0; index < left.length; index += 1) {
+      left[index] = 0.4 * Math.sin(2 * Math.PI * 500 * index / sampleRate);
+    }
+    const right = left.map((value) => value * 0.5);
+    const untouched = left.slice();
+    const target = clip({
+      offset: 0.25,
+      duration: 0.4,
+      originalDuration: 2,
+      stretchRatio: 1.25,
+      pitchCents: 300,
+      optimizeForVoice: true,
+      gain: -3,
+      fadeIn: 0.05,
+      fadeOut: 0.04,
+    });
+    const rendered = renderClipPitchAndSpeedChannels(target, [left, right], sampleRate);
+    expect(rendered).toHaveLength(2);
+    expect(rendered[0]).toHaveLength(3200);
+    expect(rendered[1]).toHaveLength(3200);
+    expect(left).toEqual(untouched);
+    expect(rendered[0].some((value) => Math.abs(value) > 0.01)).toBe(true);
+
+    const sourceProject = project(target);
+    const neighbor = clip({ id: 'clip-b', startTime: 8, stretchRatio: 1, pitchCents: 0 });
+    sourceProject.tracks[0].clips.push(neighbor);
+    const updated = replaceClipWithRenderedPitchAndSpeed(
+      sourceProject,
+      { trackId: 'track-a', clipId: 'clip-a' },
+      'buffer-rendered',
+      rendered[0].length / sampleRate,
+    );
+    const baked = updated.tracks[0].clips[0];
+    expect(baked).toMatchObject({
+      audioBufferId: 'buffer-rendered',
+      startTime: 1,
+      offset: 0,
+      duration: 0.4,
+      originalDuration: 0.4,
+      stretchRatio: 1,
+      pitchCents: 0,
+      optimizeForVoice: false,
+      gain: -3,
+      fadeIn: 0.05,
+      fadeOut: 0.04,
+      name: 'Voice',
+    });
+    expect(updated.tracks[0].clips[1]).toBe(neighbor);
+    expect(sourceProject.tracks[0].clips[0].audioBufferId).toBe('buffer-a');
+  });
+
+  it('handles visible regions touching either source boundary', () => {
+    const sampleRate = 8000;
+    const source = new Float32Array(1600).map((_, index) => (
+      0.25 * Math.sin(2 * Math.PI * 440 * index / sampleRate)
+    ));
+    for (const offset of [0, 0.1]) {
+      const rendered = renderClipPitchAndSpeedChannels(
+        clip({ offset, duration: 0.1, originalDuration: 0.2, stretchRatio: 1, pitchCents: 1200 }),
+        [source],
+        sampleRate,
+      )[0];
+      expect(rendered).toHaveLength(800);
+      expect(rendered.some((value) => value !== 0)).toBe(true);
+    }
+  });
+
+  it('disables no-op rendering even when a voice preset is the only changed field', () => {
+    const neutral = clip({ stretchRatio: 1, pitchCents: 0, optimizeForVoice: true });
+    expect(hasClipPitchOrSpeed(neutral)).toBe(false);
+    expect(() => renderClipPitchAndSpeedChannels(neutral, [new Float32Array(100)], 8000))
+      .toThrow('没有可渲染');
+    expect(hasClipPitchOrSpeed(clip({ stretchRatio: 1.001, pitchCents: 0 }))).toBe(true);
+    expect(hasClipPitchOrSpeed(clip({ stretchRatio: 1, pitchCents: -1 }))).toBe(true);
   });
 });

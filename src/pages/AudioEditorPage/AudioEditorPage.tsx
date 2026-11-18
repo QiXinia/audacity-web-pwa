@@ -64,6 +64,13 @@ import {
   DropdownMenuSubContent,
 } from '@/components/ui/dropdown-menu';
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -460,6 +467,9 @@ import {
   applyClipPitchAndSpeed,
   getClipOptimizeForVoice,
   getClipPitchCents,
+  hasClipPitchOrSpeed,
+  renderClipPitchAndSpeedChannels,
+  replaceClipWithRenderedPitchAndSpeed,
   type ClipPitchAndSpeedSettings,
 } from '@/lib/clipPitchSpeed';
 import { SlidingStretchDialog } from './sections/SlidingStretchDialog';
@@ -553,6 +563,7 @@ export default function AudioEditorPage() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedClips, setSelectedClips] = useState<ClipKey[]>([]);
   const [pitchAndSpeedClipKey, setPitchAndSpeedClipKey] = useState<ClipKey | null>(null);
+  const [renderingPitchAndSpeedClipId, setRenderingPitchAndSpeedClipId] = useState<string | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const clipSelectionAnchorRef = useRef<ClipKey | null>(null);
   const [workspaceStore, setWorkspaceStore] = useState(loadWorkspaceStore);
@@ -1922,6 +1933,50 @@ export default function AudioEditorPage() {
     const updated = applyClipPitchAndSpeed(project, pitchAndSpeedClipKey, settings);
     await commitClipEdit(updated, '调整片段音高与速度');
     toast.success('已更新片段音高与速度');
+  }
+
+  async function resetClipPitchAndSpeed(trackId: string, clipId: string) {
+    if (!project || renderingPitchAndSpeedClipId) return;
+    const key = { trackId, clipId };
+    const clip = project.tracks.find((track) => track.id === trackId)
+      ?.clips.find((candidate) => candidate.id === clipId);
+    if (!clip || !hasClipPitchOrSpeed(clip)) return;
+    audioEngine.stopPlayback();
+    const updated = applyClipPitchAndSpeed(project, key, {
+      pitchCents: 0,
+      speedPercentage: 100,
+      optimizeForVoice: false,
+    });
+    await commitClipEdit(updated, '重置片段音高与速度');
+  }
+
+  async function renderClipPitchAndSpeed(trackId: string, clipId: string) {
+    if (!project || renderingPitchAndSpeedClipId) return;
+    const key = { trackId, clipId };
+    const operationId = clipKeyId(key);
+    const clip = project.tracks.find((track) => track.id === trackId)
+      ?.clips.find((candidate) => candidate.id === clipId);
+    if (!clip || !hasClipPitchOrSpeed(clip)) return;
+
+    setRenderingPitchAndSpeedClipId(operationId);
+    audioEngine.stopPlayback();
+    try {
+      const channels = await projectService.loadAudioChannels(clip.audioBufferId, project.sampleRate);
+      if (!channels) throw new Error(`片段“${clip.name || clip.id}”的音频不可用`);
+      const renderedChannels = renderClipPitchAndSpeedChannels(clip, channels, project.sampleRate);
+      const renderedDuration = renderedChannels[0].length / project.sampleRate;
+      const bufferId = await storeProjectBuffer(project.id, renderedChannels, project.sampleRate);
+      const updated = replaceClipWithRenderedPitchAndSpeed(project, key, bufferId, renderedDuration);
+      await commitClipEdit(updated, 'Rendered time-stretched audio · Render');
+      setSelectedClips([key]);
+      clipSelectionAnchorRef.current = key;
+      toast.success('Rendered time-stretched audio');
+    } catch (error) {
+      logger.error('Render clip pitch and speed failed', error);
+      toast.error(`Render pitch and speed 失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setRenderingPitchAndSpeedClipId(null);
+    }
   }
 
   function openClipPitchAndSpeed(trackId: string, clipId: string) {
@@ -8240,6 +8295,9 @@ export default function AudioEditorPage() {
                 onResolveClipDelta={(clipId, operation, delta, bypassSnap) => resolveClipSnapDelta(track.id, clipId, operation, delta, bypassSnap)}
                 onResetClip={(clipId) => handleClipReset(track.id, clipId)}
                 onPitchAndSpeed={(clipId) => openClipPitchAndSpeed(track.id, clipId)}
+                onResetPitchAndSpeed={(clipId) => resetClipPitchAndSpeed(track.id, clipId)}
+                onRenderPitchAndSpeed={(clipId) => renderClipPitchAndSpeed(track.id, clipId)}
+                renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
                 onSelectionChange={handleSelectionChange}
                 onSpectralSelectionChange={handleSpectralSelectionChange}
                 onCursorChange={handleCursorChange}
@@ -9552,6 +9610,9 @@ function TrackTimeline({
   onResolveClipDelta,
   onResetClip,
   onPitchAndSpeed,
+  onResetPitchAndSpeed,
+  onRenderPitchAndSpeed,
+  renderingPitchAndSpeedClipId,
   onSelectionChange,
   onSpectralSelectionChange,
   onCursorChange,
@@ -9589,6 +9650,9 @@ function TrackTimeline({
   onResolveClipDelta: (clipId: string, operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onResetClip: (clipId: string) => void;
   onPitchAndSpeed: (clipId: string) => void;
+  onResetPitchAndSpeed: (clipId: string) => void;
+  onRenderPitchAndSpeed: (clipId: string) => void;
+  renderingPitchAndSpeedClipId: string | null;
   onSelectionChange: (start: number, end: number) => void;
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
@@ -9732,6 +9796,9 @@ function TrackTimeline({
           onResolveDelta={(operation, delta, bypassSnap) => onResolveClipDelta(clip.id, operation, delta, bypassSnap)}
           onReset={() => onResetClip(clip.id)}
           onPitchAndSpeed={() => onPitchAndSpeed(clip.id)}
+          onResetPitchAndSpeed={() => onResetPitchAndSpeed(clip.id)}
+          onRenderPitchAndSpeed={() => onRenderPitchAndSpeed(clip.id)}
+          renderingPitchAndSpeedClipId={renderingPitchAndSpeedClipId}
           onSelect={(mode) => onSelectClip(clip.id, mode)}
           onSpectralSelectionChange={onSpectralSelectionChange}
           onCursorChange={onCursorChange}
@@ -10158,6 +10225,9 @@ function ClipItem({
   onResolveDelta,
   onReset,
   onPitchAndSpeed,
+  onResetPitchAndSpeed,
+  onRenderPitchAndSpeed,
+  renderingPitchAndSpeedClipId,
   onSelect,
   onSpectralSelectionChange,
   onCursorChange,
@@ -10191,6 +10261,9 @@ function ClipItem({
   onResolveDelta: (operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onReset: () => void;
   onPitchAndSpeed: () => void;
+  onResetPitchAndSpeed: () => void;
+  onRenderPitchAndSpeed: () => void;
+  renderingPitchAndSpeedClipId: string | null;
   onSelect: (mode: ClipSelectionMode) => void;
   onSpectralSelectionChange: (start: number, end: number, firstHz: number, secondHz: number) => void;
   onCursorChange: (pos: number) => void;
@@ -10612,10 +10685,17 @@ function ClipItem({
     );
   }
 
+  const isRenderingPitchAndSpeed = renderingPitchAndSpeedClipId === clipKeyId({ trackId: track.id, clipId: clip.id });
+  const pitchAndSpeedModified = hasClipPitchOrSpeed(clip);
+
   return (
+    <ContextMenu onOpenChange={(open) => { if (open && !isSelected) onSelect('replace'); }}>
+      <ContextMenuTrigger asChild>
     <div
       className="au-clip group absolute top-1 bottom-1 overflow-hidden rounded-[3px] border text-[#20252a]"
       data-selected={isSelected}
+      data-audio-buffer-id={clip.audioBufferId}
+      data-rendering-pitch-speed={isRenderingPitchAndSpeed ? 'true' : undefined}
       data-pitch-cents={getClipPitchCents(clip)}
       data-optimize-for-voice={getClipOptimizeForVoice(clip)}
       data-stretch-ratio={getClipStretchRatio(clip)}
@@ -10814,6 +10894,29 @@ function ClipItem({
         />
       )}
     </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-60">
+        <ContextMenuItem
+          disabled={renderingPitchAndSpeedClipId !== null}
+          onSelect={onPitchAndSpeed}
+        >
+          Pitch and speed…
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          disabled={!pitchAndSpeedModified || renderingPitchAndSpeedClipId !== null}
+          onSelect={onResetPitchAndSpeed}
+        >
+          Reset pitch and speed
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!pitchAndSpeedModified || renderingPitchAndSpeedClipId !== null}
+          onSelect={onRenderPitchAndSpeed}
+        >
+          {isRenderingPitchAndSpeed ? 'Rendering pitch and speed…' : 'Render pitch and speed'}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
