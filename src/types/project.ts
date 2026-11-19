@@ -93,6 +93,8 @@ export interface ITrack {
   color: string;
   clips: IClip[];
   effects: IEffect[];
+  /** Persistent channel layout, including empty tracks; legacy tracks infer it from PCM metadata. */
+  channelCount?: 1 | 2;
   /** Audacity per-track TrackViewType; legacy tracks inherit the Workspace default. */
   viewMode?: ViewMode;
   /** Audacity per-track Half-wave state; legacy tracks inherit the Workspace default. */

@@ -186,6 +186,7 @@ import {
 import { resolveMixAndRenderTrackIds } from '@/lib/mixAndRenderEffect';
 import { resolveRemoveTrackFocus } from '@/lib/trackRemoval';
 import { moveTrackInOrder, type TrackMoveDirection } from '@/lib/trackMove';
+import { needsMakeStereoRenderWarning } from '@/lib/trackChannelOperations';
 import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
 import {
   alignProjectTracks,
@@ -660,6 +661,12 @@ export default function AudioEditorPage() {
   const [isSortingTracks, setIsSortingTracks] = useState(false);
   const [isMovingTrack, setIsMovingTrack] = useState(false);
   const [isDuplicatingTrack, setIsDuplicatingTrack] = useState(false);
+  const [isTrackChannelOperation, setIsTrackChannelOperation] = useState(false);
+  const [trackChannelCounts, setTrackChannelCounts] = useState<Record<string, 0 | 1 | 2>>({});
+  const [makeStereoConfirmation, setMakeStereoConfirmation] = useState<{
+    leftTrackId: string;
+    rightTrackId: string;
+  } | null>(null);
   const [trackContextMenuId, setTrackContextMenuId] = useState<string | null>(null);
   const [isAligningTracks, setIsAligningTracks] = useState(false);
   const [moveSelectionWithTracks, setMoveSelectionWithTracks] = useState(
@@ -1730,6 +1737,166 @@ export default function AudioEditorPage() {
       logger.error('Split Stereo To Mono failed', error);
       toast.error(error instanceof Error ? error.message : '立体声拆分失败');
     }
+  }
+
+  function getTrackChannelCount(track: ITrack): 0 | 1 | 2 {
+    const detected = trackChannelCounts[track.id];
+    if (detected !== undefined) return detected;
+    if (track.clips.length > 0) return track.channelCount ?? 0;
+    return track.channelCount ?? 1;
+  }
+
+  async function ensureTrackChannelCount(track: ITrack): Promise<void> {
+    if (trackChannelCounts[track.id] !== undefined) return;
+    if (track.clips.length === 0) {
+      setTrackChannelCounts((current) => ({ ...current, [track.id]: track.channelCount ?? 1 }));
+      return;
+    }
+    if (typeof projectService.loadAudioBufferMetadata !== 'function') return;
+    try {
+      const sourceIds = [...new Set(track.clips.map((clip) => clip.audioBufferId))];
+      const metadata = await Promise.all(sourceIds.map((id) => projectService.loadAudioBufferMetadata(id)));
+      if (metadata.some((record) => !record)) throw new Error('audio metadata unavailable');
+      const count = metadata.every((record) => record!.channels === 1)
+        ? 1
+        : metadata.every((record) => record!.channels === 2) ? 2 : 0;
+      setTrackChannelCounts((current) => ({ ...current, [track.id]: count }));
+    } catch (error) {
+      // Keep the entry retryable instead of guessing a channel layout.
+      logger.warn('Unable to inspect track channel count', error);
+    }
+  }
+
+  function prepareTrackChannelOperation(): boolean {
+    if (recordingStateRef.current === 'recording') {
+      toast.warning('请先停止录音');
+      return false;
+    }
+    stopPlaybackAndSyncMonitoring();
+    return true;
+  }
+
+  async function swapStereoChannels(trackId: string): Promise<void> {
+    if (!project || isTrackChannelOperation) return;
+    if (!prepareTrackChannelOperation()) return;
+    const before = project;
+    setIsTrackChannelOperation(true);
+    try {
+      const changed = await projectService.swapStereoChannelsOnTrack(project.id, trackId);
+      if (changed === 0) {
+        toast.success('空立体声轨道无需交换声道');
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('声道交换结果不可用');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Swap stereo channels',
+        execute: () => updated,
+        undo: () => before,
+      });
+      toast.success(`已交换 ${changed} 个片段的左右声道`);
+    } catch (error) {
+      logger.error('Swap stereo channels failed', error);
+      toast.error(error instanceof Error ? error.message : '声道交换失败');
+    } finally {
+      setIsTrackChannelOperation(false);
+    }
+  }
+
+  async function splitStereoTrack(trackId: string, mode: 'lr' | 'center'): Promise<void> {
+    if (!project || isTrackChannelOperation) return;
+    if (!prepareTrackChannelOperation()) return;
+    const before = project;
+    setIsTrackChannelOperation(true);
+    try {
+      const result = await projectService.splitStereoTrackOnTrack(project.id, trackId, mode);
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('立体声拆分结果不可用');
+      setProject(updated);
+      setSelectedTrackId(result.leftTrackId);
+      setEffectsPanelTrackId(result.leftTrackId);
+      setSelectedClips([]);
+      pushHistoryCmd({
+        id: generateId(),
+        label: mode === 'lr' ? 'Split stereo to L/R mono' : 'Split stereo to center mono',
+        execute: () => updated,
+        undo: () => before,
+      });
+      toast.success(mode === 'lr' ? '已拆分为左右声像单声道轨道' : '已拆分为居中单声道轨道');
+    } catch (error) {
+      logger.error('Split stereo track failed', error);
+      toast.error(error instanceof Error ? error.message : '立体声拆分失败');
+    } finally {
+      setIsTrackChannelOperation(false);
+    }
+  }
+
+  async function performMakeStereoTrack(leftTrackId: string, rightTrackId: string): Promise<void> {
+    if (!project || isTrackChannelOperation) return;
+    setMakeStereoConfirmation(null);
+    if (!prepareTrackChannelOperation()) return;
+    const before = project;
+    setIsTrackChannelOperation(true);
+    try {
+      const targets: EchoTrackAudio[] = [];
+      for (const trackId of [leftTrackId, rightTrackId]) {
+        const track = project.tracks.find((candidate) => candidate.id === trackId);
+        if (!track) throw new Error('目标单声道轨道不可用');
+        const clips: EchoTrackAudio['clips'] = [];
+        for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
+          const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!effective) throw new Error(`无法读取片段“${clip.name ?? clip.id}”`);
+          clips.push({
+            clipId: clip.id,
+            sampleData: effective.channels,
+            sourceOffset: effective.sourceOffset,
+          });
+        }
+        targets.push({ trackId, clips });
+      }
+      const result = await projectService.makeStereoTrackFromMono(
+        project.id,
+        leftTrackId,
+        rightTrackId,
+        targets,
+      );
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('Make stereo 结果不可用');
+      setProject(updated);
+      setSelectedTrackId(result.trackId);
+      setEffectsPanelTrackId(result.trackId);
+      setSelectedClips([]);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Make stereo track',
+        execute: () => updated,
+        undo: () => before,
+      });
+      toast.success('已将相邻单声道轨道合并为立体声');
+    } catch (error) {
+      logger.error('Make stereo track failed', error);
+      toast.error(error instanceof Error ? error.message : '合并立体声失败');
+    } finally {
+      setIsTrackChannelOperation(false);
+    }
+  }
+
+  async function requestMakeStereoTrack(trackId: string): Promise<void> {
+    if (!project || isTrackChannelOperation) return;
+    const trackIndex = project.tracks.findIndex((track) => track.id === trackId);
+    const left = project.tracks[trackIndex];
+    const right = project.tracks[trackIndex + 1];
+    if (!left || !right || getTrackChannelCount(left) !== 1 || getTrackChannelCount(right) !== 1) {
+      toast.warning('Make stereo 需要当前轨道及其下一条轨道均为单声道');
+      return;
+    }
+    if (needsMakeStereoRenderWarning(left, right, project.sampleRate)) {
+      setMakeStereoConfirmation({ leftTrackId: left.id, rightTrackId: right.id });
+      return;
+    }
+    await performMakeStereoTrack(left.id, right.id);
   }
 
   async function setTracksMute(muted: boolean, selectedOnly: boolean): Promise<void> {
@@ -9107,6 +9274,12 @@ export default function AudioEditorPage() {
                   isSelected={selectedTrackId === track.id}
                   isMoving={isMovingTrack}
                   isDuplicating={isDuplicatingTrack}
+                  isChannelOperation={isTrackChannelOperation}
+                  channelCount={getTrackChannelCount(track)}
+                  canMakeStereo={selectedTrackId === track.id
+                    && getTrackChannelCount(track) === 1
+                    && trackIndex + 1 < project.tracks.length
+                    && getTrackChannelCount(project.tracks[trackIndex + 1]!) === 1}
                   canMoveUp={trackIndex > 0}
                   canMoveDown={trackIndex < project.tracks.length - 1}
                   contextMenuOpen={trackContextMenuId === track.id}
@@ -9115,6 +9288,9 @@ export default function AudioEditorPage() {
                     if (open) {
                       setSelectedTrackId(track.id);
                       setEffectsPanelTrackId(track.id);
+                      void ensureTrackChannelCount(track);
+                      const nextTrack = project.tracks[trackIndex + 1];
+                      if (nextTrack) void ensureTrackChannelCount(nextTrack);
                     }
                   }}
                   onSelect={() => {
@@ -9129,6 +9305,9 @@ export default function AudioEditorPage() {
                   onRename={(name) => renameTrack(track.id, name)}
                   onDelete={() => deleteTrack(track.id)}
                   onDuplicate={() => void duplicateTrack(track.id)}
+                  onSwapStereoChannels={() => void swapStereoChannels(track.id)}
+                  onSplitStereo={(mode) => void splitStereoTrack(track.id, mode)}
+                  onMakeStereo={() => void requestMakeStereoTrack(track.id)}
                   viewMode={getTrackViewMode(track, viewMode)}
                   halfWave={getTrackHalfWave(track, halfWave)}
                   onViewModeChange={(mode) => void changeTrackViewMode(track.id, mode)}
@@ -10376,7 +10555,41 @@ export default function AudioEditorPage() {
           onJoin={() => void joinRangeClips()}
         />
 
-        {/* Export Dialog */}
+        <AlertDialog
+        open={makeStereoConfirmation !== null}
+        onOpenChange={(open) => {
+          if (!open && !isTrackChannelOperation) setMakeStereoConfirmation(null);
+        }}
+      >
+        <AlertDialogContent data-testid="make-stereo-confirmation">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Combine mono tracks to stereo</AlertDialogTitle>
+            <AlertDialogDescription className="whitespace-pre-line">
+              {'When combining mono tracks to stereo, the tracks are mixed and rendered into a single track.'}
+              {'\n\n'}
+              {'This causes any realtime effects applied to the tracks to be applied. Any hidden data is removed and the result is one large clip.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="make-stereo-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="make-stereo-confirm"
+              onClick={() => {
+                if (makeStereoConfirmation) {
+                  void performMakeStereoTrack(
+                    makeStereoConfirmation.leftTrackId,
+                    makeStereoConfirmation.rightTrackId,
+                  );
+                }
+              }}
+            >
+              Yes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Export Dialog */}
         <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
           <DialogContent>
             <DialogHeader>
@@ -10437,6 +10650,9 @@ function TrackPanelRow({
   isSelected,
   isMoving,
   isDuplicating,
+  isChannelOperation,
+  channelCount,
+  canMakeStereo,
   canMoveUp,
   canMoveDown,
   contextMenuOpen,
@@ -10450,6 +10666,9 @@ function TrackPanelRow({
   onRename,
   onDelete,
   onDuplicate,
+  onSwapStereoChannels,
+  onSplitStereo,
+  onMakeStereo,
   viewMode,
   halfWave,
   onViewModeChange,
@@ -10469,6 +10688,9 @@ function TrackPanelRow({
   isSelected: boolean;
   isMoving: boolean;
   isDuplicating: boolean;
+  isChannelOperation: boolean;
+  channelCount: 0 | 1 | 2;
+  canMakeStereo: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   contextMenuOpen: boolean;
@@ -10482,6 +10704,9 @@ function TrackPanelRow({
   onRename: (name: string) => void;
   onDelete: () => void;
   onDuplicate: () => void;
+  onSwapStereoChannels: () => void;
+  onSplitStereo: (mode: 'lr' | 'center') => void;
+  onMakeStereo: () => void;
   viewMode: ViewMode;
   halfWave: boolean;
   onViewModeChange: (mode: TrackVisualizationMode) => void;
@@ -10792,6 +11017,44 @@ function TrackPanelRow({
             </ContextMenuCheckboxItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
+        {channelCount === 2 && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              data-testid="track-swap-stereo-channels"
+              disabled={isChannelOperation}
+              onSelect={() => onSwapStereoChannels()}
+            >
+              Swap stereo channels
+            </ContextMenuItem>
+            <ContextMenuItem
+              data-testid="track-split-stereo-lr"
+              disabled={isChannelOperation}
+              onSelect={() => onSplitStereo('lr')}
+            >
+              Split stereo to L/R mono
+            </ContextMenuItem>
+            <ContextMenuItem
+              data-testid="track-split-stereo-center"
+              disabled={isChannelOperation}
+              onSelect={() => onSplitStereo('center')}
+            >
+              Split stereo to center mono
+            </ContextMenuItem>
+          </>
+        )}
+        {channelCount === 1 && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              data-testid="track-make-stereo"
+              disabled={!canMakeStereo || isChannelOperation}
+              onSelect={() => onMakeStereo()}
+            >
+              Make stereo track
+            </ContextMenuItem>
+          </>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );

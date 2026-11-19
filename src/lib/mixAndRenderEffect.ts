@@ -26,6 +26,11 @@ export interface MixAndRenderRenderResult {
   duration: number;
 }
 
+export interface MixAndRenderRange {
+  startTime: number;
+  endTime: number;
+}
+
 /** Bound staged output memory before allocating a whole-project render. */
 export const MAX_MIX_AND_RENDER_TOTAL_OUTPUT_SAMPLES = 20_000_000;
 
@@ -71,10 +76,18 @@ export function resolveMixAndRenderTrackIds(
 export function renderMixAndRenderTracks(
   tracks: readonly MixAndRenderTrackInput[],
   sampleRate: number,
+  range?: MixAndRenderRange,
 ): MixAndRenderRenderResult {
   if (tracks.length === 0) throw new Error('没有可混音渲染的选中轨道');
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
     throw new RangeError('采样率必须大于零');
+  }
+  if (range) {
+    finite(range.startTime, '混音开始时间');
+    finite(range.endTime, '混音结束时间');
+    if (range.startTime < 0 || range.endTime <= range.startTime) {
+      throw new RangeError('混音时间范围必须非负且时长为正');
+    }
   }
 
   const seenTracks = new Set<string>();
@@ -124,6 +137,10 @@ export function renderMixAndRenderTracks(
     }
   }
 
+  if (range) {
+    startTime = range.startTime;
+    endTime = range.endTime;
+  }
   if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) {
     throw new Error('选中轨道没有可渲染的音频');
   }

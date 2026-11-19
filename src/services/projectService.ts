@@ -257,6 +257,7 @@ import {
 import { processCrossfadeClipChannels } from '@/lib/crossfadeClipsEffect';
 import {
   renderMixAndRenderTracks,
+  MAX_MIX_AND_RENDER_TOTAL_OUTPUT_SAMPLES,
   type MixAndRenderTrackInput,
 } from '@/lib/mixAndRenderEffect';
 import {
@@ -840,6 +841,11 @@ class ProjectService {
     };
     const nextTrack = {
       ...track,
+      // A previously empty Audacity track takes the imported clip's channel
+      // layout; subsequent imports never rewrite an established layout.
+      channelCount: track.clips.length === 0
+        ? (channelData.length === 2 ? 2 : 1)
+        : track.channelCount,
       clips: [...track.clips, clip].sort((a, b) => a.startTime - b.startTime),
     };
     const updatedProject: IProject = {
@@ -898,6 +904,9 @@ class ProjectService {
       ? replaceTrackSelectionWithClip(track, replaceSelection, clip, generateId)
       : {
         ...track,
+        channelCount: track.clips.length === 0
+          ? (sampleData.length === 2 ? 2 : 1)
+          : track.channelCount,
         clips: [...track.clips, clip].sort((a, b) => a.startTime - b.startTime),
       };
 
@@ -3049,6 +3058,372 @@ class ProjectService {
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return createdTracks;
+  }
+
+  /** Read and validate every distinct source buffer before a stereo-track edit. */
+  private async readStereoTrackBuffers(track: ITrack): Promise<Array<{
+    sourceBufferId: string;
+    sampleRate: number;
+    channels: Float32Array[];
+  }>> {
+    if (track.clips.length === 0 && track.channelCount !== 2) {
+      throw new Error(`轨道「${track.name}」不是立体声轨道`);
+    }
+    const sourceIds = [...new Set(track.clips.map((clip) => clip.audioBufferId))];
+    const sources: Array<{
+      sourceBufferId: string;
+      sampleRate: number;
+      channels: Float32Array[];
+    }> = [];
+    for (const sourceBufferId of sourceIds) {
+      const [channels, metadata] = await Promise.all([
+        this.loadAudioChannels(sourceBufferId),
+        this.loadAudioBufferMetadata(sourceBufferId),
+      ]);
+      const length = channels?.[0]?.length ?? 0;
+      if (!channels || !metadata || length < 1) {
+        throw new Error(`无法读取轨道「${track.name}」的原始音频`);
+      }
+      if (channels.length !== 2 || metadata.channels !== 2) {
+        throw new Error(`轨道「${track.name}」包含非立体声片段`);
+      }
+      if (channels.some((channel) => channel.length !== length)) {
+        throw new Error(`轨道「${track.name}」的左右声道长度不一致`);
+      }
+      sources.push({ sourceBufferId, sampleRate: metadata.sampleRate, channels });
+    }
+    return sources;
+  }
+
+  /** Audacity 4 Swap stereo channels: rewrite PCM only, preserving all clip and track metadata. */
+  async swapStereoChannelsOnTrack(projectId: string, trackId: string): Promise<number> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    const trackIndex = project.tracks.findIndex((track) => track.id === trackId);
+    const sourceTrack = project.tracks[trackIndex];
+    if (!sourceTrack) throw new Error('目标轨道不可用');
+    const sources = await this.readStereoTrackBuffers(sourceTrack);
+    if (sourceTrack.clips.length === 0) return 0;
+
+    const replacements = new Map<string, string>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    for (const source of sources) {
+      const bufferId = generateId();
+      replacements.set(source.sourceBufferId, bufferId);
+      pendingBuffers.push({
+        id: bufferId,
+        sampleRate: source.sampleRate,
+        sampleData: [new Float32Array(source.channels[1]!), new Float32Array(source.channels[0]!)],
+      });
+    }
+    const nextTrack: ITrack = {
+      ...sourceTrack,
+      channelCount: 2,
+      clips: sourceTrack.clips.map((clip) => ({
+        ...clip,
+        audioBufferId: replacements.get(clip.audioBufferId)!,
+      })),
+    };
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track, index) => index === trackIndex ? nextTrack : track),
+      analysisLabels: project.analysisLabels?.map((label) => {
+        if (label.trackId !== trackId || label.channelIndex === undefined) return label;
+        return { ...label, channelIndex: label.channelIndex === 0 ? 1 : 0 };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return sourceTrack.clips.length;
+  }
+
+  /** Audacity 4 SplitChannels with independent mono PCM and cloned realtime-effect states. */
+  async splitStereoTrackOnTrack(
+    projectId: string,
+    trackId: string,
+    mode: 'lr' | 'center',
+  ): Promise<{
+    leftTrackId: string;
+    rightTrackId: string;
+    leftClipIds: Record<string, string>;
+    rightClipIds: Record<string, string>;
+  }> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    const trackIndex = project.tracks.findIndex((track) => track.id === trackId);
+    const sourceTrack = project.tracks[trackIndex];
+    if (!sourceTrack) throw new Error('目标轨道不可用');
+    const sources = await this.readStereoTrackBuffers(sourceTrack);
+
+    const splitBuffers = new Map<string, { leftBufferId: string; rightBufferId: string }>();
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    for (const source of sources) {
+      const leftBufferId = generateId();
+      const rightBufferId = generateId();
+      splitBuffers.set(source.sourceBufferId, { leftBufferId, rightBufferId });
+      pendingBuffers.push(
+        {
+          id: leftBufferId,
+          sampleRate: source.sampleRate,
+          sampleData: [new Float32Array(source.channels[0]!)],
+        },
+        {
+          id: rightBufferId,
+          sampleRate: source.sampleRate,
+          sampleData: [new Float32Array(source.channels[1]!)],
+        },
+      );
+    }
+
+    const leftTrackId = generateId();
+    const rightTrackId = generateId();
+    const leftClipIds: Record<string, string> = {};
+    const rightClipIds: Record<string, string> = {};
+    const leftClips = sourceTrack.clips.map((clip) => {
+      const id = generateId();
+      leftClipIds[clip.id] = id;
+      return {
+        ...clip,
+        id,
+        audioBufferId: splitBuffers.get(clip.audioBufferId)!.leftBufferId,
+      };
+    });
+    const rightClips = sourceTrack.clips.map((clip) => {
+      const id = generateId();
+      rightClipIds[clip.id] = id;
+      return {
+        ...clip,
+        id,
+        audioBufferId: splitBuffers.get(clip.audioBufferId)!.rightBufferId,
+      };
+    });
+    const cloneEffects = () => sourceTrack.effects.map((effect) => ({
+      ...effect,
+      id: generateId(),
+      params: { ...effect.params },
+    }));
+    const shared = {
+      name: sourceTrack.name,
+      type: 'audio' as const,
+      gain: sourceTrack.gain,
+      muted: sourceTrack.muted,
+      solo: sourceTrack.solo,
+      armed: sourceTrack.armed,
+      color: sourceTrack.color,
+      channelCount: 1 as const,
+      viewMode: sourceTrack.viewMode,
+      halfWave: sourceTrack.halfWave,
+      spectrogramUseGlobalSettings: sourceTrack.spectrogramUseGlobalSettings,
+      spectrogramSettings: sourceTrack.spectrogramSettings
+        ? { ...sourceTrack.spectrogramSettings }
+        : undefined,
+    };
+    const leftTrack: ITrack = {
+      ...shared,
+      id: leftTrackId,
+      pan: mode === 'lr' ? -1 : sourceTrack.pan,
+      clips: leftClips,
+      effects: cloneEffects(),
+    };
+    const rightTrack: ITrack = {
+      ...shared,
+      id: rightTrackId,
+      pan: mode === 'lr' ? 1 : sourceTrack.pan,
+      clips: rightClips,
+      effects: cloneEffects(),
+    };
+    const tracks = [...project.tracks];
+    tracks.splice(trackIndex, 1, leftTrack, rightTrack);
+    const updatedProject: IProject = {
+      ...project,
+      tracks,
+      analysisLabels: project.analysisLabels?.map((label) => {
+        if (label.trackId !== trackId) return label;
+        const toRight = label.channelIndex === 1;
+        return {
+          ...label,
+          trackId: toRight ? rightTrackId : leftTrackId,
+          channelIndex: label.channelIndex === undefined ? undefined : 0,
+        };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return { leftTrackId, rightTrackId, leftClipIds, rightClipIds };
+  }
+
+  /**
+   * Audacity 4 Make stereo track: hard-pan two adjacent mono inputs and render
+   * one stereo track. Enabled realtime effects use the same Web Audio chain as
+   * playback and are baked into the new PCM; the output effect list is empty.
+   */
+  async makeStereoTrackFromMono(
+    projectId: string,
+    leftTrackId: string,
+    rightTrackId: string,
+    targets: readonly EchoTrackAudio[],
+  ): Promise<{ trackId: string; clipId: string | null }> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    const leftIndex = project.tracks.findIndex((track) => track.id === leftTrackId);
+    const leftTrack = project.tracks[leftIndex];
+    const rightTrack = project.tracks[leftIndex + 1];
+    if (!leftTrack || rightTrack?.id !== rightTrackId) {
+      throw new Error('Make stereo 需要两条相邻的单声道轨道');
+    }
+    if (
+      (leftTrack.clips.length === 0 && leftTrack.channelCount === 2)
+      || (rightTrack.clips.length === 0 && rightTrack.channelCount === 2)
+    ) {
+      throw new Error('Make stereo 仅支持单声道轨道');
+    }
+    const targetByTrack = new Map<string, EchoTrackAudio>();
+    for (const target of targets) {
+      if (targetByTrack.has(target.trackId)) throw new Error(`轨道 ${target.trackId} 被重复指定`);
+      targetByTrack.set(target.trackId, target);
+    }
+    if (targetByTrack.size !== 2 || !targetByTrack.has(leftTrackId) || !targetByTrack.has(rightTrackId)) {
+      throw new Error('Make stereo 的轨道覆盖不完整');
+    }
+    for (const target of targets) {
+      for (const input of target.clips) {
+        if (input.sampleData.length !== 1) throw new Error('Make stereo 仅支持单声道片段');
+      }
+    }
+    const renderInputs: MixAndRenderTrackInput[] = [leftTrack, rightTrack].map((track, trackIndex) => {
+      const target = targetByTrack.get(track.id)!;
+      const inputByClip = new Map<string, EchoTrackAudio['clips'][number]>();
+      for (const input of target.clips) {
+        if (inputByClip.has(input.clipId)) throw new Error(`片段 ${input.clipId} 被重复指定`);
+        inputByClip.set(input.clipId, input);
+      }
+      if (inputByClip.size !== track.clips.length) {
+        throw new Error(`轨道 ${track.id} 的片段覆盖不完整`);
+      }
+      return {
+        trackId: track.id,
+        gain: track.gain,
+        pan: trackIndex === 0 ? -1 : 1,
+        clips: track.clips.map((clip) => {
+          const input = inputByClip.get(clip.id)!;
+          if (input.sampleData.length !== 1) {
+            throw new Error(`轨道「${track.name}」包含非单声道片段`);
+          }
+          return {
+            clipId: clip.id,
+            startTime: clip.startTime,
+            duration: clip.duration,
+            sourceOffset: input.sourceOffset,
+            gain: clip.gain,
+            fadeIn: clip.fadeIn,
+            fadeOut: clip.fadeOut,
+            sampleData: input.sampleData,
+          };
+        }),
+      };
+    });
+
+    const hasClips = leftTrack.clips.length + rightTrack.clips.length > 0;
+    let rendered: ReturnType<typeof renderMixAndRenderTracks> | null = null;
+    if (hasClips) {
+      const hasEnabledEffects = [leftTrack, rightTrack].some((track) => (
+        track.effects.some((effect) => !effect.bypassed)
+      ));
+      if (!hasEnabledEffects) {
+        rendered = renderMixAndRenderTracks(renderInputs, project.sampleRate);
+      } else {
+        let startTime = Number.POSITIVE_INFINITY;
+        let endTime = Number.NEGATIVE_INFINITY;
+        for (const input of renderInputs) {
+          for (const clip of input.clips) {
+            startTime = Math.min(startTime, clip.startTime);
+            endTime = Math.max(endTime, clip.startTime + clip.duration);
+          }
+        }
+        const outputLength = Math.round((endTime - startTime) * project.sampleRate);
+        if (outputLength * 2 > MAX_MIX_AND_RENDER_TOTAL_OUTPUT_SAMPLES) {
+          throw new RangeError('Mix and Render 输出过大，请分批渲染');
+        }
+        const channels = [new Float32Array(outputLength), new Float32Array(outputLength)];
+        for (const [index, input] of renderInputs.entries()) {
+          const dry = renderMixAndRenderTracks([input], project.sampleRate, { startTime, endTime });
+          const effected = await audioEngine.renderRealtimeEffects(
+            dry.channels,
+            project.sampleRate,
+            [leftTrack, rightTrack][index]!.effects,
+          );
+          for (let channelIndex = 0; channelIndex < 2; channelIndex += 1) {
+            const output = channels[channelIndex]!;
+            const source = effected[channelIndex]!;
+            for (let sampleIndex = 0; sampleIndex < outputLength; sampleIndex += 1) {
+              output[sampleIndex] += source[sampleIndex] ?? 0;
+            }
+          }
+        }
+        rendered = { channels, startTime, duration: outputLength / project.sampleRate };
+      }
+    }
+    const trackId = generateId();
+    const clipId = rendered ? generateId() : null;
+    const bufferId = rendered ? generateId() : null;
+    const outputTrack: ITrack = {
+      id: trackId,
+      name: leftTrack.name,
+      type: 'audio',
+      gain: 0,
+      pan: 0,
+      muted: false,
+      solo: false,
+      armed: false,
+      color: leftTrack.color,
+      channelCount: 2,
+      viewMode: leftTrack.viewMode,
+      halfWave: leftTrack.halfWave,
+      spectrogramUseGlobalSettings: leftTrack.spectrogramUseGlobalSettings,
+      spectrogramSettings: leftTrack.spectrogramSettings
+        ? { ...leftTrack.spectrogramSettings }
+        : undefined,
+      effects: [],
+      clips: rendered && clipId && bufferId ? [{
+        id: clipId,
+        audioBufferId: bufferId,
+        startTime: rendered.startTime,
+        offset: 0,
+        duration: rendered.duration,
+        originalDuration: rendered.duration,
+        stretchRatio: 1,
+        gain: 0,
+        fadeIn: 0,
+        fadeOut: 0,
+        name: leftTrack.name,
+      }] : [],
+    };
+    const tracks = [...project.tracks];
+    tracks.splice(leftIndex, 2, outputTrack);
+    const updatedProject: IProject = {
+      ...project,
+      tracks,
+      analysisLabels: project.analysisLabels?.map((label) => {
+        if (label.trackId !== leftTrackId && label.trackId !== rightTrackId) return label;
+        return {
+          ...label,
+          trackId,
+          channelIndex: label.channelIndex === undefined
+            ? undefined
+            : label.trackId === leftTrackId ? 0 : 1,
+        };
+      }),
+    };
+    await this.commitPendingAudioBuffers(projectId, rendered && bufferId ? [{
+      id: bufferId,
+      sampleRate: project.sampleRate,
+      sampleData: rendered.channels,
+    }] : [], updatedProject);
+    return { trackId, clipId };
   }
 
   /** Apply pitch-preserving Change Tempo and warp the selected timeline atomically. */
@@ -6598,6 +6973,7 @@ class ProjectService {
       color: getTrackColor(index),
       clips: [],
       effects: [],
+      channelCount: 1,
     };
   }
 

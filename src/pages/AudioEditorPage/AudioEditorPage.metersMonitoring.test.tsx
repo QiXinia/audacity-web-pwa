@@ -194,7 +194,7 @@ describe('AudioEditorPage Track rulers and Meters & monitoring', () => {
     await waitFor(() => expect(mocks.startMonitoring).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByTestId('audio-level-meters')).toHaveAttribute('data-mic-input-active', 'true'));
 
-    fireEvent.click(screen.getByRole('button', { name: '停止', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '停止' }));
 
     await waitFor(() => expect(mocks.startMonitoring).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByTestId('audio-level-meters')).toHaveAttribute('data-mic-input-active', 'true'));

@@ -185,7 +185,7 @@ export class AudioEngine {
     }
     if (this.monitoringStartPromise) {
       await this.monitoringStartPromise;
-      if (this.monitoringStream || this._recordingState === 'recording' || this._playbackState !== 'stopped') {
+      if (this.monitoringStream || this._recordingState !== 'idle' || this._playbackState !== 'stopped') {
         this.setMonitoringEnabled(this.inputMonitoringEnabled);
         return;
       }
@@ -596,8 +596,56 @@ export class AudioEngine {
     this.startAnimationFrame();
   }
 
+  /**
+   * Render the same enabled Web Audio realtime-effect chain used by playback.
+   * Audacity MixAndRender keeps the requested time range, so the offline context
+   * deliberately has the input length and does not append an effect tail.
+   */
+  async renderRealtimeEffects(
+    channelData: readonly Float32Array[],
+    sampleRate: number,
+    effects: readonly IEffect[],
+  ): Promise<Float32Array[]> {
+    if (channelData.length < 1 || channelData.length > 2) {
+      throw new RangeError('实时效果渲染仅支持单声道或立体声');
+    }
+    const length = channelData[0]?.length ?? 0;
+    if (channelData.some((channel) => channel.length !== length)) {
+      throw new RangeError('实时效果渲染要求等长声道');
+    }
+    if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+      throw new RangeError('实时效果渲染采样率必须大于零');
+    }
+    const enabledEffects = effects.filter((effect) => !effect.bypassed);
+    if (enabledEffects.length === 0 || length === 0) {
+      return channelData.map((channel) => new Float32Array(channel));
+    }
+    if (typeof OfflineAudioContext === 'undefined') {
+      throw new Error('当前浏览器不支持实时效果离线渲染；未修改工程');
+    }
+
+    const context = new OfflineAudioContext(channelData.length, length, sampleRate);
+    const buffer = context.createBuffer(channelData.length, length, sampleRate);
+    channelData.forEach((channel, index) => buffer.getChannelData(index).set(channel));
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    let chainOutput: AudioNode = source;
+    for (const effect of enabledEffects) {
+      const pair = this.createEffectNode(context, effect);
+      if (!pair) throw new Error(`无法离线渲染实时效果 ${effect.type}；未修改工程`);
+      chainOutput.connect(pair.input);
+      chainOutput = pair.output;
+    }
+    chainOutput.connect(context.destination);
+    source.start(0);
+    const rendered = await context.startRendering();
+    return Array.from({ length: rendered.numberOfChannels }, (_, index) => (
+      new Float32Array(rendered.getChannelData(index))
+    ));
+  }
+
   private createEffectNode(
-    ctx: AudioContext,
+    ctx: BaseAudioContext,
     effect: IEffect,
   ): { input: AudioNode; output: AudioNode } | null {
     try {

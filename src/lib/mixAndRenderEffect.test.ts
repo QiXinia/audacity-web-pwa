@@ -93,6 +93,23 @@ describe('Mix and Render PCM', () => {
     expect(Array.from(result.channels[0]!)).toEqual([1, 1]);
   });
 
+  it('renders an explicit shared range, including silence for an empty hard-panned track', () => {
+    const empty = renderMixAndRenderTracks([
+      track({ pan: -1, clips: [] }),
+    ], 10, { startTime: 0.1, endTime: 0.4 });
+    expect(empty.startTime).toBe(0.1);
+    expect(empty.duration).toBeCloseTo(0.3, 6);
+    expect(empty.channels).toHaveLength(2);
+    expect(Array.from(empty.channels[0]!)).toEqual([0, 0, 0]);
+    expect(Array.from(empty.channels[1]!)).toEqual([0, 0, 0]);
+
+    const earlyClip = renderMixAndRenderTracks([
+      track({ pan: -1, clips: [clip({ duration: 0.1, sampleData: [Float32Array.from([1])] })] }),
+    ], 10, { startTime: 0, endTime: 0.3 });
+    expect(Array.from(earlyClip.channels[0]!)).toEqual([1, 0, 0]);
+    expect(Array.from(earlyClip.channels[1]!)).toEqual([0, 0, 0]);
+  });
+
   it('rejects invalid later tracks and non-finite PCM before producing output', () => {
     const invalid = clip({ sampleData: [Float32Array.from([1, Number.NaN, 1, 1])] });
     expect(() => renderMixAndRenderTracks([

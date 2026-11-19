@@ -367,3 +367,25 @@ describe('playback level meter', () => {
     }
   });
 });
+
+describe('realtime effect offline rendering boundaries', () => {
+  it('copies bypassed PCM without requiring an OfflineAudioContext', async () => {
+    const engine = new AudioEngine();
+    const input = [Float32Array.from([0.25, -0.5])];
+    const output = await engine.renderRealtimeEffects(input, 48000, [{
+      id: 'gain', type: 'gain', bypassed: true, params: { gain: 20 },
+    }]);
+    expect(output).toHaveLength(1);
+    expect(Array.from(output[0]!)).toEqual([0.25, -0.5]);
+    expect(output[0]).not.toBe(input[0]);
+  });
+
+  it('rejects invalid channel layouts and rates before allocation', async () => {
+    const engine = new AudioEngine();
+    await expect(engine.renderRealtimeEffects([], 48000, [])).rejects.toThrow(/单声道或立体声/);
+    await expect(engine.renderRealtimeEffects([
+      new Float32Array(2), new Float32Array(1),
+    ], 48000, [])).rejects.toThrow(/等长声道/);
+    await expect(engine.renderRealtimeEffects([new Float32Array(2)], 0, [])).rejects.toThrow(/采样率/);
+  });
+});
