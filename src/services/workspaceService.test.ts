@@ -169,6 +169,49 @@ describe('Workspace persistence', () => {
     expect(restored.presets.find((preset) => preset.id === 'classic')?.layout.horizontalZoom).toBe(200);
   });
 
+  it('restores the active workspace after trimming and truncating its persisted id', () => {
+    const longPrefix = 'b'.repeat(80);
+    const stored = JSON.stringify({
+      activeId: `  ${longPrefix}legacy  `,
+      presets: [
+        { id: 'classic', name: 'Classic', layout: defaultWorkspaceStore().presets[0].layout },
+        { id: ` ${longPrefix}legacy `, name: 'Active custom', layout: { ...layout, horizontalZoom: 333 } },
+      ],
+    });
+    const restored = loadWorkspaceStore({ getItem: () => stored });
+    expect(restored.activeId).toBe(longPrefix);
+    expect(restored.presets.find((preset) => preset.id === restored.activeId)?.layout.horizontalZoom).toBe(333);
+  });
+
+  it('rejects names that collide after the 60 character persistence limit', () => {
+    const sharedPrefix = 'n'.repeat(60);
+    const custom = createWorkspace(defaultWorkspaceStore(), 'first', `${sharedPrefix} A`, layout);
+    expect(custom.presets.at(-1)?.name).toBe(sharedPrefix);
+    expect(() => createWorkspace(custom, 'second', `${sharedPrefix} B`, layout))
+      .toThrow('Workspace name already exists');
+  });
+
+  it('deduplicates normalized names and reserves built-in names when restoring storage', () => {
+    const sharedPrefix = 'm'.repeat(60);
+    const stored = JSON.stringify({
+      activeId: 'second',
+      presets: [
+        { id: 'classic', name: 'Classic', layout: defaultWorkspaceStore().presets[0].layout },
+        { id: 'first', name: `${sharedPrefix} A`, layout },
+        { id: 'second', name: `${sharedPrefix} B`, layout },
+        { id: 'custom-classic', name: ' classic ', layout },
+      ],
+    });
+    const restored = loadWorkspaceStore({ getItem: () => stored });
+    const names = restored.presets.map((preset) => preset.name.toLowerCase());
+    expect(new Set(names).size).toBe(names.length);
+    expect(restored.presets.some((preset) => preset.id === 'first')).toBe(true);
+    expect(restored.presets.some((preset) => preset.id === 'second')).toBe(false);
+    expect(restored.presets.some((preset) => preset.id === 'custom-classic')).toBe(false);
+    expect(restored.presets.filter((preset) => preset.id === 'classic')).toHaveLength(1);
+    expect(restored.activeId).toBe('classic');
+  });
+
   it('reports browser storage write failures without throwing', () => {
     const storage = {
       setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },

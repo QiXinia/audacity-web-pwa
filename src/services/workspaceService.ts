@@ -32,6 +32,14 @@ function normalizeWorkspaceId(id: string): string {
   return id.trim().slice(0, 80);
 }
 
+function normalizeWorkspaceName(name: string): string {
+  return name.trim().slice(0, 60);
+}
+
+function workspaceNameKey(name: string): string {
+  return normalizeWorkspaceName(name).toLowerCase();
+}
+
 const DEFAULT_PRESETS: WorkspacePreset[] = [
   {
     id: 'classic',
@@ -123,15 +131,21 @@ export function loadWorkspaceStore(storage?: Pick<Storage, 'getItem'>): Workspac
     const parsed = JSON.parse(raw) as Partial<WorkspaceStore>;
     if (!Array.isArray(parsed.presets)) return fallback;
     const seenIds = new Set<string>();
+    const seenNames = new Set<string>();
     const presets = parsed.presets.slice(0, 50).flatMap((candidate, index) => {
       if (!candidate || typeof candidate.id !== 'string' || typeof candidate.name !== 'string') return [];
       const id = normalizeWorkspaceId(candidate.id);
       if (!id || seenIds.has(id)) return [];
-      seenIds.add(id);
+      const name = normalizeWorkspaceName(candidate.name) || `Workspace ${index + 1}`;
+      const nameKey = workspaceNameKey(name);
       const builtIn = DEFAULT_PRESETS.find((preset) => preset.id === id);
+      const reservedNameOwner = DEFAULT_PRESETS.find((preset) => workspaceNameKey(preset.name) === nameKey);
+      if (seenNames.has(nameKey) || (reservedNameOwner && reservedNameOwner.id !== id)) return [];
+      seenIds.add(id);
+      seenNames.add(nameKey);
       return [{
         id,
-        name: candidate.name.trim().slice(0, 60) || `Workspace ${index + 1}`,
+        name,
         builtIn: Boolean(builtIn),
         layout: normalizeLayout(candidate.layout, builtIn?.layout ?? fallback.presets[0].layout),
       }];
@@ -139,8 +153,9 @@ export function loadWorkspaceStore(storage?: Pick<Storage, 'getItem'>): Workspac
     for (const preset of fallback.presets) {
       if (!presets.some((candidate) => candidate.id === preset.id)) presets.push(preset);
     }
-    const activeId = presets.some((preset) => preset.id === parsed.activeId)
-      ? parsed.activeId!
+    const normalizedActiveId = typeof parsed.activeId === 'string' ? normalizeWorkspaceId(parsed.activeId) : '';
+    const activeId = presets.some((preset) => preset.id === normalizedActiveId)
+      ? normalizedActiveId
       : fallback.activeId;
     return { activeId, presets };
   } catch {
@@ -169,19 +184,19 @@ export function createWorkspace(
   name: string,
   layout: WorkspaceLayout,
 ): WorkspaceStore {
-  const trimmed = name.trim();
-  if (!trimmed) throw new Error('Workspace name cannot be empty');
+  const normalizedName = normalizeWorkspaceName(name);
+  if (!normalizedName) throw new Error('Workspace name cannot be empty');
   const normalizedId = normalizeWorkspaceId(id);
   if (!normalizedId) throw new Error('Workspace id cannot be empty');
   if (store.presets.some((preset) => normalizeWorkspaceId(preset.id) === normalizedId)) {
     throw new Error('Workspace id already exists');
   }
-  if (store.presets.some((preset) => preset.name.toLowerCase() === trimmed.toLowerCase())) {
+  if (store.presets.some((preset) => workspaceNameKey(preset.name) === workspaceNameKey(normalizedName))) {
     throw new Error('Workspace name already exists');
   }
   const preset: WorkspacePreset = {
     id: normalizedId,
-    name: trimmed.slice(0, 60),
+    name: normalizedName,
     builtIn: false,
     layout: { ...layout },
   };
