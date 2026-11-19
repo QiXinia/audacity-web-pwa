@@ -1,4 +1,4 @@
-import type { IClip, IProject } from '@/types/project';
+import type { IClip, IProject, ITrack } from '@/types/project';
 import type { ClipKey } from '@/lib/clipEditing';
 
 /** Audacity 4: zero/undefined inherits the track color; 1…9 selects a theme color. */
@@ -48,6 +48,28 @@ export function setClipColor(project: IProject, key: ClipKey, colorIndex: number
       return { ...clip, colorIndex: normalized };
     });
     return changed ? { ...track, clips } : track;
+  });
+  return changed ? { ...project, tracks } : project;
+}
+
+/** Resolve the checked Track color entry; legacy/custom colors have no checked entry. */
+export function getTrackColorIndex(track: Pick<ITrack, 'color'>): number {
+  const color = track.color.trim().toLowerCase();
+  return CLIP_COLORS.find((entry) => entry.color.toLowerCase() === color)?.index
+    ?? CLIP_COLOR_INDEX_NONE;
+}
+
+/** Change only the track color. Automatic clips inherit it; explicit clip colors stay untouched. */
+export function setTrackColor(project: IProject, trackId: string, colorIndex: number): IProject {
+  const entry = CLIP_COLORS.find((candidate) => candidate.index === colorIndex);
+  if (!entry) return project;
+  let changed = false;
+  const tracks = project.tracks.map((track) => {
+    if (track.id !== trackId || track.color.trim().toLowerCase() === entry.color.toLowerCase()) {
+      return track;
+    }
+    changed = true;
+    return { ...track, color: entry.color };
   });
   return changed ? { ...project, tracks } : project;
 }

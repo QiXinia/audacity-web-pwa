@@ -544,7 +544,14 @@ import {
 } from '@/lib/spectrogramSettings';
 import { getSpectrogramFftLength } from '@/lib/spectrogramAlgorithm';
 import { getSpectrogramFrameColorValues } from '@/lib/spectrogramDisplay';
-import { CLIP_COLORS, getClipColor, getClipColorIndex, setClipColor } from '@/lib/clipColor';
+import {
+  CLIP_COLORS,
+  getClipColor,
+  getClipColorIndex,
+  getTrackColorIndex,
+  setClipColor,
+  setTrackColor,
+} from '@/lib/clipColor';
 import { renameClipTitle } from '@/lib/clipTitle';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -2235,6 +2242,19 @@ export default function AudioEditorPage() {
     if (!project || renderingPitchAndSpeedClipId) return;
     const updated = setClipColor(project, { trackId, clipId }, colorIndex);
     await commitClipEdit(updated, '修改片段颜色');
+  }
+
+  async function changeTrackColor(trackId: string, colorIndex: number): Promise<void> {
+    if (!project) return;
+    const updated = setTrackColor(project, trackId, colorIndex);
+    if (updated === project) return;
+    try {
+      await projectService.saveProject(updated);
+      setProject(updated);
+    } catch (error) {
+      logger.error('Change track color failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道颜色保存失败');
+    }
   }
 
   async function changeClipTitle(trackId: string, clipId: string, newTitle: string) {
@@ -8986,6 +9006,7 @@ export default function AudioEditorPage() {
                   onRename={(name) => renameTrack(track.id, name)}
                   onDelete={() => deleteTrack(track.id)}
                   onDuplicate={() => void duplicateTrack(track.id)}
+                  onColorChange={(colorIndex) => void changeTrackColor(track.id, colorIndex)}
                   onMove={(direction) => void moveTrack(track.id, direction)}
                   onOpenEffects={() => {
                     setSelectedTrackId(track.id);
@@ -10295,6 +10316,7 @@ function TrackPanelRow({
   onRename,
   onDelete,
   onDuplicate,
+  onColorChange,
   onMove,
   onOpenEffects,
 }: {
@@ -10315,6 +10337,7 @@ function TrackPanelRow({
   onRename: (name: string) => void;
   onDelete: () => void;
   onDuplicate: () => void;
+  onColorChange: (colorIndex: number) => void;
   onMove: (direction: TrackMoveDirection) => void;
   onOpenEffects: () => void;
 }) {
@@ -10370,6 +10393,8 @@ function TrackPanelRow({
           </span>
         )}
         <div
+          data-testid={`track-color-swatch-${track.id}`}
+          data-track-color={track.color}
           className="size-2 shrink-0 rounded-sm"
           style={{ backgroundColor: track.color }}
           aria-label="轨道颜色"
@@ -10523,6 +10548,30 @@ function TrackPanelRow({
             >
               Move to bottom
             </ContextMenuItem>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger data-testid="track-color-submenu">Track color</ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-48">
+            <ContextMenuRadioGroup
+              value={String(getTrackColorIndex(track))}
+              onValueChange={(value) => onColorChange(Number(value))}
+            >
+              {CLIP_COLORS.map((entry) => (
+                <ContextMenuRadioItem
+                  key={entry.index}
+                  value={String(entry.index)}
+                  data-testid={`track-color-${entry.index}`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="size-3 rounded-sm border border-black/10"
+                    style={{ backgroundColor: entry.color }}
+                  />
+                  {entry.name}
+                </ContextMenuRadioItem>
+              ))}
+            </ContextMenuRadioGroup>
           </ContextMenuSubContent>
         </ContextMenuSub>
       </ContextMenuContent>
