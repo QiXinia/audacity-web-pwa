@@ -503,7 +503,9 @@ import {
   duplicateLabelTrack,
   getLabelTrackColor,
   getProjectLabelTracks,
+  importLabelsAsNewTrack,
   moveLabelTrack,
+  parseLabelsForImport,
   renameLabelTrack,
   replaceAnalysisLabels,
   resolveAnalysisLabelTrackId,
@@ -813,6 +815,7 @@ export default function AudioEditorPage() {
   const [labelEditorDialogOpen, setLabelEditorDialogOpen] = useState(false);
   const [isApplyingLabels, setIsApplyingLabels] = useState(false);
   const [exportLabelsTrackId, setExportLabelsTrackId] = useState<string | null>(null);
+  const [exportLabelsDialogOpen, setExportLabelsDialogOpen] = useState(false);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -4784,6 +4787,30 @@ export default function AudioEditorPage() {
     setSpectralSelection(null);
     setProject((current) => current ? { ...current, selection: nextSelection, spectralSelection: null } : current);
     handleCursorChange(label.start);
+  }
+
+  async function handleImportLabels(file: File): Promise<IAnalysisLabel[]> {
+    if (!project) throw new Error('没有打开的工程');
+    setIsApplyingLabels(true);
+    try {
+      const parsed = parseLabelsForImport(await file.text(), file.name);
+      const targetTrackId = project.tracks.some((track) => track.id === selectedTrackId)
+        ? selectedTrackId!
+        : project.tracks[0]?.id ?? '';
+      const imported = importLabelsAsNewTrack(project, parsed.labels, targetTrackId, generateId);
+      await commitClipEdit(
+        { ...imported.project, updatedAt: Date.now() },
+        `Import labels 导入标签（${imported.labels.length} 个标签）`,
+      );
+      if (parsed.rejectedCount > 0) {
+        toast.warning(`One or more saved labels could not be read. 已跳过 ${parsed.rejectedCount} 条无法读取的标签`);
+      } else {
+        toast.success(`已导入 ${imported.labels.length} 个标签并创建 Label Track`);
+      }
+      return imported.labels;
+    } finally {
+      setIsApplyingLabels(false);
+    }
   }
 
   async function handleEditLabels(labels: IAnalysisLabel[]): Promise<void> {
@@ -9800,7 +9827,10 @@ export default function AudioEditorPage() {
               onDeleteTrack={(trackId) => void handleDeleteLabelTrack(trackId)}
               onMoveTrack={(trackId, direction) => void handleMoveLabelTrack(trackId, direction)}
               onTrackColorChange={(trackId, colorIndex) => void handleLabelTrackColorChange(trackId, colorIndex)}
-              onExportLabels={setExportLabelsTrackId}
+              onExportLabels={(trackId) => {
+                setExportLabelsTrackId(trackId);
+                setExportLabelsDialogOpen(true);
+              }}
             />
 
             {/* Bottom padding for transport bar visibility */}
@@ -10321,11 +10351,16 @@ export default function AudioEditorPage() {
           selection={selection}
           isApplying={isApplyingLabels}
           onApply={handleEditLabels}
+          onImport={handleImportLabels}
+          onExport={() => {
+            setExportLabelsTrackId(null);
+            setExportLabelsDialogOpen(true);
+          }}
         />
 
         <ExportLabelsDialog
-          open={exportLabelsTrackId !== null}
-          onOpenChange={(open) => { if (!open) setExportLabelsTrackId(null); }}
+          open={exportLabelsDialogOpen}
+          onOpenChange={setExportLabelsDialogOpen}
           tracks={getProjectLabelTracks(project)}
           initialTrackId={exportLabelsTrackId}
           onExport={handleExportLabels}

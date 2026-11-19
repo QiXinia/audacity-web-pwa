@@ -170,6 +170,145 @@ export function deserializeLabelTracks(data: string | null | undefined): ILabelT
   }
 }
 
+export interface LabelImportRecord {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface LabelImportParseResult {
+  labels: LabelImportRecord[];
+  rejectedCount: number;
+}
+
+function orderedImportRecord(start: number, end: number, text: string): LabelImportRecord {
+  return { start: Math.min(start, end), end: Math.max(start, end), text };
+}
+
+function parseImportNumber(token: string | undefined): number | null {
+  if (!token?.trim()) return null;
+  const value = Number(token);
+  return Number.isFinite(value) ? value : null;
+}
+
+function importLines(content: string): string[] {
+  const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
+
+function parseSubRipTimestamp(value: string): number | null {
+  const match = value.match(/^([01]\d|2[0-3]):([0-5]\d):([0-5]\d),(\d{3})$/);
+  if (!match) return null;
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / 1000;
+}
+
+function parseTextLabels(lines: readonly string[]): LabelImportParseResult {
+  const labels: LabelImportRecord[] = [];
+  let rejectedCount = 0;
+  let index = 0;
+  while (index < lines.length) {
+    const fields = lines[index++].split('\t');
+    const start = parseImportNumber(fields[0]);
+    if (start === null) {
+      rejectedCount += 1;
+      continue;
+    }
+    let end = parseImportNumber(fields[1]);
+    let text: string;
+    if (end === null) {
+      end = start;
+      text = fields[1] ?? '';
+    } else {
+      text = fields[2] ?? '';
+    }
+    let valid = true;
+    if (index < lines.length && lines[index].startsWith('\\')) {
+      const continuation = lines[index].split('\t');
+      valid = continuation[0] === '\\'
+        && parseImportNumber(continuation[1]) !== null
+        && parseImportNumber(continuation[2]) !== null;
+      while (index < lines.length && lines[index].startsWith('\\')) index += 1;
+    }
+    if (valid) labels.push(orderedImportRecord(start, end, text));
+    else rejectedCount += 1;
+  }
+  return { labels, rejectedCount };
+}
+
+function parseSubRipLabels(lines: readonly string[]): LabelImportParseResult {
+  const labels: LabelImportRecord[] = [];
+  let rejectedCount = 0;
+  let index = 0;
+  while (index < lines.length) {
+    if (lines[index] === '') {
+      index += 1;
+      continue;
+    }
+    const identifier = lines[index++];
+    const timestamp = lines[index++] ?? '';
+    const titleLines: string[] = [];
+    while (index < lines.length && lines[index] !== '') titleLines.push(lines[index++]);
+    if (index < lines.length) index += 1;
+    const match = timestamp.match(/^(.{12}) --> (.{12})$/);
+    const start = match ? parseSubRipTimestamp(match[1]) : null;
+    const end = match ? parseSubRipTimestamp(match[2]) : null;
+    if (!/^[+-]?\d+$/.test(identifier) || start === null || end === null) {
+      rejectedCount += 1;
+      continue;
+    }
+    labels.push(orderedImportRecord(start, end, titleLines.join(' ')));
+  }
+  return { labels, rejectedCount };
+}
+
+/** Mirror Audacity 4.0.2 TXT/SRT import; its WebVTT importer is explicitly unsupported. */
+export function parseLabelsForImport(content: string, fileName: string): LabelImportParseResult {
+  if (/\.vtt$/i.test(fileName)) {
+    throw new Error('Importing WebVTT files is not currently supported.');
+  }
+  const result = /\.srt$/i.test(fileName)
+    ? parseSubRipLabels(importLines(content))
+    : parseTextLabels(importLines(content));
+  result.labels = result.labels
+    .map((label, index) => ({ label, index }))
+    .sort((left, right) => left.label.start - right.label.start
+      || left.label.end - right.label.end || left.index - right.index)
+    .map(({ label }) => label);
+  return result;
+}
+
+/** Audacity creates a separate Label Track for every imported file. */
+export function importLabelsAsNewTrack(
+  project: IProject,
+  imported: readonly LabelImportRecord[],
+  audioTrackId: string,
+  createId: () => string,
+): { project: IProject; labels: IAnalysisLabel[] } {
+  const base = materializeLabelTracks(project);
+  const labelTrackId = createId();
+  const labels = imported.map((label): IAnalysisLabel => ({
+    id: createId(),
+    kind: 'manual',
+    trackId: audioTrackId,
+    labelTrackId,
+    start: label.start,
+    end: label.end,
+    text: label.text,
+  }));
+  return {
+    project: {
+      ...base,
+      labelTracks: [...base.labelTracks!, {
+        id: labelTrackId, name: DEFAULT_LABEL_TRACK_NAME, colorIndex: 0,
+      }],
+      analysisLabels: [...(base.analysisLabels ?? []), ...labels],
+    },
+    labels,
+  };
+}
+
 function formatTextNumber(value: number): string {
   if (Object.is(value, -0)) return '0';
   const absolute = Math.abs(value);

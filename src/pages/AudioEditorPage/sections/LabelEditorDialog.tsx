@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -6,10 +6,11 @@ import { generateId } from '@/lib/audioUtils';
 import type { IAnalysisLabel, ITrack } from '@/types/project';
 
 function validateDraft(draft: readonly IAnalysisLabel[], tracks: readonly ITrack[]): string | null {
-  if (tracks.length === 0) return '工程中没有可归属的轨道';
   const trackIds = new Set(tracks.map((track) => track.id));
   for (const [index, label] of draft.entries()) {
-    if (!trackIds.has(label.trackId)) return `第 ${index + 1} 行的轨道已不存在，请重新选择`;
+    if (label.trackId ? !trackIds.has(label.trackId) : tracks.length > 0 || !label.labelTrackId) {
+      return `第 ${index + 1} 行的轨道已不存在，请重新选择`;
+    }
     if (!Number.isFinite(label.start)) return `第 ${index + 1} 行开始时间必须是有限秒数`;
     if (!Number.isFinite(label.end) || label.end < label.start) return `第 ${index + 1} 行结束时间不能早于开始时间`;
   }
@@ -25,6 +26,8 @@ export default function LabelEditorDialog({
   selection,
   isApplying,
   onApply,
+  onImport,
+  onExport,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -34,10 +37,15 @@ export default function LabelEditorDialog({
   selection: { start: number; end: number } | null;
   isApplying: boolean;
   onApply: (labels: IAnalysisLabel[]) => Promise<void>;
+  onImport: (file: File) => Promise<IAnalysisLabel[]>;
+  onExport: () => void;
 }) {
   const [draft, setDraft] = useState<IAnalysisLabel[]>([]);
   const [selectedRow, setSelectedRow] = useState(0);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const busy = isApplying || isImporting;
 
   function newManualLabel(): IAnalysisLabel {
     const trackId = tracks.some((track) => track.id === selectedTrackId)
@@ -82,8 +90,29 @@ export default function LabelEditorDialog({
     setSelectedRow(Math.max(0, index - 1));
   }
 
+  async function importFile(file: File) {
+    setApplyError(null);
+    setIsImporting(true);
+    try {
+      const imported = await onImport(file);
+      const initial = newManualLabel();
+      setDraft((current) => {
+        const onlyPristinePlaceholder = labels.length === 0 && current.length === 1
+          && !current[0].labelTrackId && current[0].text === ''
+          && current[0].trackId === initial.trackId
+          && current[0].start === initial.start && current[0].end === initial.end;
+        return [...(onlyPristinePlaceholder ? [] : current), ...imported.map((label) => ({ ...label }))];
+      });
+      setSelectedRow(0);
+    } catch (error) {
+      setApplyError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
   async function apply() {
-    if (validationError || isApplying) return;
+    if (validationError || busy) return;
     setApplyError(null);
     try {
       await onApply(draft.map((label) => ({ ...label })));
@@ -93,7 +122,7 @@ export default function LabelEditorDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!isApplying) onOpenChange(next); }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
       <DialogContent data-testid="label-editor-dialog" className="max-w-[920px] gap-0 p-0">
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle>Edit Labels</DialogTitle>
@@ -123,10 +152,11 @@ export default function LabelEditorDialog({
                         aria-label={`轨道 ${index + 1}`}
                         className="h-8 w-full rounded-md border border-input bg-background px-2"
                         value={label.trackId}
-                        disabled={isApplying}
+                        disabled={busy}
                         onFocus={() => setSelectedRow(index)}
                         onChange={(event) => updateRow(index, { trackId: event.target.value })}
                       >
+                        {label.trackId === '' && <option value="">No audio track</option>}
                         {tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
                       </select>
                     </td>
@@ -134,7 +164,7 @@ export default function LabelEditorDialog({
                       <Input
                         aria-label={`标签文本 ${index + 1}`}
                         value={label.text}
-                        disabled={isApplying}
+                        disabled={busy}
                         onFocus={() => setSelectedRow(index)}
                         onChange={(event) => updateRow(index, { text: event.target.value })}
                       />
@@ -147,7 +177,7 @@ export default function LabelEditorDialog({
                         aria-label={`开始时间 ${index + 1}`}
                         type="number" step={0.001}
                         value={Number.isFinite(label.start) ? label.start : ''}
-                        disabled={isApplying}
+                        disabled={busy}
                         onFocus={() => setSelectedRow(index)}
                         onChange={(event) => {
                           const start = event.target.valueAsNumber;
@@ -160,7 +190,7 @@ export default function LabelEditorDialog({
                         aria-label={`结束时间 ${index + 1}`}
                         type="number" step={0.001}
                         value={Number.isFinite(label.end) ? label.end : ''}
-                        disabled={isApplying}
+                        disabled={busy}
                         onFocus={() => setSelectedRow(index)}
                         onChange={(event) => {
                           const end = event.target.valueAsNumber;
@@ -177,15 +207,31 @@ export default function LabelEditorDialog({
             </table>
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant="outline" size="sm" disabled={isApplying || tracks.length === 0} onClick={insertLabel}>Insert</Button>
-            <Button type="button" variant="outline" size="sm" disabled={isApplying || draft.length === 0} onClick={deleteSelectedLabel}>Delete</Button>
+            <input
+              ref={importInputRef}
+              data-testid="label-import-input"
+              className="hidden"
+              type="file"
+              accept=".txt,.srt,.vtt,text/plain,application/x-subrip,text/vtt"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = '';
+                if (file) void importFile(file);
+              }}
+            />
+            <Button data-testid="label-import-button" type="button" variant="outline" size="sm" disabled={busy} onClick={() => importInputRef.current?.click()}>
+              {isImporting ? 'Importing…' : 'Import'}
+            </Button>
+            <Button data-testid="label-export-button" type="button" variant="outline" size="sm" disabled={busy} onClick={onExport}>Export</Button>
+            <Button type="button" variant="outline" size="sm" disabled={busy || tracks.length === 0} onClick={insertLabel}>Insert</Button>
+            <Button type="button" variant="outline" size="sm" disabled={busy || draft.length === 0} onClick={deleteSelectedLabel}>Delete</Button>
           </div>
           {(validationError || applyError) && <p role="alert" className="text-xs text-destructive">{validationError ?? applyError}</p>}
         </div>
         <DialogFooter className="border-t px-5 py-4">
-          <Button type="button" variant="outline" disabled={isApplying} onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button type="button" disabled={Boolean(validationError) || isApplying} onClick={() => { void apply(); }}>
-            {isApplying ? '保存中…' : 'OK'}
+          <Button type="button" variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button type="button" disabled={Boolean(validationError) || busy} onClick={() => { void apply(); }}>
+            {busy ? '保存中…' : 'OK'}
           </Button>
         </DialogFooter>
       </DialogContent>

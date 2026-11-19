@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import LabelEditorDialog from './LabelEditorDialog';
 import type { IAnalysisLabel, ITrack } from '@/types/project';
@@ -17,13 +17,15 @@ const clipping: IAnalysisLabel = {
 
 function renderDialog(overrides: Partial<Parameters<typeof LabelEditorDialog>[0]> = {}) {
   const onApply = vi.fn().mockResolvedValue(undefined);
+  const onImport = vi.fn();
+  const onExport = vi.fn();
   const onOpenChange = vi.fn();
   render(<LabelEditorDialog
     open onOpenChange={onOpenChange} labels={[clipping]} tracks={tracks}
     selectedTrackId="track-a" selection={{ start: 1, end: 2 }}
-    isApplying={false} onApply={onApply} {...overrides}
+    isApplying={false} onApply={onApply} onImport={onImport} onExport={onExport} {...overrides}
   />);
-  return { onApply, onOpenChange };
+  return { onApply, onImport, onExport, onOpenChange };
 }
 
 afterEach(() => {
@@ -94,5 +96,33 @@ describe('LabelEditorDialog', () => {
     expect(onApply).toHaveBeenCalledWith([
       expect.objectContaining({ kind: 'manual', start: 1, end: 2, text: 'First label' }),
     ]);
+  });
+
+  it('imports into a fresh draft without retaining the pristine placeholder and opens Export', async () => {
+    const imported: IAnalysisLabel = {
+      id: 'imported', kind: 'manual', trackId: 'track-a', labelTrackId: 'import-lane',
+      start: 3, end: 4, text: 'Imported label',
+    };
+    const { onApply, onImport, onExport } = renderDialog({ labels: [] });
+    onImport.mockResolvedValue([imported]);
+    fireEvent.click(screen.getByTestId('label-export-button'));
+    expect(onExport).toHaveBeenCalledTimes(1);
+    const file = new File(['3\t4\tImported label\n'], 'labels.txt', { type: 'text/plain' });
+    fireEvent.change(screen.getByTestId('label-import-input'), { target: { files: [file] } });
+    await waitFor(() => expect(onImport).toHaveBeenCalledWith(file));
+    expect(await screen.findByLabelText('标签文本 1')).toHaveValue('Imported label');
+    expect(screen.queryByLabelText('标签文本 2')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+    expect(onApply).toHaveBeenCalledWith([imported]);
+  });
+
+  it('surfaces import failures without changing the current draft', async () => {
+    const { onImport } = renderDialog();
+    onImport.mockRejectedValue(new Error('Importing WebVTT files is not currently supported.'));
+    const file = new File(['WEBVTT\n'], 'captions.vtt', { type: 'text/vtt' });
+    fireEvent.change(screen.getByTestId('label-import-input'), { target: { files: [file] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Importing WebVTT files is not currently supported.');
+    expect(screen.getByLabelText('标签文本 1')).toHaveValue('3 of 3');
+    expect(screen.queryByLabelText('标签文本 2')).not.toBeInTheDocument();
   });
 });

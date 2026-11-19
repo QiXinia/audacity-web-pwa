@@ -6,7 +6,9 @@ import {
   deserializeLabelTracks,
   duplicateLabelTrack,
   getProjectLabelTracks,
+  importLabelsAsNewTrack,
   moveLabelTrack,
+  parseLabelsForImport,
   renameLabelTrack,
   replaceAnalysisLabels,
   serializeLabelTracks,
@@ -143,5 +145,74 @@ describe('Audacity LabelTrack export formats', () => {
 
   it('rejects an empty track selection', () => {
     expect(() => serializeLabelsForExport(project(), [], 'txt')).toThrow('请至少选择一条 Label Track');
+  });
+});
+
+describe('Audacity LabelTrack import', () => {
+  it('round-trips TXT point/region labels, continuation lines, ordering and reversed times', () => {
+    const result = parseLabelsForImport([
+      '2\t1\tReverse',
+      '0.5\tPoint',
+      '1e-05\t0.25001\tSmall',
+      '\\\t20\t20000',
+      'bad\t0\tRejected',
+    ].join('\r\n') + '\r\n', 'LABELS.TXT');
+    expect(result).toEqual({
+      labels: [
+        { start: 0.00001, end: 0.25001, text: 'Small' },
+        { start: 0.5, end: 0.5, text: 'Point' },
+        { start: 1, end: 2, text: 'Reverse' },
+      ],
+      rejectedCount: 1,
+    });
+  });
+
+  it('reads SubRip cues with multiline text and reports malformed cues without losing valid ones', () => {
+    const result = parseLabelsForImport([
+      '1',
+      '00:00:02,000 --> 00:00:01,000',
+      'Second line',
+      'joined',
+      '',
+      'not-a-number',
+      'bad timestamp',
+      'Rejected',
+      '',
+      '2',
+      '01:01:01,500 --> 01:01:02,000',
+      'Valid',
+      '',
+    ].join('\n'), 'captions.srt');
+    expect(result).toEqual({
+      labels: [
+        { start: 1, end: 2, text: 'Second line joined' },
+        { start: 3661.5, end: 3662, text: 'Valid' },
+      ],
+      rejectedCount: 1,
+    });
+  });
+
+  it('matches the official WebVTT limitation without creating an empty lane', () => {
+    expect(() => parseLabelsForImport('WEBVTT\n', 'captions.vtt'))
+      .toThrow('Importing WebVTT files is not currently supported.');
+  });
+
+  it('appends one independently owned Label Track for each imported file', () => {
+    const original = project([label('existing', undefined, 0)]);
+    const ids = ['import-lane', 'imported-label'];
+    const result = importLabelsAsNewTrack(original, [
+      { start: 1, end: 2, text: 'Imported' },
+    ], 'audio-1', () => ids.shift()!);
+    expect(result.project.labelTracks).toEqual([
+      { id: 'legacy-label-track', name: 'Label Track', colorIndex: 0 },
+      { id: 'import-lane', name: 'Label Track', colorIndex: 0 },
+    ]);
+    expect(result.labels).toEqual([expect.objectContaining({
+      id: 'imported-label', kind: 'manual', trackId: 'audio-1', labelTrackId: 'import-lane',
+      start: 1, end: 2, text: 'Imported',
+    })]);
+    expect(result.project.analysisLabels).toHaveLength(2);
+    expect(original.labelTracks).toBeUndefined();
+    expect(original.analysisLabels).toHaveLength(1);
   });
 });

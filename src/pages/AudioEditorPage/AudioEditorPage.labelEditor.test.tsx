@@ -156,4 +156,39 @@ describe('AudioEditorPage Edit Labels integration', () => {
     expect(historyManager.push).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('button', { name: '选择削波标签 3 of 3' })).not.toBeInTheDocument();
   }, 20000);
+
+  it('imports SRT as an immediately reversible new lane and exports all lanes from the editor', async () => {
+    renderEditor();
+    await screen.findByText('Label editor integration');
+    await openEditor();
+    const file = new File([
+      '1\n00:00:02,000 --> 00:00:01,000\nReverse\n\n',
+      '2\n00:00:03,500 --> 00:00:04,000\nSecond cue\n\n',
+    ], 'markers.srt', { type: 'application/x-subrip' });
+    fireEvent.change(screen.getByTestId('label-import-input'), { target: { files: [file] } });
+
+    await waitFor(() => expect(projectService.saveProject).toHaveBeenCalled(), { timeout: 5000 });
+    const saved = vi.mocked(projectService.saveProject).mock.calls.map(([project]) => project)
+      .find((project) => project.analysisLabels?.length === 3);
+    expect(saved?.labelTracks).toHaveLength(2);
+    const importedTrack = saved?.labelTracks?.find((track) => track.id !== 'legacy-label-track');
+    expect(importedTrack).toEqual(expect.objectContaining({ name: 'Label Track', colorIndex: 0 }));
+    expect(saved?.analysisLabels?.slice(1)).toEqual([
+      expect.objectContaining({ start: 1, end: 2, text: 'Reverse', trackId: 'track-a', labelTrackId: importedTrack?.id }),
+      expect.objectContaining({ start: 3.5, end: 4, text: 'Second cue', trackId: 'track-a', labelTrackId: importedTrack?.id }),
+    ]);
+    expect(historyManager.push).toHaveBeenCalledTimes(1);
+    const [command, before] = vi.mocked(historyManager.push).mock.calls[0];
+    expect(before?.analysisLabels).toEqual([clipping]);
+    expect(command.undo().analysisLabels).toEqual([clipping]);
+    expect(command.execute().analysisLabels).toEqual(saved?.analysisLabels);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByRole('button', { name: '选择标签 Reverse' })).toBeInTheDocument();
+    await openEditor();
+    fireEvent.click(screen.getByTestId('label-export-button'));
+    expect(await screen.findByTestId('export-labels-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('export-label-track-legacy-label-track')).toBeChecked();
+    expect(screen.getByTestId(`export-label-track-${importedTrack?.id}`)).toBeChecked();
+  }, 20000);
 });
