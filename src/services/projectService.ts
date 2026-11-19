@@ -271,7 +271,9 @@ import {
   assertTrackSampleFormat,
   convertTrackSampleFormatChannels,
   scaleClipForTrackRate,
+  shouldUseHighQualityDither,
 } from '@/lib/trackMedia';
+import { createGlibcRandom } from '@/lib/glibcRandom';
 
 export type MixAndRenderClipAudio = EchoClipAudio;
 export type MixAndRenderTrackAudio = EchoTrackAudio;
@@ -407,6 +409,7 @@ const DEFAULT_PREFS: IPreferences = {
   autoBackup: true,
   maxRecordingDuration: 600,
   useWasm: true,
+  highQualityDither: 'shaped',
   moveSelectionWithTracks: false,
   syncLockTracks: false,
 };
@@ -2824,8 +2827,8 @@ class ProjectService {
 
   /**
    * Audacity 4 Track Format: convert complete stored channels for every selected
-   * track. The browser uses the official signed full-scale quantizer without
-   * claiming the optional desktop dither preference. All inputs are prepared
+   * track. Narrowing uses the persisted high-quality dither choice (Shaped by
+   * default), matching Sequence::ConvertToSampleFormat. Inputs are all prepared
    * before the first IndexedDB write, and old PCM remains available for Undo.
    */
   async changeTrackFormatOnTracks(
@@ -2849,16 +2852,20 @@ class ProjectService {
 
     const pendingBuffers: PendingAudioBuffer[] = [];
     const replacements = new Map<string, ITrack>();
+    const random = createGlibcRandom();
+    const highQualityDither = this.getPreferences().highQualityDither;
     let clipCount = 0;
     for (const track of selectedTracks) {
-      if ((track.sampleFormat ?? 'float32') === format) continue;
+      const sourceFormat = track.sampleFormat ?? 'float32';
+      if (sourceFormat === format) continue;
+      const ditherType = shouldUseHighQualityDither(sourceFormat, format) ? highQualityDither : 'none';
       const clipReplacements = new Map<string, IClip>();
       for (const clip of track.clips) {
         const record = await audioDb.audioBuffers.get(clip.audioBufferId);
         if (!record) throw new Error(`无法读取片段“${clip.name ?? clip.id}”的原始音频`);
         validateResampleRate(record.sampleRate);
         const channels = record.channelData.map((data) => new Float32Array(data));
-        const sampleData = convertTrackSampleFormatChannels(channels, format);
+        const sampleData = convertTrackSampleFormatChannels(channels, format, { ditherType, random });
         const bufferId = generateId();
         pendingBuffers.push({ id: bufferId, sampleRate: record.sampleRate, sampleData });
         clipReplacements.set(clip.id, { ...clip, audioBufferId: bufferId });

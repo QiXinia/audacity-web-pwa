@@ -99,6 +99,7 @@ function setCurrentProject(project: IProject): void {
 
 describe('ProjectService Track Format and Rate transactions', () => {
   beforeEach(() => {
+    localStorage.clear();
     vi.clearAllMocks();
     records = new Map([
       ['buffer-a1', record('buffer-a1', 1000, [[-1, -0.5 / 32768, 0.5 / 32768, 1]])],
@@ -146,6 +147,49 @@ describe('ProjectService Track Format and Rate transactions', () => {
     expect(Array.from(new Float32Array(writes[1]!.channelData[0]!))).toEqual([0.25, -0.25]);
     expect(records.get('buffer-a1')!.sampleRate).toBe(1000);
     expect(audioEngine.cacheBuffer).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the persisted high-quality dither preference with official Shaped output by default', async () => {
+    records.set('buffer-a1', record('buffer-a1', 1000, [[0.1, 0.25, 0.50005, 0.99999]]));
+    const project = makeProject();
+    project.tracks = [{ ...project.tracks[0]!, clips: [project.tracks[0]!.clips[0]!] }];
+    setCurrentProject(project);
+    expect(projectService.getPreferences().highQualityDither).toBe('shaped');
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+
+    await projectService.changeTrackFormatOnTracks('track-media-project', ['a'], 'int16');
+    const firstWrite = vi.mocked(audioDb.audioBuffers.put).mock.calls[0]![0];
+    expect(Array.from(new Float32Array(firstWrite.channelData[0]!),
+      (sample) => Math.round(sample * 32768))).toEqual([3277, 8192, 16385, 32767]);
+
+    projectService.savePreferences({ ...projectService.getPreferences(), highQualityDither: 'none' });
+    setCurrentProject(project);
+    await projectService.changeTrackFormatOnTracks('track-media-project', ['a'], 'int16');
+    const secondWrite = vi.mocked(audioDb.audioBuffers.put).mock.calls[1]![0];
+    expect(Array.from(new Float32Array(secondWrite.channelData[0]!),
+      (sample) => Math.round(sample * 32768))).toEqual([3277, 8192, 16386, 32767]);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not dither or consume random values when widening int16 before a later float32 conversion', async () => {
+    records.set('buffer-a1', record('buffer-a1', 1000, [[3277 / 32768, 0.25, 16385 / 32768, 32767 / 32768]]));
+    records.set('buffer-b', record('buffer-b', 1000, [[0.1, 0.25, 0.50005, 0.99999]]));
+    const project = makeProject();
+    project.tracks = [
+      { ...project.tracks[0]!, sampleFormat: 'int16', clips: [project.tracks[0]!.clips[0]!] },
+      { ...project.tracks[1]!, sampleFormat: 'float32', clips: [project.tracks[1]!.clips[0]!] },
+    ];
+    setCurrentProject(project);
+    vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+
+    await projectService.changeTrackFormatOnTracks('track-media-project', ['a', 'b'], 'int24');
+    const writes = vi.mocked(audioDb.audioBuffers.put).mock.calls.map(([buffer]) => buffer);
+    expect(writes).toHaveLength(2);
+    expect(Array.from(new Float32Array(writes[0]!.channelData[0]!),
+      (sample) => Math.round(sample * 8388608))).toEqual([838912, 2097152, 4194560, 8388352]);
+    // If widening consumed Shaped noise, this later official vector would change.
+    expect(Array.from(new Float32Array(writes[1]!.channelData[0]!),
+      (sample) => Math.round(sample * 8388608))).toEqual([838861, 2097152, 4194723, 8388524]);
   });
 
   it('rejects missing or non-finite PCM before any format write', async () => {

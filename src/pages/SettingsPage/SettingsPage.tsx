@@ -43,6 +43,7 @@ import { audioDb } from '@/db/audioDb';
 import { audioEngine } from '@/engine/audioEngine';
 import type { IPreferences } from '@/types/project';
 import { SpectrogramPreferencesCard } from './SpectrogramPreferencesCard';
+import { QualityPreferencesCard } from './QualityPreferencesCard';
 import { loadWorkspaceStore } from '@/services/workspaceService';
 import {
   loadStereoHeightsPreferences,
@@ -342,6 +343,11 @@ export default function SettingsPage() {
 
             </CardContent>
           </Card>
+
+          <QualityPreferencesCard
+            value={preferences?.highQualityDither ?? 'shaped'}
+            onChange={(value) => { void updatePreference('highQualityDither', value); }}
+          />
 
           {/* Audacity Playback Preferences: meter dB range */}
           <Card data-testid="meter-db-range-settings">

@@ -5,6 +5,7 @@ export type ProjectStatus = 'active' | 'deleted';
 export type EffectType = 'eq' | 'compressor' | 'reverb' | 'delay' | 'noiseGate' | 'gain' | 'highPass' | 'lowPass';
 export type TrackType = 'audio';
 export type TrackSampleFormat = 'int16' | 'int24' | 'float32';
+export type DitherType = 'none' | 'rectangle' | 'triangle' | 'shaped';
 export type SnapMode = 'clips' | 'samples' | 'milliseconds' | 'seconds' | 'beats' | 'bars';
 export type { FrequencySelection } from '@/lib/spectralSelection';
 import type { FrequencySelection } from '@/lib/spectralSelection';
@@ -172,6 +173,8 @@ export interface IPreferences {
   autoBackup: boolean;
   maxRecordingDuration: number;
   useWasm: boolean;
+  /** Audacity /Quality/HQDitherAlgorithmChoice; defaults to shaped. */
+  highQualityDither: DitherType;
   /** Audacity /GUI/MoveSelectionWithTracks; defaults to false. */
   moveSelectionWithTracks: boolean;
   /** Audacity /GUI/SyncLockTracks; defaults to false. */
