@@ -482,6 +482,90 @@ describe('AudioEngine recording boundaries', () => {
     expect(engine.isMicrophoneMonitoringActive()).toBe(false);
   });
 
+  it('cancels a pending recording start instead of activating the stream after stop', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context, createScriptProcessor } = makeContext({ worklet: false });
+    let resolveStream: ((value: unknown) => void) | undefined;
+    const getUserMedia = vi.fn(() => new Promise((resolve) => { resolveStream = resolve; }));
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    const ensureContext = vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const pendingStart = engine.startRecording();
+    const stopped = await engine.stopRecording();
+    resolveStream?.(stream);
+    await pendingStart;
+
+    expect(stopped).toBeNull();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(ensureContext).not.toHaveBeenCalled();
+    expect(createScriptProcessor).not.toHaveBeenCalled();
+    expect(engine.recordingState).toBe('idle');
+  });
+
+  it('does not fall back to ScriptProcessor when a pending worklet start was stopped', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context, createScriptProcessor } = makeContext();
+    let rejectWorklet: ((reason?: unknown) => void) | undefined;
+    const addModule = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      rejectWorklet = reject;
+    }));
+    context.audioWorklet = { addModule };
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const pendingStart = engine.startRecording();
+    await vi.waitFor(() => expect(addModule).toHaveBeenCalledOnce());
+    const stopped = await engine.stopRecording();
+    rejectWorklet?.(new Error('stale worklet failure'));
+    await pendingStart;
+
+    expect(stopped).toBeNull();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(createScriptProcessor).not.toHaveBeenCalled();
+    expect(engine.recordingState).toBe('idle');
+  });
+
+  it('allows a post-stop restart without reviving callers cancelled before the stop', async () => {
+    const engine = new AudioEngine();
+    const first = makeMediaStream(1);
+    const second = makeMediaStream(1);
+    const { context, createScriptProcessor } = makeContext({ worklet: false });
+    let resolveFirstStream: ((value: unknown) => void) | undefined;
+    const getUserMedia = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstStream = resolve; }))
+      .mockResolvedValue(second.stream);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const initialStart = engine.startRecording();
+    const cancelledDuplicate = engine.startRecording();
+    expect(await engine.stopRecording()).toBeNull();
+    const restart = engine.startRecording();
+    resolveFirstStream?.(first.stream);
+    await Promise.all([initialStart, cancelledDuplicate]);
+    await restart;
+
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(createScriptProcessor).toHaveBeenCalledOnce();
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(second.stop).not.toHaveBeenCalled();
+    expect(engine.recordingState).toBe('recording');
+
+    await engine.stopRecording();
+    expect(second.stop).toHaveBeenCalledOnce();
+  });
+
   it('coalesces concurrent starts and ignores reentry without replacing the active fallback session', async () => {
     const engine = new AudioEngine();
     const first = makeMediaStream(1);

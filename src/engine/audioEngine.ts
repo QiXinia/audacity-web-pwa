@@ -67,6 +67,7 @@ export class AudioEngine {
   private _recordingSink: GainNode | null = null;
   private recordingStopResolver: (() => void) | null = null;
   private recordingStartPromise: Promise<void> | null = null;
+  private recordingGeneration = 0;
 
   // Stopped-state microphone monitoring is independent from recording. The
   // analyser branch feeds the meter; only inputMonitoring opens the audible gain.
@@ -872,8 +873,19 @@ export class AudioEngine {
     // busy reentry. Coalesce pending browser startup too, before permission or
     // graph initialization can overwrite the only references used for cleanup.
     if (this._recordingState === 'recording') return;
-    if (this.recordingStartPromise) return this.recordingStartPromise;
-    const pending = this.startRecordingInternal(options);
+    if (this.recordingStartPromise) {
+      const pending = this.recordingStartPromise;
+      const joinedGeneration = this.recordingGeneration;
+      await pending;
+      // Callers that joined before a stop must stay cancelled. A caller that
+      // arrives after that stop may start a fresh session once the stale
+      // permission request has settled and released its stream.
+      if (joinedGeneration !== this.recordingGeneration) return;
+      if (this.recordingStartPromise) return;
+      return this.startRecording(options);
+    }
+    const generation = ++this.recordingGeneration;
+    const pending = this.startRecordingInternal(options, generation);
     this.recordingStartPromise = pending;
     try {
       await pending;
@@ -882,10 +894,14 @@ export class AudioEngine {
     }
   }
 
-  private async startRecordingInternal(options?: { stereo?: boolean }): Promise<void> {
+  private async startRecordingInternal(
+    options: { stereo?: boolean } | undefined,
+    generation: number,
+  ): Promise<void> {
     // Audacity uses one input graph: recording takes over any stopped-state
     // meter/monitor stream, and inputMonitoring controls its audible sink.
     this.stopMicrophoneMonitoring();
+    let stream: MediaStream;
     try {
       const audioConstraints: MediaTrackConstraints = {
         echoCancellation: false,
@@ -895,23 +911,30 @@ export class AudioEngine {
       if (options?.stereo) {
         (audioConstraints as MediaTrackConstraints & { channelCount: number }).channelCount = 2;
       }
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: audioConstraints,
       });
+      if (generation !== this.recordingGeneration) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      this.mediaStream = stream;
     } catch (e) {
+      if (generation !== this.recordingGeneration) return;
       logger.error('麦克风权限被拒绝或不可用:', String(e));
       throw e;
     }
 
     try {
       const ctx = await this.ensureContext();
-      const source = ctx.createMediaStreamSource(this.mediaStream);
+      if (generation !== this.recordingGeneration) return;
+      const source = ctx.createMediaStreamSource(stream);
       // Register partial graph nodes immediately so startup failures cannot leak them.
       this._recordSource = source;
       // A separate analyser branch never feeds back into the captured samples.
       this.recordingMeter = this.createStereoMeter(ctx, source);
       const isStereo = options?.stereo ?? false;
-      const deviceChannels = this.mediaStream.getAudioTracks()[0]?.getSettings().channelCount;
+      const deviceChannels = stream.getAudioTracks()[0]?.getSettings().channelCount;
       const inputChannels = isStereo
         ? Math.min(2, Math.max(1, deviceChannels ?? 2))
         : 1;
@@ -938,6 +961,7 @@ export class AudioEngine {
         const workletUrl = this._workletUrl || this._resolveWorkletUrl();
         this._workletUrl = workletUrl;
         await ctx.audioWorklet.addModule(workletUrl);
+        if (generation !== this.recordingGeneration) return;
         workletNode = new AudioWorkletNode(ctx, 'recording-processor', {
           numberOfInputs: 1,
           numberOfOutputs: 1,
@@ -968,6 +992,7 @@ export class AudioEngine {
         workletLoaded = true;
         logger.info('录音模式: AudioWorklet');
       } catch (e) {
+        if (generation !== this.recordingGeneration) return;
         logger.warn('AudioWorklet 加载失败，降级到 ScriptProcessor:', String(e));
         if (workletNode) {
           // A partially connected worklet must not keep recording alongside the
@@ -1011,7 +1036,7 @@ export class AudioEngine {
 
     // MediaRecorder 作为备份（用于显示编码格式等）
     try {
-      this.mediaRecorder = new MediaRecorder(this.mediaStream);
+      this.mediaRecorder = new MediaRecorder(stream);
       this.mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) this.recordingChunks.push(e.data);
       };
@@ -1020,6 +1045,9 @@ export class AudioEngine {
       this.mediaRecorder = null;
     }
     } catch (error) {
+      // Stop owns cleanup after cancellation; a stale startup must not tear
+      // down a newer recording session or surface a cancelled request error.
+      if (generation !== this.recordingGeneration) return;
       this._cleanupRecording();
       this._recordingState = 'idle';
       throw error;
@@ -1027,7 +1055,18 @@ export class AudioEngine {
   }
 
   async stopRecording(): Promise<Float32Array[] | null> {
-    if (this._recordingState !== 'recording') return null;
+    if (this.recordingStartPromise) {
+      // Invalidate every await boundary in the pending startup. If permission
+      // has not resolved yet, the local stream is stopped as soon as it arrives.
+      this.recordingGeneration += 1;
+    }
+    if (this._recordingState !== 'recording') {
+      if (this.recordingStartPromise) {
+        this._cleanupRecording();
+        this._recordingState = 'idle';
+      }
+      return null;
+    }
 
     // Let the Worklet flush its final partial 4096-frame block before stopping
     // the microphone stream and disconnecting the graph.
