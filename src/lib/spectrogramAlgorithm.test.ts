@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  computeAudacityReassignmentSpectrogramStreaming,
   computeAudacitySpectrogram,
   createAudacityDirectSpectrogramComputer,
   getSpectrogramFftLength,
@@ -21,6 +22,14 @@ function options(patch: Partial<SpectrogramAlgorithmOptions> = {}): SpectrogramA
 
 function sine(length: number, cyclesPerSample = 1 / 8): Float32Array {
   return Float32Array.from({ length }, (_, index) => Math.sin(2 * Math.PI * cyclesPerSample * index));
+}
+
+function deterministicNoise(length: number): Float32Array {
+  let state = 0x12345678;
+  return Float32Array.from({ length }, () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x80000000 - 1;
+  });
 }
 
 function peakBin(data: Float32Array, frame: number, bins: number): number {
@@ -127,6 +136,95 @@ describe('Audacity spectrogram algorithms', () => {
         const start = frame * full.numBins;
         expect(computer.computeFrame(frame)).toEqual(full.data.subarray(start, start + full.numBins));
       }
+    }
+  });
+
+  it('streams Reassignment exactly like the full buffer for every window and deterministic noise', () => {
+    for (const windowType of SPECTROGRAM_WINDOW_TYPES) {
+      for (const input of [sine(513), deterministicNoise(513)]) {
+        const settings = options({ algorithm: 'reassignment', windowType });
+        const full = computeAudacitySpectrogram(input, settings, 16);
+        const frames: Float32Array[] = [];
+        const emittedOrder: number[] = [];
+        const streamed = computeAudacityReassignmentSpectrogramStreaming(input, settings, 16, (frame, values) => {
+          emittedOrder.push(frame);
+          frames.push(values);
+        }, (frame, corrections) => corrections.forEach((power, bin) => {
+          frames[frame]![bin] = Math.sqrt(power);
+        }));
+        expect(streamed.numFrames).toBe(full.numFrames);
+        expect(streamed.numBins).toBe(full.numBins);
+        expect(emittedOrder).toEqual(Array.from({ length: full.numFrames }, (_, frame) => frame));
+        expect(streamed.bufferedFrames).toBeLessThanOrEqual(201);
+        for (let frame = 0; frame < full.numFrames; frame++) {
+          const start = frame * full.numBins;
+          expect(frames[frame]).toEqual(full.data.subarray(start, start + full.numBins));
+        }
+      }
+    }
+  });
+
+  it('bounds and reuses the Reassignment ring across thousands of output frames', () => {
+    const input = sine(4096);
+    const settings = options({ algorithm: 'reassignment', windowSize: 8, zeroPaddingFactor: 1 });
+    const full = computeAudacitySpectrogram(input, settings, 1);
+    const frames: Float32Array[] = [];
+    const streamed = computeAudacityReassignmentSpectrogramStreaming(input, settings, 1, (_frame, values) => {
+      frames.push(values);
+    }, (frame, corrections) => corrections.forEach((power, bin) => {
+      frames[frame]![bin] = Math.sqrt(power);
+    }));
+    expect(full.numFrames).toBe(4096);
+    expect(streamed.bufferedFrames).toBe(201);
+    expect(streamed.bufferedFrames * streamed.numBins).toBeLessThan(full.data.length);
+    for (let frame = 0; frame < full.numFrames; frame++) {
+      const start = frame * full.numBins;
+      expect(frames[frame]).toEqual(full.data.subarray(start, start + full.numBins));
+    }
+  });
+
+  it('preserves distant Reassignment contributions in exact source order', () => {
+    let distantBinCount = 0;
+    for (const windowType of SPECTROGRAM_WINDOW_TYPES) {
+      const input = deterministicNoise(513);
+      const settings = options({ algorithm: 'reassignment', windowType });
+      const full = computeAudacitySpectrogram(input, settings, 1);
+      const frames: Float32Array[] = [];
+      const streamed = computeAudacityReassignmentSpectrogramStreaming(input, settings, 1, (frame, values) => {
+        frames[frame] = values;
+      }, (frame, corrections) => corrections.forEach((power, bin) => {
+        frames[frame]![bin] = Math.sqrt(power);
+      }));
+      distantBinCount += streamed.distantBinCount;
+      for (let frame = 0; frame < full.numFrames; frame++) {
+        const start = frame * full.numBins;
+        expect(frames[frame]).toEqual(full.data.subarray(start, start + full.numBins));
+      }
+    }
+    expect(distantBinCount).toBeGreaterThan(0);
+  });
+
+  it('recomputes exact corrections when the contribution cache exceeds its bound', () => {
+    const input = deterministicNoise(513);
+    const settings = options({ algorithm: 'reassignment', windowType: 'rectangular' });
+    const full = computeAudacitySpectrogram(input, settings, 1);
+    const frames: Float32Array[] = [];
+    const streamed = computeAudacityReassignmentSpectrogramStreaming(
+      input,
+      settings,
+      1,
+      (frame, values) => { frames[frame] = values; },
+      (frame, corrections) => corrections.forEach((power, bin) => {
+        frames[frame]![bin] = Math.sqrt(power);
+      }),
+      1,
+    );
+    expect(streamed.usedContributionCache).toBe(false);
+    expect(streamed.cachedContributionCount).toBe(2);
+    expect(streamed.distantBinCount).toBeGreaterThan(0);
+    for (let frame = 0; frame < full.numFrames; frame++) {
+      const start = frame * full.numBins;
+      expect(frames[frame]).toEqual(full.data.subarray(start, start + full.numBins));
     }
   });
 

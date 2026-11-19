@@ -1,9 +1,15 @@
 import type { ISpectrogramSettings } from '@/types/project';
 import {
-  computeAudacitySpectrogram,
+  computeAudacityReassignmentSpectrogramStreaming,
   createAudacityDirectSpectrogramComputer,
 } from '@/lib/spectrogramAlgorithm';
-import { getSpectrogramFrameColorValues } from '@/lib/spectrogramDisplay';
+import {
+  applySpectrogramPowerCorrections,
+  createSpectrogramBinRanges,
+  getSpectrogramColorValuesFromDbMaxima,
+  getSpectrogramFrameColorValues,
+  getSpectrogramFrameDbMaxima,
+} from '@/lib/spectrogramDisplay';
 
 interface SpectrogramWorkerRequest {
   data: Float32Array;
@@ -15,7 +21,15 @@ interface SpectrogramWorkerRequest {
 
 type SpectrogramWorkerResponse =
   | { type: 'chunk'; startFrame: number; completedFrames: number; values: Float32Array }
-  | { type: 'done'; frameCount: number }
+  | {
+    type: 'done';
+    frameCount: number;
+    bufferedFrames: number;
+    distantBinCount: number;
+    cachedContributionCount: number;
+    totalContributionCount: number;
+    usedContributionCache: boolean;
+  }
   | { type: 'error'; message: string };
 
 const scope = self as unknown as {
@@ -30,6 +44,7 @@ scope.onmessage = ({ data: request }) => {
     const batchSize = 8;
     let batchStart = 0;
     let batch: Float32Array[] = [];
+    let completedUniqueFrames = 0;
 
     const flush = (completedFrames: number) => {
       if (batch.length === 0) return;
@@ -39,27 +54,48 @@ scope.onmessage = ({ data: request }) => {
       batch = [];
     };
     const emit = (frame: number, values: Float32Array) => {
+      if (batch.length > 0 && frame !== batchStart + batch.length) flush(completedUniqueFrames);
       if (batch.length === 0) batchStart = frame;
       batch.push(values);
-      if (batch.length >= batchSize) flush(frame + 1);
+      completedUniqueFrames = Math.max(completedUniqueFrames, frame + 1);
+      if (batch.length >= batchSize) flush(completedUniqueFrames);
     };
 
     let frameCount: number;
+    let bufferedFrames = 0;
+    let distantBinCount = 0;
+    let cachedContributionCount = 0;
+    let totalContributionCount = 0;
+    let usedContributionCache = false;
     if (settings.algorithm === 'reassignment') {
-      // Preserve Audacity's cross-column power accumulation before dB conversion.
-      const computation = computeAudacitySpectrogram(data, settings, hopSize);
+      const fftLength = settings.windowSize * settings.zeroPaddingFactor;
+      const ranges = createSpectrogramBinRanges(fftLength, height, sampleRate, settings);
+      const maximumDbByFrame: Float64Array[] = [];
+      const computation = computeAudacityReassignmentSpectrogramStreaming(
+        data,
+        settings,
+        hopSize,
+        (frame, frameValues) => {
+          const maximumDb = getSpectrogramFrameDbMaxima(
+            frameValues, fftLength, height, sampleRate, settings, ranges,
+          );
+          maximumDbByFrame[frame] = maximumDb;
+          emit(frame, getSpectrogramColorValuesFromDbMaxima(maximumDb, settings));
+        },
+        (frame, corrections) => {
+          const maximumDb = applySpectrogramPowerCorrections(
+            maximumDbByFrame[frame]!, corrections, fftLength, height, sampleRate, settings, ranges,
+          );
+          maximumDbByFrame[frame] = maximumDb;
+          emit(frame, getSpectrogramColorValuesFromDbMaxima(maximumDb, settings));
+        },
+      );
       frameCount = computation.numFrames;
-      for (let frame = 0; frame < frameCount; frame++) {
-        const start = frame * computation.numBins;
-        emit(frame, getSpectrogramFrameColorValues(
-          computation.data.subarray(start, start + computation.numBins),
-          computation.fftLength,
-          height,
-          sampleRate,
-          settings,
-        ));
-        if (batch.length === 0 && (frame + 1) % batchSize === 0) flush(frame + 1);
-      }
+      bufferedFrames = computation.bufferedFrames;
+      distantBinCount = computation.distantBinCount;
+      cachedContributionCount = computation.cachedContributionCount;
+      totalContributionCount = computation.totalContributionCount;
+      usedContributionCache = computation.usedContributionCache;
       flush(frameCount);
     } else {
       const computer = createAudacityDirectSpectrogramComputer(data, settings, hopSize);
@@ -76,7 +112,10 @@ scope.onmessage = ({ data: request }) => {
       }
       flush(frameCount);
     }
-    scope.postMessage({ type: 'done', frameCount });
+    scope.postMessage({
+      type: 'done', frameCount, bufferedFrames, distantBinCount, cachedContributionCount,
+      totalContributionCount, usedContributionCache,
+    });
   } catch (error) {
     scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   }

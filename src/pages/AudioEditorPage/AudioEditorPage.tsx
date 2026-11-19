@@ -12388,7 +12388,15 @@ interface SpectrogramRenderTracker {
 
 type SpectrogramWorkerMessage =
   | { type: 'chunk'; startFrame: number; completedFrames: number; values: Float32Array }
-  | { type: 'done'; frameCount: number }
+  | {
+    type: 'done';
+    frameCount: number;
+    bufferedFrames: number;
+    distantBinCount: number;
+    cachedContributionCount: number;
+    totalContributionCount: number;
+    usedContributionCache: boolean;
+  }
   | { type: 'error'; message: string };
 
 function paintSpectrogramChunk(
@@ -12426,6 +12434,7 @@ function drawSpectrumMiniWorker(
 ): () => void {
   const worker = new Worker(new URL('../../lib/spectrogram.worker.ts', import.meta.url), { type: 'module' });
   let cancelled = false;
+  let workerCompletedFrames = 0;
   ctx.globalAlpha = alpha;
   tracker.pending += 1;
   ctx.canvas.dataset.spectrogramState = 'pending';
@@ -12441,7 +12450,8 @@ function drawSpectrumMiniWorker(
       ctx.clip();
       paintSpectrogramChunk(ctx, message.values, message.startFrame, totalFrameCount, width, height, settings);
       ctx.restore();
-      tracker.completedFrames += Math.floor(message.values.length / height);
+      tracker.completedFrames += message.completedFrames - workerCompletedFrames;
+      workerCompletedFrames = message.completedFrames;
       ctx.canvas.dataset.spectrogramCompletedFrames = String(tracker.completedFrames);
       return;
     }
@@ -12450,6 +12460,12 @@ function drawSpectrumMiniWorker(
     if (message.type === 'error') {
       tracker.failed = true;
       ctx.canvas.dataset.spectrogramError = message.message;
+    } else {
+      ctx.canvas.dataset.spectrogramBufferedFrames = String(message.bufferedFrames);
+      ctx.canvas.dataset.spectrogramDistantBins = String(message.distantBinCount);
+      ctx.canvas.dataset.spectrogramCachedContributions = String(message.cachedContributionCount);
+      ctx.canvas.dataset.spectrogramTotalContributions = String(message.totalContributionCount);
+      ctx.canvas.dataset.spectrogramUsedContributionCache = String(message.usedContributionCache);
     }
     if (tracker.pending === 0) {
       ctx.canvas.dataset.spectrogramState = tracker.failed ? 'error' : 'done';
