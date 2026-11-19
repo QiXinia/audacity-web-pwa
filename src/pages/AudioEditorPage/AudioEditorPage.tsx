@@ -187,6 +187,8 @@ import { resolveMixAndRenderTrackIds } from '@/lib/mixAndRenderEffect';
 import { resolveRemoveTrackFocus } from '@/lib/trackRemoval';
 import { moveTrackInOrder, type TrackMoveDirection } from '@/lib/trackMove';
 import { needsMakeStereoRenderWarning } from '@/lib/trackChannelOperations';
+import { getTrackSampleFormatLabel, TRACK_SAMPLE_FORMATS } from '@/lib/trackMedia';
+import { RESAMPLE_RATE_CHOICES } from '@/lib/resampleEffect';
 import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
 import {
   alignProjectTracks,
@@ -453,7 +455,7 @@ import {
   saveChannelHeightRatio,
   saveStereoHeightsPreferences,
 } from '@/lib/stereoHeights';
-import type { IProject, ITrack, IClip, IEffect, IAnalysisLabel, ISpectrogramSettings, ViewMode, EffectType, SnapMode } from '@/types/project';
+import type { IProject, ITrack, IClip, IEffect, IAnalysisLabel, ISpectrogramSettings, ViewMode, EffectType, SnapMode, TrackSampleFormat } from '@/types/project';
 import EffectPanel from './sections/EffectPanel';
 import PlaybackTimingControls from './sections/PlaybackTimingControls';
 import ToneGeneratorDialog from './sections/ToneGeneratorDialog';
@@ -466,6 +468,7 @@ import NoiseGeneratorDialog from './sections/NoiseGeneratorDialog';
 import SilenceGeneratorDialog from './sections/SilenceGeneratorDialog';
 import RepeatSelectionDialog from './sections/RepeatSelectionDialog';
 import ResampleDialog from './sections/ResampleDialog';
+import TrackRateDialog from './sections/TrackRateDialog';
 import TimerRecordDialog from './sections/TimerRecordDialog';
 import {
   createTimerRecordController,
@@ -663,6 +666,12 @@ export default function AudioEditorPage() {
   const [isDuplicatingTrack, setIsDuplicatingTrack] = useState(false);
   const [isTrackChannelOperation, setIsTrackChannelOperation] = useState(false);
   const [trackChannelCounts, setTrackChannelCounts] = useState<Record<string, 0 | 1 | 2>>({});
+  const [trackSampleRates, setTrackSampleRates] = useState<Record<string, number | 'mixed'>>({});
+  const [trackRateTargets, setTrackRateTargets] = useState<{
+    trackIds: string[];
+    initialRate: number;
+  } | null>(null);
+  const [trackResampleTargets, setTrackResampleTargets] = useState<string[] | null>(null);
   const [makeStereoConfirmation, setMakeStereoConfirmation] = useState<{
     leftTrackId: string;
     rightTrackId: string;
@@ -1634,8 +1643,9 @@ export default function AudioEditorPage() {
         mixAndRenderTrackIds,
         newRate,
       );
-      if (result.clipCount === 0) {
-        toast.warning('选中轨道没有可重采样的音频片段');
+      if (result.trackCount === 0) {
+        setResampleDialogOpen(false);
+        toast.success(`选中轨道已经是 ${newRate} Hz`);
         return;
       }
       const updated = await projectService.getProject(project.id);
@@ -1648,7 +1658,9 @@ export default function AudioEditorPage() {
         undo: () => before,
       });
       setResampleDialogOpen(false);
-      toast.success(`已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段重采样为 ${newRate} Hz`);
+      toast.success(result.clipCount === 0
+        ? `已将 ${result.trackCount} 条空轨的速率设为 ${newRate} Hz`
+        : `已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段重采样为 ${newRate} Hz`);
     } catch (error) {
       logger.error('Resample failed', error);
       toast.error(error instanceof Error ? error.message : '重采样失败');
@@ -1746,10 +1758,37 @@ export default function AudioEditorPage() {
     return track.channelCount ?? 1;
   }
 
+  function getTrackSampleRate(track: ITrack): number | 'mixed' {
+    const detected = trackSampleRates[track.id];
+    if (detected !== undefined) return detected;
+    if (track.clips.length === 0) return track.sampleRate ?? project?.sampleRate ?? 44100;
+    return track.sampleRate ?? 'mixed';
+  }
+
+  useEffect(() => {
+    // Persisted track rates are authoritative after undo/redo; legacy tracks are re-inspected on demand.
+    setTrackSampleRates((current) => {
+      const next = { ...current };
+      const trackIds = new Set(project?.tracks.map((track) => track.id) ?? []);
+      for (const id of Object.keys(next)) {
+        if (!trackIds.has(id)) delete next[id];
+      }
+      for (const track of project?.tracks ?? []) {
+        if (track.sampleRate === undefined) delete next[track.id];
+        else next[track.id] = track.sampleRate;
+      }
+      return next;
+    });
+  }, [project]);
+
   async function ensureTrackChannelCount(track: ITrack): Promise<void> {
-    if (trackChannelCounts[track.id] !== undefined) return;
+    if (trackChannelCounts[track.id] !== undefined && trackSampleRates[track.id] !== undefined) return;
     if (track.clips.length === 0) {
       setTrackChannelCounts((current) => ({ ...current, [track.id]: track.channelCount ?? 1 }));
+      setTrackSampleRates((current) => ({
+        ...current,
+        [track.id]: track.sampleRate ?? project?.sampleRate ?? 44100,
+      }));
       return;
     }
     if (typeof projectService.loadAudioBufferMetadata !== 'function') return;
@@ -1760,10 +1799,15 @@ export default function AudioEditorPage() {
       const count = metadata.every((record) => record!.channels === 1)
         ? 1
         : metadata.every((record) => record!.channels === 2) ? 2 : 0;
+      const rates = [...new Set(metadata.map((record) => record!.sampleRate))];
       setTrackChannelCounts((current) => ({ ...current, [track.id]: count }));
+      setTrackSampleRates((current) => ({
+        ...current,
+        [track.id]: rates.length === 1 ? rates[0]! : 'mixed',
+      }));
     } catch (error) {
-      // Keep the entry retryable instead of guessing a channel layout.
-      logger.warn('Unable to inspect track channel count', error);
+      // Keep the entry retryable instead of guessing channel or rate metadata.
+      logger.warn('Unable to inspect track media metadata', error);
     }
   }
 
@@ -1774,6 +1818,139 @@ export default function AudioEditorPage() {
     }
     stopPlaybackAndSyncMonitoring();
     return true;
+  }
+
+  function getTrackContextTargetIds(trackId: string): string[] {
+    if (!project) return [];
+    const clipTrackIds = new Set(selectedClips.map((clip) => clip.trackId));
+    if (!clipTrackIds.has(trackId)) return [trackId];
+    return project.tracks.filter((track) => clipTrackIds.has(track.id)).map((track) => track.id);
+  }
+
+  function openTrackRateDialog(trackId: string): void {
+    if (!project || isTrackChannelOperation || isResampling) return;
+    if (recordingStateRef.current === 'recording') {
+      toast.warning('请先停止录音');
+      return;
+    }
+    const track = project.tracks.find((candidate) => candidate.id === trackId);
+    if (!track) return;
+    const rate = getTrackSampleRate(track);
+    setTrackRateTargets({
+      trackIds: getTrackContextTargetIds(trackId),
+      initialRate: typeof rate === 'number' ? rate : project.sampleRate,
+    });
+  }
+
+  function openTrackResampleDialog(trackId: string): void {
+    if (!project || isResampling || isTrackChannelOperation) return;
+    setTrackResampleTargets(getTrackContextTargetIds(trackId));
+  }
+
+  async function changeTrackFormat(trackId: string, format: TrackSampleFormat): Promise<void> {
+    if (!project || isTrackChannelOperation || isResampling) return;
+    if (!prepareTrackChannelOperation()) return;
+    const trackIds = getTrackContextTargetIds(trackId);
+    const before = project;
+    setIsTrackChannelOperation(true);
+    try {
+      const result = await projectService.changeTrackFormatOnTracks(project.id, trackIds, format);
+      if (result.trackCount === 0) {
+        toast.success(`选中轨道已经是 ${getTrackSampleFormatLabel(format)}`);
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('Track format 结果不可用');
+      setProject(updated);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Changed track format',
+        execute: () => updated,
+        undo: () => before,
+      });
+      toast.success(`已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段转换为 ${getTrackSampleFormatLabel(format)}`);
+    } catch (error) {
+      logger.error('Change track format failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道格式转换失败');
+    } finally {
+      setIsTrackChannelOperation(false);
+    }
+  }
+
+  async function changeTrackRate(newRate: number, directTrackIds?: string[]): Promise<void> {
+    const trackIds = directTrackIds ?? trackRateTargets?.trackIds;
+    if (!project || !trackIds || isTrackChannelOperation || isResampling) return;
+    if (!prepareTrackChannelOperation()) return;
+    const before = project;
+    setIsTrackChannelOperation(true);
+    try {
+      const result = await projectService.changeTrackRateOnTracks(project.id, trackIds, newRate);
+      if (result.trackCount === 0) {
+        setTrackRateTargets(null);
+        toast.success(`选中轨道已经是 ${newRate} Hz`);
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('Track rate 结果不可用');
+      setProject(updated);
+      setTrackSampleRates((current) => {
+        const next = { ...current };
+        for (const id of trackIds) next[id] = newRate;
+        return next;
+      });
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Changed track rate',
+        execute: () => updated,
+        undo: () => before,
+      });
+      setTrackRateTargets(null);
+      toast.success(`已更改 ${result.trackCount} 条轨道的速率；${result.clipCount} 个片段保留原始 PCM`);
+    } catch (error) {
+      logger.error('Change track rate failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道速率更改失败');
+    } finally {
+      setIsTrackChannelOperation(false);
+    }
+  }
+
+  async function resampleTrackContext(newRate: number): Promise<void> {
+    if (!project || !trackResampleTargets || isResampling || isTrackChannelOperation) return;
+    if (!prepareTrackChannelOperation()) return;
+    const trackIds = trackResampleTargets;
+    const before = project;
+    setIsResampling(true);
+    try {
+      const result = await projectService.resampleTracksOnTracks(project.id, trackIds, newRate);
+      if (result.trackCount === 0) {
+        setTrackResampleTargets(null);
+        toast.success(`选中轨道已经是 ${newRate} Hz`);
+        return;
+      }
+      const updated = await projectService.getProject(project.id);
+      if (!updated) throw new Error('Resample track 结果不可用');
+      setProject(updated);
+      setTrackSampleRates((current) => {
+        const next = { ...current };
+        for (const id of trackIds) next[id] = newRate;
+        return next;
+      });
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Resampled audio track(s)',
+        execute: () => updated,
+        undo: () => before,
+      });
+      setTrackResampleTargets(null);
+      toast.success(result.clipCount === 0
+        ? `已将 ${result.trackCount} 条空轨的速率设为 ${newRate} Hz`
+        : `已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段重采样为 ${newRate} Hz`);
+    } catch (error) {
+      logger.error('Resample track context failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道重采样失败');
+    } finally {
+      setIsResampling(false);
+    }
   }
 
   async function swapStereoChannels(trackId: string): Promise<void> {
@@ -9276,6 +9453,9 @@ export default function AudioEditorPage() {
                   isDuplicating={isDuplicatingTrack}
                   isChannelOperation={isTrackChannelOperation}
                   channelCount={getTrackChannelCount(track)}
+                  sampleRate={getTrackSampleRate(track)}
+                  isRecording={recordingState === 'recording'}
+                  isResampling={isResampling}
                   canMakeStereo={selectedTrackId === track.id
                     && getTrackChannelCount(track) === 1
                     && trackIndex + 1 < project.tracks.length
@@ -9308,6 +9488,10 @@ export default function AudioEditorPage() {
                   onSwapStereoChannels={() => void swapStereoChannels(track.id)}
                   onSplitStereo={(mode) => void splitStereoTrack(track.id, mode)}
                   onMakeStereo={() => void requestMakeStereoTrack(track.id)}
+                  onFormatChange={(format) => void changeTrackFormat(track.id, format)}
+                  onRateChange={(rate) => void changeTrackRate(rate, getTrackContextTargetIds(track.id))}
+                  onOpenRateDialog={() => openTrackRateDialog(track.id)}
+                  onResample={() => openTrackResampleDialog(track.id)}
                   viewMode={getTrackViewMode(track, viewMode)}
                   halfWave={getTrackHalfWave(track, halfWave)}
                   onViewModeChange={(mode) => void changeTrackViewMode(track.id, mode)}
@@ -10089,6 +10273,29 @@ export default function AudioEditorPage() {
           onResample={resampleSelectedTracks}
         />
 
+        <TrackRateDialog
+          open={trackRateTargets !== null}
+          onOpenChange={(open) => { if (!open) setTrackRateTargets(null); }}
+          initialRate={trackRateTargets?.initialRate ?? project.sampleRate}
+          selectedTrackCount={trackRateTargets?.trackIds.length ?? 0}
+          isChangingRate={isTrackChannelOperation}
+          onChangeRate={changeTrackRate}
+        />
+
+        <ResampleDialog
+          open={trackResampleTargets !== null}
+          title="Resample track"
+          onOpenChange={(open) => { if (!open) setTrackResampleTargets(null); }}
+          projectSampleRate={(() => {
+            const track = project.tracks.find((candidate) => candidate.id === trackResampleTargets?.[0]);
+            const rate = track ? getTrackSampleRate(track) : project.sampleRate;
+            return typeof rate === 'number' ? rate : project.sampleRate;
+          })()}
+          selectedTrackCount={trackResampleTargets?.length ?? 0}
+          isResampling={isResampling}
+          onResample={resampleTrackContext}
+        />
+
         <EchoEffectDialog
           open={echoDialogOpen}
           onOpenChange={setEchoDialogOpen}
@@ -10652,6 +10859,9 @@ function TrackPanelRow({
   isDuplicating,
   isChannelOperation,
   channelCount,
+  sampleRate,
+  isRecording,
+  isResampling,
   canMakeStereo,
   canMoveUp,
   canMoveDown,
@@ -10669,6 +10879,10 @@ function TrackPanelRow({
   onSwapStereoChannels,
   onSplitStereo,
   onMakeStereo,
+  onFormatChange,
+  onRateChange,
+  onOpenRateDialog,
+  onResample,
   viewMode,
   halfWave,
   onViewModeChange,
@@ -10690,6 +10904,9 @@ function TrackPanelRow({
   isDuplicating: boolean;
   isChannelOperation: boolean;
   channelCount: 0 | 1 | 2;
+  sampleRate: number | 'mixed';
+  isRecording: boolean;
+  isResampling: boolean;
   canMakeStereo: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
@@ -10707,6 +10924,10 @@ function TrackPanelRow({
   onSwapStereoChannels: () => void;
   onSplitStereo: (mode: 'lr' | 'center') => void;
   onMakeStereo: () => void;
+  onFormatChange: (format: TrackSampleFormat) => void;
+  onRateChange: (rate: number) => void;
+  onOpenRateDialog: () => void;
+  onResample: () => void;
   viewMode: ViewMode;
   halfWave: boolean;
   onViewModeChange: (mode: TrackVisualizationMode) => void;
@@ -11055,6 +11276,77 @@ function TrackPanelRow({
             </ContextMenuItem>
           </>
         )}
+        <ContextMenuSeparator />
+        <ContextMenuSub>
+          <ContextMenuSubTrigger
+            data-testid="track-format-submenu"
+            disabled={isRecording || isChannelOperation || isResampling}
+          >
+            Format: {getTrackSampleFormatLabel(track.sampleFormat)}
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-48">
+            <ContextMenuRadioGroup
+              value={track.sampleFormat ?? 'float32'}
+              onValueChange={(value) => onFormatChange(value as TrackSampleFormat)}
+            >
+              {TRACK_SAMPLE_FORMATS.map((format) => (
+                <ContextMenuRadioItem
+                  key={format.value}
+                  value={format.value}
+                  data-testid={`track-format-${format.value}`}
+                  disabled={isRecording || isChannelOperation || isResampling}
+                >
+                  {format.label}
+                </ContextMenuRadioItem>
+              ))}
+            </ContextMenuRadioGroup>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger
+            data-testid="track-rate-submenu"
+            disabled={isRecording || isChannelOperation || isResampling}
+          >
+            Rate: {typeof sampleRate === 'number' ? `${sampleRate} Hz` : 'Mixed'}
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-48">
+            <ContextMenuRadioGroup
+              value={typeof sampleRate === 'number' && RESAMPLE_RATE_CHOICES.includes(sampleRate)
+                ? String(sampleRate)
+                : 'custom'}
+              onValueChange={(value) => {
+                if (value === 'custom') onOpenRateDialog();
+                else onRateChange(Number(value));
+              }}
+            >
+              {RESAMPLE_RATE_CHOICES.map((rate) => (
+                <ContextMenuRadioItem
+                  key={rate}
+                  value={String(rate)}
+                  data-testid={`track-rate-${rate}`}
+                  disabled={isRecording || isChannelOperation || isResampling}
+                >
+                  {rate} Hz
+                </ContextMenuRadioItem>
+              ))}
+              <ContextMenuSeparator />
+              <ContextMenuRadioItem
+                value="custom"
+                data-testid="track-rate-custom"
+                disabled={isRecording || isChannelOperation || isResampling}
+              >
+                Other…
+              </ContextMenuRadioItem>
+            </ContextMenuRadioGroup>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuItem
+          data-testid="track-resample"
+          disabled={isChannelOperation || isResampling}
+          onSelect={onResample}
+        >
+          Resample track…
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );

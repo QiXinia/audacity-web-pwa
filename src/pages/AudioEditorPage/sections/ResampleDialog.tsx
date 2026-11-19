@@ -24,6 +24,7 @@ interface ResampleDialogProps {
   selectedTrackCount: number;
   isResampling: boolean;
   onResample: (newRate: number) => void | Promise<void>;
+  title?: string;
 }
 
 export default function ResampleDialog({
@@ -33,6 +34,7 @@ export default function ResampleDialog({
   selectedTrackCount,
   isResampling,
   onResample,
+  title = 'Resample 重采样',
 }: ResampleDialogProps) {
   const [rateText, setRateText] = useState(String(Math.round(projectSampleRate)));
   const newRate = parseResampleRate(rateText);
@@ -52,7 +54,7 @@ export default function ResampleDialog({
     }}>
       <DialogContent data-testid="resample-dialog" className="max-w-[460px]">
         <DialogHeader>
-          <DialogTitle>Resample 重采样</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             按 Audacity 整轨命令重采样选中轨道的全部原始片段；时间位置、裁剪、拉伸和效果保持不变。
           </DialogDescription>
@@ -62,6 +64,7 @@ export default function ResampleDialog({
             <Label htmlFor="resample-rate">New sample rate (Hz): 新采样率（Hz）</Label>
             <Input
               id="resample-rate"
+              data-testid="resample-input"
               type="text"
               inputMode="numeric"
               list="resample-rate-choices"
@@ -89,7 +92,7 @@ export default function ResampleDialog({
             <Button type="button" variant="secondary" disabled={isResampling} onClick={() => onOpenChange(false)}>
               Cancel 取消
             </Button>
-            <Button type="submit" disabled={newRate === null || isResampling || selectedTrackCount === 0}>
+            <Button type="submit" data-testid="resample-confirm" disabled={newRate === null || isResampling || selectedTrackCount === 0}>
               {isResampling ? 'Resampling… 重采样中…' : 'Resample 应用'}
             </Button>
           </DialogFooter>

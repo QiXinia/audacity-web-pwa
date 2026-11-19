@@ -149,7 +149,7 @@ describe('ProjectService Resample transactions', () => {
     expect(audioEngine.cacheBuffer).toHaveBeenCalledTimes(3);
   });
 
-  it('returns an empty result for selected empty tracks without a phantom write', async () => {
+  it('updates an empty track rate without a phantom PCM write', async () => {
     const project = makeProject();
     project.tracks = [makeTrack('empty', [])];
     setCurrentProject(project);
@@ -158,7 +158,8 @@ describe('ProjectService Resample transactions', () => {
     await expect(projectService.resampleTracksOnTracks('resample-project', ['empty'], 22050))
       .resolves.toEqual({ trackCount: 1, clipCount: 0, outputSampleCount: 0, sampleRate: 22050 });
     expect(audioDb.audioBuffers.put).not.toHaveBeenCalled();
-    expect(save).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0]![0].tracks[0]!.sampleRate).toBe(22050);
   });
 
   it('rejects invalid rates, duplicate targets, missing PCM and non-finite PCM before writes', async () => {

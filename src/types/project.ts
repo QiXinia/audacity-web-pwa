@@ -4,6 +4,7 @@ export type ViewMode = 'waveform' | 'waveformDb' | 'waveformDbLinear' | 'spectru
 export type ProjectStatus = 'active' | 'deleted';
 export type EffectType = 'eq' | 'compressor' | 'reverb' | 'delay' | 'noiseGate' | 'gain' | 'highPass' | 'lowPass';
 export type TrackType = 'audio';
+export type TrackSampleFormat = 'int16' | 'int24' | 'float32';
 export type SnapMode = 'clips' | 'samples' | 'milliseconds' | 'seconds' | 'beats' | 'bars';
 export type { FrequencySelection } from '@/lib/spectralSelection';
 import type { FrequencySelection } from '@/lib/spectralSelection';
@@ -95,6 +96,10 @@ export interface ITrack {
   effects: IEffect[];
   /** Persistent channel layout, including empty tracks; legacy tracks infer it from PCM metadata. */
   channelCount?: 1 | 2;
+  /** Audacity stored sample format; decoded browser PCM is float32 until explicitly narrowed. */
+  sampleFormat?: TrackSampleFormat;
+  /** Persistent empty-track rate; non-empty tracks prefer their actual PCM metadata. */
+  sampleRate?: number;
   /** Audacity per-track TrackViewType; legacy tracks inherit the Workspace default. */
   viewMode?: ViewMode;
   /** Audacity per-track Half-wave state; legacy tracks inherit the Workspace default. */

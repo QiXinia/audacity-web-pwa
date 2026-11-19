@@ -16,7 +16,7 @@ import {
   parseFrequencySelection,
   type FrequencySelection,
 } from '@/lib/spectralSelection';
-import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect } from '@/types/project';
+import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect, TrackSampleFormat } from '@/types/project';
 import { deserializeAnalysisLabels, serializeAnalysisLabels } from '@/lib/analysisLabels';
 import { duplicateTrackInProject } from '@/lib/trackDuplicate';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
@@ -266,6 +266,11 @@ import {
   resampleChannels,
   validateResampleRate,
 } from '@/lib/resampleEffect';
+import {
+  assertTrackSampleFormat,
+  convertTrackSampleFormatChannels,
+  scaleClipForTrackRate,
+} from '@/lib/trackMedia';
 
 export type MixAndRenderClipAudio = EchoClipAudio;
 export type MixAndRenderTrackAudio = EchoTrackAudio;
@@ -284,6 +289,11 @@ export interface ResampleTracksResult {
   clipCount: number;
   outputSampleCount: number;
   sampleRate: number;
+}
+
+export interface TrackMediaTracksResult {
+  trackCount: number;
+  clipCount: number;
 }
 
 type EffectType = IEffect['type'];
@@ -692,6 +702,7 @@ class ProjectService {
     if (!project) return null;
 
     const newTrack = this.createDefaultTrack(project.tracks.length);
+    newTrack.sampleRate = project.sampleRate;
     project.tracks.push(newTrack);
     await this.saveProject(project);
     return newTrack;
@@ -824,8 +835,10 @@ class ProjectService {
     onProgress?.(0.8);
 
     // Preserve every decoded channel; mono is only a waveform display choice, not a storage step.
+    // A track with an established PCM format stores newly imported clips in that same format.
+    const storedChannelData = convertTrackSampleFormatChannels(channelData, track.sampleFormat ?? 'float32');
     const bufferId = generateId();
-    const duration = channelData[0].length / sampleRate;
+    const duration = storedChannelData[0].length / sampleRate;
     const clip: IClip = {
       id: generateId(),
       audioBufferId: bufferId,
@@ -846,6 +859,8 @@ class ProjectService {
       channelCount: track.clips.length === 0
         ? (channelData.length === 2 ? 2 : 1)
         : track.channelCount,
+      sampleRate: track.clips.length === 0 ? sampleRate : track.sampleRate,
+      sampleFormat: track.sampleFormat ?? 'float32',
       clips: [...track.clips, clip].sort((a, b) => a.startTime - b.startTime),
     };
     const updatedProject: IProject = {
@@ -857,7 +872,7 @@ class ProjectService {
 
     // Store and commit the complete edit before exposing imported audio to playback.
     await this.commitPendingAudioBuffers(projectId, [
-      { id: bufferId, sampleRate, sampleData: channelData },
+      { id: bufferId, sampleRate, sampleData: storedChannelData },
     ], updatedProject);
 
     onProgress?.(1);
@@ -882,8 +897,9 @@ class ProjectService {
     const track = project.tracks.find((t) => t.id === trackId);
     if (!track) return null;
 
+    const storedSampleData = convertTrackSampleFormatChannels(sampleData, track.sampleFormat ?? 'float32');
     const bufferId = generateId();
-    const length = sampleData[0]?.length ?? 0;
+    const length = storedSampleData[0]?.length ?? 0;
     const duration = length / sampleRate;
     const clip: IClip = {
       id: generateId(),
@@ -901,12 +917,18 @@ class ProjectService {
 
     // Validate and calculate the complete track edit before storing any bytes.
     const nextTrack = replaceSelection
-      ? replaceTrackSelectionWithClip(track, replaceSelection, clip, generateId)
+      ? {
+        ...replaceTrackSelectionWithClip(track, replaceSelection, clip, generateId),
+        sampleRate: track.clips.length === 0 ? sampleRate : track.sampleRate,
+        sampleFormat: track.sampleFormat ?? 'float32',
+      }
       : {
         ...track,
         channelCount: track.clips.length === 0
           ? (sampleData.length === 2 ? 2 : 1)
           : track.channelCount,
+        sampleRate: track.clips.length === 0 ? sampleRate : track.sampleRate,
+        sampleFormat: track.sampleFormat ?? 'float32',
         clips: [...track.clips, clip].sort((a, b) => a.startTime - b.startTime),
       };
 
@@ -915,7 +937,7 @@ class ProjectService {
       tracks: project.tracks.map((candidate) => candidate.id === track.id ? nextTrack : candidate),
     };
     await this.commitPendingAudioBuffers(projectId, [
-      { id: bufferId, sampleRate, sampleData },
+      { id: bufferId, sampleRate, sampleData: storedSampleData },
     ], updatedProject);
 
     return clip;
@@ -2800,6 +2822,137 @@ class ProjectService {
   }
 
   /**
+   * Audacity 4 Track Format: convert complete stored channels for every selected
+   * track. The browser uses the official signed full-scale quantizer without
+   * claiming the optional desktop dither preference. All inputs are prepared
+   * before the first IndexedDB write, and old PCM remains available for Undo.
+   */
+  async changeTrackFormatOnTracks(
+    projectId: string,
+    trackIds: readonly string[],
+    format: TrackSampleFormat,
+  ): Promise<TrackMediaTracksResult> {
+    assertTrackSampleFormat(format);
+    if (trackIds.length === 0) throw new Error('没有可更改格式的选中轨道');
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    const selectedIds = new Set<string>();
+    for (const trackId of trackIds) {
+      if (selectedIds.has(trackId)) throw new Error(`轨道 ${trackId} 被重复指定`);
+      selectedIds.add(trackId);
+    }
+    const selectedTracks = project.tracks.filter((track) => selectedIds.has(track.id));
+    if (selectedTracks.length !== trackIds.length) throw new Error('目标轨道不可用');
+
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, ITrack>();
+    let clipCount = 0;
+    for (const track of selectedTracks) {
+      if ((track.sampleFormat ?? 'float32') === format) continue;
+      const clipReplacements = new Map<string, IClip>();
+      for (const clip of track.clips) {
+        const record = await audioDb.audioBuffers.get(clip.audioBufferId);
+        if (!record) throw new Error(`无法读取片段“${clip.name ?? clip.id}”的原始音频`);
+        validateResampleRate(record.sampleRate);
+        const channels = record.channelData.map((data) => new Float32Array(data));
+        const sampleData = convertTrackSampleFormatChannels(channels, format);
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: record.sampleRate, sampleData });
+        clipReplacements.set(clip.id, { ...clip, audioBufferId: bufferId });
+        clipCount += 1;
+      }
+      replacements.set(track.id, {
+        ...track,
+        sampleFormat: format,
+        clips: track.clips.map((clip) => clipReplacements.get(clip.id) ?? clip),
+      });
+    }
+    if (replacements.size === 0) return { trackCount: 0, clipCount: 0 };
+
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => replacements.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return { trackCount: replacements.size, clipCount };
+  }
+
+  /**
+   * Audacity 4 Track Rate (not Resample): retain every PCM sample, write an
+   * independent buffer record with the new rate, and scale WaveClip-compatible
+   * timeline/trim metadata by oldRate/newRate. Shared source buffers on other
+   * tracks are never mutated.
+   */
+  async changeTrackRateOnTracks(
+    projectId: string,
+    trackIds: readonly string[],
+    newRate: number,
+  ): Promise<TrackMediaTracksResult> {
+    validateResampleRate(newRate);
+    if (trackIds.length === 0) throw new Error('没有可更改速率的选中轨道');
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) throw new Error('工程不存在');
+    const selectedIds = new Set<string>();
+    for (const trackId of trackIds) {
+      if (selectedIds.has(trackId)) throw new Error(`轨道 ${trackId} 被重复指定`);
+      selectedIds.add(trackId);
+    }
+    const selectedTracks = project.tracks.filter((track) => selectedIds.has(track.id));
+    if (selectedTracks.length !== trackIds.length) throw new Error('目标轨道不可用');
+
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    const replacements = new Map<string, ITrack>();
+    let clipCount = 0;
+    for (const track of selectedTracks) {
+      let trackChanged = track.clips.length === 0
+        ? (track.sampleRate ?? project.sampleRate) !== newRate
+        : track.sampleRate !== newRate;
+      const clipReplacements = new Map<string, IClip>();
+      for (const clip of track.clips) {
+        const record = await audioDb.audioBuffers.get(clip.audioBufferId);
+        if (!record) throw new Error(`无法读取片段“${clip.name ?? clip.id}”的原始音频`);
+        validateResampleRate(record.sampleRate);
+        if (record.sampleRate === newRate) continue;
+        trackChanged = true;
+        const sampleData = record.channelData.map((data) => {
+          const source = new Float32Array(data);
+          return new Float32Array(source);
+        });
+        if (sampleData.length === 0) throw new Error(`片段“${clip.name ?? clip.id}”没有音频声道`);
+        const length = sampleData[0]?.length ?? 0;
+        if (sampleData.some((channel) => channel.length !== length)) {
+          throw new Error(`片段“${clip.name ?? clip.id}”的声道长度不一致`);
+        }
+        const bufferId = generateId();
+        pendingBuffers.push({ id: bufferId, sampleRate: newRate, sampleData });
+        clipReplacements.set(clip.id, {
+          ...scaleClipForTrackRate(clip, record.sampleRate, newRate),
+          audioBufferId: bufferId,
+        });
+        clipCount += 1;
+      }
+      if (!trackChanged) continue;
+      replacements.set(track.id, {
+        ...track,
+        sampleRate: newRate,
+        clips: track.clips.map((clip) => clipReplacements.get(clip.id) ?? clip),
+      });
+    }
+    if (replacements.size === 0) return { trackCount: 0, clipCount: 0 };
+
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.map((track) => replacements.get(track.id) ?? track),
+    };
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
+    return { trackCount: replacements.size, clipCount };
+  }
+
+  /**
    * Audacity Tracks -> Resample: convert every complete source clip on each
    * selected track. Timeline positions, trim offsets, stretch, gain, fades and
    * effects stay untouched; only new PCM buffers and their rates are committed.
@@ -2852,15 +3005,18 @@ class ProjectService {
       }
     }
 
-    if (planned.length === 0) {
-      return { trackCount: selectedTracks.length, clipCount: 0, outputSampleCount: 0, sampleRate: newRate };
+    if (planned.length === 0 && selectedTracks.every((track) => (
+      track.clips.length > 0 || (track.sampleRate ?? project.sampleRate) === newRate
+    ))) {
+      return { trackCount: 0, clipCount: 0, outputSampleCount: 0, sampleRate: newRate };
     }
 
     // All records and output sizes are validated before PCM conversion or I/O.
     const pendingBuffers: PendingAudioBuffer[] = [];
     const replacements = new Map<string, Map<string, IClip>>();
     for (const { track, clip, channels, fromRate } of planned) {
-      const sampleData = resampleChannels(channels, fromRate, newRate);
+      const resampled = resampleChannels(channels, fromRate, newRate);
+      const sampleData = convertTrackSampleFormatChannels(resampled, track.sampleFormat ?? 'float32');
       const bufferId = generateId();
       pendingBuffers.push({ id: bufferId, sampleRate: newRate, sampleData });
       const trackReplacements = replacements.get(track.id) ?? new Map<string, IClip>();
@@ -2868,20 +3024,30 @@ class ProjectService {
       replacements.set(track.id, trackReplacements);
     }
 
+    const emptyTrackReplacements = new Map<string, ITrack>();
+    for (const track of selectedTracks) {
+      if (track.clips.length === 0 && (track.sampleRate ?? project.sampleRate) !== newRate) {
+        // WaveTrack::Resample also calls DoSetRate for an empty track.
+        emptyTrackReplacements.set(track.id, { ...track, sampleRate: newRate });
+      }
+    }
     const updatedProject: IProject = {
       ...project,
       tracks: project.tracks.map((track) => {
         const trackReplacements = replacements.get(track.id);
-        if (!trackReplacements) return track;
-        return {
-          ...track,
-          clips: track.clips.map((clip) => trackReplacements.get(clip.id) ?? clip),
-        };
+        if (trackReplacements) {
+          return {
+            ...track,
+            sampleRate: newRate,
+            clips: track.clips.map((clip) => trackReplacements.get(clip.id) ?? clip),
+          };
+        }
+        return emptyTrackReplacements.get(track.id) ?? track;
       }),
     };
     await this.commitPendingAudioBuffers(projectId, pendingBuffers, updatedProject);
     return {
-      trackCount: selectedTracks.length,
+      trackCount: replacements.size + emptyTrackReplacements.size,
       clipCount: planned.length,
       outputSampleCount,
       sampleRate: newRate,
@@ -3214,6 +3380,8 @@ class ProjectService {
       armed: sourceTrack.armed,
       color: sourceTrack.color,
       channelCount: 1 as const,
+      sampleRate: sourceTrack.sampleRate,
+      sampleFormat: sourceTrack.sampleFormat,
       viewMode: sourceTrack.viewMode,
       halfWave: sourceTrack.halfWave,
       spectrogramUseGlobalSettings: sourceTrack.spectrogramUseGlobalSettings,
@@ -3381,6 +3549,8 @@ class ProjectService {
       armed: false,
       color: leftTrack.color,
       channelCount: 2,
+      sampleRate: project.sampleRate,
+      sampleFormat: 'float32',
       viewMode: leftTrack.viewMode,
       halfWave: leftTrack.halfWave,
       spectrogramUseGlobalSettings: leftTrack.spectrogramUseGlobalSettings,
@@ -6974,6 +7144,7 @@ class ProjectService {
       clips: [],
       effects: [],
       channelCount: 1,
+      sampleFormat: 'float32',
     };
   }
 
