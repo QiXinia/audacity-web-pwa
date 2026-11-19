@@ -15,6 +15,7 @@ export interface ProjectRecord extends IProjectSummary {
   loopRegionData?: string | null; // JSON serialized independent loop region
   loopEnabled?: boolean;
   analysisLabelsData?: string | null; // JSON serialized analysis labels
+  labelTracksData?: string | null; // JSON serialized independent Label Tracks
 }
 
 export interface AudioBufferRecord {

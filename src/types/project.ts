@@ -118,11 +118,21 @@ export interface IViewState {
   snapMode?: SnapMode;
 }
 
+export interface ILabelTrack {
+  id: string;
+  name: string;
+  /** Audacity TrackColorIndex; 0/undefined inherits the default label color. */
+  colorIndex?: number;
+}
+
 export interface IAnalysisLabel {
   id: string;
   /** Clipping labels retain their source channel; manual labels have no fabricated channel. */
   kind: 'clipping' | 'manual';
+  /** Source audio track used for navigation and analysis provenance. */
   trackId: string;
+  /** Independent Label Track; legacy labels inherit the first effective label track. */
+  labelTrackId?: string;
   channelIndex?: number;
   start: number;
   end: number;
@@ -138,6 +148,8 @@ export interface IProject {
   tracks: ITrack[];
   cursorPosition: number;
   selection: { start: number; end: number } | null;
+  /** Independent Label Tracks; legacy projects inherit one implicit track when labels exist. */
+  labelTracks?: ILabelTrack[];
   /** Persistent Audacity-style analysis labels; legacy projects omit this field. */
   analysisLabels?: IAnalysisLabel[];
   /** Independent linear frequency range; legacy projects omit this field. */

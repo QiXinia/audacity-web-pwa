@@ -131,3 +131,24 @@ describe('Project spectral frequency selection persistence', () => {
     expect(converter.recordToProject(record).spectralSelection).toBeNull();
   });
 });
+
+describe('Project Label Track persistence', () => {
+  it('round-trips lane metadata and label ownership and keeps legacy records compatible', () => {
+    const record = converter.projectToRecord({
+      ...makeProject(),
+      labelTracks: [{ id: 'lane-a', name: 'Markers', colorIndex: 4 }],
+      analysisLabels: [{
+        id: 'label-a', kind: 'manual', trackId: 'audio-a', labelTrackId: 'lane-a',
+        start: 1, end: 2, text: 'Marker',
+      }],
+    });
+    const restored = converter.recordToProject(record);
+    expect(restored.labelTracks).toEqual([{ id: 'lane-a', name: 'Markers', colorIndex: 4 }]);
+    expect(restored.analysisLabels?.[0]).toMatchObject({ trackId: 'audio-a', labelTrackId: 'lane-a' });
+
+    delete record.labelTracksData;
+    const legacy = converter.recordToProject(record);
+    expect(legacy.labelTracks).toEqual([]);
+    expect(legacy.analysisLabels?.[0].labelTrackId).toBe('lane-a');
+  });
+});

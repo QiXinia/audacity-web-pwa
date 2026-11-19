@@ -18,6 +18,7 @@ import {
 } from '@/lib/spectralSelection';
 import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect, TrackSampleFormat } from '@/types/project';
 import { deserializeAnalysisLabels, serializeAnalysisLabels } from '@/lib/analysisLabels';
+import { deserializeLabelTracks, serializeLabelTracks } from '@/lib/labelTracks';
 import { duplicateTrackInProject } from '@/lib/trackDuplicate';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
@@ -7201,6 +7202,7 @@ class ProjectService {
       loopRegion: deserializeSelection(record.loopRegionData ?? null),
       loopEnabled: record.loopEnabled ?? false,
       analysisLabels: deserializeAnalysisLabels(record.analysisLabelsData),
+      labelTracks: deserializeLabelTracks(record.labelTracksData),
       viewState: record.viewStateData ? JSON.parse(record.viewStateData) : {
         horizontalZoom: 50,
         verticalZoom: 1,
@@ -7243,6 +7245,7 @@ class ProjectService {
       loopRegionData: serializeSelection(project.loopRegion ?? null),
       loopEnabled: project.loopEnabled ?? false,
       analysisLabelsData: serializeAnalysisLabels(project.analysisLabels),
+      labelTracksData: serializeLabelTracks(project.labelTracks),
       thumbnail: undefined,
       deletedAt: undefined,
     };

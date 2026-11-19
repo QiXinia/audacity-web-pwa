@@ -118,10 +118,15 @@ describe('AudioEditorPage Edit Labels integration', () => {
       .find((project) => project.analysisLabels?.length === 2);
     expect(saved?.analysisLabels?.[0]).toEqual({
       ...clipping, text: 'Peak A', trackId: 'track-b', start: 0.02, end: 0.05,
+      labelTrackId: 'legacy-label-track',
     });
     expect(saved?.analysisLabels?.[1]).toEqual(expect.objectContaining({
       kind: 'manual', trackId: 'track-a', start: 0, end: 0.1, text: 'Manual note',
+      labelTrackId: 'legacy-label-track',
     }));
+    expect(saved?.labelTracks).toEqual([
+      expect.objectContaining({ id: 'legacy-label-track', name: 'Label Track' }),
+    ]);
     expect(saved?.analysisLabels?.[1].id).toEqual(expect.any(String));
     expect(saved?.analysisLabels?.[1]).not.toHaveProperty('channelIndex');
     expect(historyManager.push).toHaveBeenCalledTimes(1);

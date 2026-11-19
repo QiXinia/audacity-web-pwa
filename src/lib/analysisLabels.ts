@@ -25,6 +25,9 @@ export function deserializeAnalysisLabels(data: string | null | undefined): IAna
       const common = {
         id: label.id,
         trackId: label.trackId,
+        ...(typeof label.labelTrackId === 'string' && label.labelTrackId
+          ? { labelTrackId: label.labelTrackId }
+          : {}),
         start: label.start!,
         end: label.end!,
         text: label.text,

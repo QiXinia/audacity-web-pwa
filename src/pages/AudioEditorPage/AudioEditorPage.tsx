@@ -495,7 +495,21 @@ import LabelSoundsDialog from './sections/LabelSoundsDialog';
 import BeatFinderDialog from './sections/BeatFinderDialog';
 import RegularIntervalLabelsDialog from './sections/RegularIntervalLabelsDialog';
 import LabelEditorDialog from './sections/LabelEditorDialog';
+import ExportLabelsDialog, { type LabelExportRequest } from './sections/ExportLabelsDialog';
 import { ClippingLabelTimeline } from './sections/ClippingLabelTimeline';
+import {
+  appendAnalysisLabels,
+  deleteLabelTrack,
+  duplicateLabelTrack,
+  getLabelTrackColor,
+  getProjectLabelTracks,
+  moveLabelTrack,
+  renameLabelTrack,
+  replaceAnalysisLabels,
+  resolveAnalysisLabelTrackId,
+  serializeLabelsForExport,
+  setLabelTrackColor,
+} from '@/lib/labelTracks';
 import AdjustableFadeDialog from './sections/AdjustableFadeDialog';
 import BassTrebleDialog from './sections/BassTrebleDialog';
 import ReverbDialog from './sections/ReverbDialog';
@@ -798,6 +812,7 @@ export default function AudioEditorPage() {
   const [isCreatingRegularIntervalLabels, setIsCreatingRegularIntervalLabels] = useState(false);
   const [labelEditorDialogOpen, setLabelEditorDialogOpen] = useState(false);
   const [isApplyingLabels, setIsApplyingLabels] = useState(false);
+  const [exportLabelsTrackId, setExportLabelsTrackId] = useState<string | null>(null);
   const [adjustableFadeDialogOpen, setAdjustableFadeDialogOpen] = useState(false);
   const [isApplyingAdjustableFade, setIsApplyingAdjustableFade] = useState(false);
   const [isApplyingInvert, setIsApplyingInvert] = useState(false);
@@ -4625,8 +4640,7 @@ export default function AudioEditorPage() {
         kind: 'clipping',
       }));
       const updated: IProject = {
-        ...project,
-        analysisLabels: [...(project.analysisLabels ?? []), ...created],
+        ...appendAnalysisLabels(project, created, generateId),
         updatedAt: Date.now(),
       };
       await commitClipEdit(updated, `Find Clipping 查找削波（${created.length} 个标签）`);
@@ -4673,8 +4687,7 @@ export default function AudioEditorPage() {
         kind: 'manual',
       }));
       const updated: IProject = {
-        ...project,
-        analysisLabels: [...(project.analysisLabels ?? []), ...created],
+        ...appendAnalysisLabels(project, created, generateId),
         updatedAt: Date.now(),
       };
       await commitClipEdit(updated, `Label sounds 标记声音（${created.length} 个标签）`);
@@ -4721,8 +4734,7 @@ export default function AudioEditorPage() {
         kind: 'manual',
       }));
       const updated: IProject = {
-        ...project,
-        analysisLabels: [...(project.analysisLabels ?? []), ...created],
+        ...appendAnalysisLabels(project, created, generateId),
         updatedAt: Date.now(),
       };
       await commitClipEdit(updated, `Beat finder 节拍查找（${created.length} 个标签）`);
@@ -4753,8 +4765,7 @@ export default function AudioEditorPage() {
         trackId: targetTrack.id,
       }));
       const updated: IProject = {
-        ...project,
-        analysisLabels: [...(project.analysisLabels ?? []), ...created],
+        ...appendAnalysisLabels(project, created, generateId),
         updatedAt: Date.now(),
       };
       await commitClipEdit(updated, `Regular interval labels 等间隔标签（${created.length} 个标签）`);
@@ -4783,13 +4794,59 @@ export default function AudioEditorPage() {
     }
     setIsApplyingLabels(true);
     try {
-      const updated: IProject = { ...project, analysisLabels: labels, updatedAt: Date.now() };
+      const updated: IProject = {
+        ...replaceAnalysisLabels(project, labels, generateId),
+        updatedAt: Date.now(),
+      };
       await commitClipEdit(updated, `Edit Labels 编辑标签（${labels.length} 个标签）`);
       setLabelEditorDialogOpen(false);
       toast.success(`已保存 ${labels.length} 个标签`);
     } finally {
       setIsApplyingLabels(false);
     }
+  }
+
+  async function commitLabelTrackEdit(updated: IProject, historyLabel: string): Promise<void> {
+    if (!project || updated === project) return;
+    await commitClipEdit({ ...updated, updatedAt: Date.now() }, historyLabel);
+  }
+
+  async function handleRenameLabelTrack(trackId: string, name: string): Promise<void> {
+    if (!project) return;
+    await commitLabelTrackEdit(renameLabelTrack(project, trackId, name), 'Rename label track');
+  }
+
+  async function handleDuplicateLabelTrack(trackId: string): Promise<void> {
+    if (!project) return;
+    await commitLabelTrackEdit(duplicateLabelTrack(project, trackId, generateId), 'Duplicate label track');
+  }
+
+  async function handleDeleteLabelTrack(trackId: string): Promise<void> {
+    if (!project) return;
+    await commitLabelTrackEdit(deleteLabelTrack(project, trackId), 'Delete label track');
+  }
+
+  async function handleMoveLabelTrack(trackId: string, direction: TrackMoveDirection): Promise<void> {
+    if (!project) return;
+    await commitLabelTrackEdit(moveLabelTrack(project, trackId, direction), 'Move label track');
+  }
+
+  async function handleLabelTrackColorChange(trackId: string, colorIndex: number): Promise<void> {
+    if (!project) return;
+    await commitLabelTrackEdit(setLabelTrackColor(project, trackId, colorIndex), 'Change label track color');
+  }
+
+  function handleExportLabels(request: LabelExportRequest): void {
+    if (!project) return;
+    const content = serializeLabelsForExport(project, request.trackIds, request.fileType);
+    const mimeType = request.fileType === 'vtt'
+      ? 'text/vtt;charset=utf-8'
+      : request.fileType === 'srt' ? 'application/x-subrip;charset=utf-8' : 'text/plain;charset=utf-8';
+    triggerBlobDownload(
+      new Blob([content], { type: mimeType }),
+      `${request.fileName}.${request.fileType}`,
+    );
+    toast.success(`已导出 ${request.trackIds.length} 条 Label Track`);
   }
 
   async function collectEffectTargets(activeSelection: { start: number; end: number }): Promise<EchoTrackAudio[]> {
@@ -9511,20 +9568,31 @@ export default function AudioEditorPage() {
                   }}
                 />
               ))}
-              {(project.analysisLabels?.length ?? 0) > 0 && (
-                <div className="flex h-10 shrink-0 border-b border-[#434a50] bg-[#20262b] px-1 text-[#d8c49a]">
-                  <button
-                    type="button"
-                    aria-label="编辑标签"
-                    title="打开 Edit Labels"
-                    className="flex flex-1 flex-col justify-center rounded-sm px-2 text-left hover:bg-[#30383f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f0c56d]"
-                    onClick={() => setLabelEditorDialogOpen(true)}
+              {getProjectLabelTracks(project).map((labelTrack) => {
+                const effectiveTracks = getProjectLabelTracks(project);
+                const labelCount = (project.analysisLabels ?? []).filter((label) => (
+                  resolveAnalysisLabelTrackId(label, effectiveTracks) === labelTrack.id
+                )).length;
+                return (
+                  <div
+                    key={labelTrack.id}
+                    data-testid={`label-track-panel-${labelTrack.id}`}
+                    className="flex h-10 shrink-0 border-b border-[#434a50] bg-[#20262b] px-1 text-[#d8c49a]"
+                    style={{ borderLeft: `4px solid ${getLabelTrackColor(labelTrack)}` }}
                   >
-                    <span className="text-xs font-medium">Labels 标签</span>
-                    <span className="text-[10px] text-[#aab0b6]">{project.analysisLabels!.length} 个标签</span>
-                  </button>
-                </div>
-              )}
+                    <button
+                      type="button"
+                      aria-label={`编辑 Label Track ${labelTrack.name}`}
+                      title={`${labelTrack.name} · 打开 Edit Labels`}
+                      className="flex min-w-0 flex-1 flex-col justify-center rounded-sm px-2 text-left hover:bg-[#30383f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f0c56d]"
+                      onClick={() => setLabelEditorDialogOpen(true)}
+                    >
+                      <span className="truncate text-xs font-medium">{labelTrack.name}</span>
+                      <span className="text-[10px] text-[#aab0b6]">{labelCount} 个标签</span>
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
           )}
@@ -9720,12 +9788,19 @@ export default function AudioEditorPage() {
 
             <ClippingLabelTimeline
               labels={project.analysisLabels ?? []}
+              labelTracks={getProjectLabelTracks(project)}
               tracks={project.tracks}
               pxPerSec={pxPerSec}
               totalWidth={totalWidth}
               offsetX={rulerWidth}
               onSelect={handleAnalysisLabelSelect}
               onEdit={() => setLabelEditorDialogOpen(true)}
+              onRenameTrack={(trackId, name) => void handleRenameLabelTrack(trackId, name)}
+              onDuplicateTrack={(trackId) => void handleDuplicateLabelTrack(trackId)}
+              onDeleteTrack={(trackId) => void handleDeleteLabelTrack(trackId)}
+              onMoveTrack={(trackId, direction) => void handleMoveLabelTrack(trackId, direction)}
+              onTrackColorChange={(trackId, colorIndex) => void handleLabelTrackColorChange(trackId, colorIndex)}
+              onExportLabels={setExportLabelsTrackId}
             />
 
             {/* Bottom padding for transport bar visibility */}
@@ -10246,6 +10321,14 @@ export default function AudioEditorPage() {
           selection={selection}
           isApplying={isApplyingLabels}
           onApply={handleEditLabels}
+        />
+
+        <ExportLabelsDialog
+          open={exportLabelsTrackId !== null}
+          onOpenChange={(open) => { if (!open) setExportLabelsTrackId(null); }}
+          tracks={getProjectLabelTracks(project)}
+          initialTrackId={exportLabelsTrackId}
+          onExport={handleExportLabels}
         />
 
         <RepeatSelectionDialog
