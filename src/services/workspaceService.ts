@@ -28,6 +28,10 @@ export interface WorkspaceStore {
 
 export const WORKSPACE_STORAGE_KEY = 'audacity-web:workspaces:v1';
 
+function normalizeWorkspaceId(id: string): string {
+  return id.trim().slice(0, 80);
+}
+
 const DEFAULT_PRESETS: WorkspacePreset[] = [
   {
     id: 'classic',
@@ -118,11 +122,15 @@ export function loadWorkspaceStore(storage?: Pick<Storage, 'getItem'>): Workspac
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<WorkspaceStore>;
     if (!Array.isArray(parsed.presets)) return fallback;
+    const seenIds = new Set<string>();
     const presets = parsed.presets.slice(0, 50).flatMap((candidate, index) => {
       if (!candidate || typeof candidate.id !== 'string' || typeof candidate.name !== 'string') return [];
-      const builtIn = DEFAULT_PRESETS.find((preset) => preset.id === candidate.id);
+      const id = normalizeWorkspaceId(candidate.id);
+      if (!id || seenIds.has(id)) return [];
+      seenIds.add(id);
+      const builtIn = DEFAULT_PRESETS.find((preset) => preset.id === id);
       return [{
-        id: candidate.id.slice(0, 80),
+        id,
         name: candidate.name.trim().slice(0, 60) || `Workspace ${index + 1}`,
         builtIn: Boolean(builtIn),
         layout: normalizeLayout(candidate.layout, builtIn?.layout ?? fallback.presets[0].layout),
@@ -163,16 +171,21 @@ export function createWorkspace(
 ): WorkspaceStore {
   const trimmed = name.trim();
   if (!trimmed) throw new Error('Workspace name cannot be empty');
+  const normalizedId = normalizeWorkspaceId(id);
+  if (!normalizedId) throw new Error('Workspace id cannot be empty');
+  if (store.presets.some((preset) => normalizeWorkspaceId(preset.id) === normalizedId)) {
+    throw new Error('Workspace id already exists');
+  }
   if (store.presets.some((preset) => preset.name.toLowerCase() === trimmed.toLowerCase())) {
     throw new Error('Workspace name already exists');
   }
   const preset: WorkspacePreset = {
-    id,
+    id: normalizedId,
     name: trimmed.slice(0, 60),
     builtIn: false,
     layout: { ...layout },
   };
-  return { activeId: id, presets: [...store.presets, preset] };
+  return { activeId: normalizedId, presets: [...store.presets, preset] };
 }
 
 export function updateWorkspaceLayout(

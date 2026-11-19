@@ -131,6 +131,44 @@ describe('Workspace persistence', () => {
     expect(fallback?.showVerticalRulers).toBe(true);
   });
 
+  it('rejects duplicate, empty and truncation-colliding ids at creation', () => {
+    const custom = createWorkspace(defaultWorkspaceStore(), 'custom-1', 'Podcast', layout);
+    expect(() => createWorkspace(custom, 'custom-1', 'Another', layout)).toThrow('Workspace id already exists');
+    expect(() => createWorkspace(custom, 'classic', 'Classic copy', layout)).toThrow('Workspace id already exists');
+    expect(() => createWorkspace(custom, '   ', 'Blank id', layout)).toThrow('Workspace id cannot be empty');
+
+    const longId = 'x'.repeat(81);
+    const withLongId = createWorkspace(custom, longId, 'Long id', layout);
+    expect(withLongId.activeId).toBe('x'.repeat(80));
+    expect(withLongId.presets.at(-1)?.id).toBe('x'.repeat(80));
+    expect(() => createWorkspace(withLongId, `${'x'.repeat(80)}y`, 'Collision', layout))
+      .toThrow('Workspace id already exists');
+  });
+
+  it('deduplicates truncated and built-in ids when restoring damaged storage', () => {
+    const longPrefix = 'a'.repeat(80);
+    const stored = JSON.stringify({
+      activeId: 'classic',
+      presets: [
+        { id: ' classic ', name: 'Preferred Classic', layout: { ...layout, horizontalZoom: 200 } },
+        { id: 'classic', name: 'Duplicate Classic', layout: { ...layout, horizontalZoom: 900 } },
+        { id: '', name: 'Empty id', layout },
+        { id: '   ', name: 'Blank id', layout },
+        { id: `${longPrefix}x`, name: 'Long A', layout },
+        { id: `${longPrefix}y`, name: 'Long B', layout },
+      ],
+    });
+    const restored = loadWorkspaceStore({ getItem: () => stored });
+    const ids = restored.presets.map((preset) => preset.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).not.toContain('');
+    expect(ids).not.toContain('   ');
+    expect(ids.filter((id) => id === 'classic')).toHaveLength(1);
+    expect(ids.filter((id) => id === longPrefix)).toHaveLength(1);
+    expect(restored.activeId).toBe('classic');
+    expect(restored.presets.find((preset) => preset.id === 'classic')?.layout.horizontalZoom).toBe(200);
+  });
+
   it('reports browser storage write failures without throwing', () => {
     const storage = {
       setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },
