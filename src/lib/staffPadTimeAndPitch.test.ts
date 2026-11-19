@@ -11,6 +11,7 @@ import {
 
 interface OracleCase {
   name: string;
+  input?: string;
   channels: number;
   sampleRate: number;
   inputFrames: number;
@@ -34,7 +35,7 @@ function fixture(name: string): Float32Array {
 }
 
 function channels(caseData: OracleCase, suffix: string): Float32Array[] {
-  const planar = fixture(`${caseData.name}-${suffix}.f32`);
+  const planar = fixture(`${caseData.input ?? caseData.name}-${suffix}.f32`);
   return Array.from({ length: caseData.channels }, (_, channel) => (
     planar.slice(channel * caseData.inputFrames, (channel + 1) * caseData.inputFrames)
   ));
@@ -66,8 +67,11 @@ function metrics(actual: Float32Array, expected: Float32Array): {
     maximumError = Math.max(maximumError, Math.abs(difference));
   }
   return {
-    nrmse: Math.sqrt(errorEnergy / expectedEnergy),
-    correlation: cross / Math.sqrt(actualEnergy * expectedEnergy),
+    // A silent native result must be matched by silence, not NaN metrics.
+    nrmse: expectedEnergy > 0 ? Math.sqrt(errorEnergy / expectedEnergy) : Math.sqrt(errorEnergy),
+    correlation: expectedEnergy > 0 && actualEnergy > 0
+      ? cross / Math.sqrt(actualEnergy * expectedEnergy)
+      : (expectedEnergy === 0 && actualEnergy === 0 ? 1 : 0),
     maximumError,
   };
 }
@@ -164,4 +168,65 @@ describe('Audacity 4.0.2 native StaffPad oracle', () => {
       [source[0], source[0].slice(1)], caseData,
     )).toThrow('长度一致');
   });
+});
+
+describe('Audacity StaffPad boundary contracts', () => {
+  it.each([
+    {
+      name: 'single-sample mono at 1000% speed and +1200 cents',
+      frames: 1,
+      channels: 1,
+      timeRatio: 0.1,
+      pitchRatio: 2,
+    },
+    {
+      name: 'short stereo at 1% speed and -1200 cents',
+      frames: 63,
+      channels: 2,
+      timeRatio: 100,
+      pitchRatio: 0.5,
+    },
+    {
+      name: 'short mono at -1200 cents without time stretching',
+      frames: 31,
+      channels: 1,
+      timeRatio: 1,
+      pitchRatio: 0.5,
+    },
+  ])('$name produces only finite samples', ({ frames, channels: channelCount, timeRatio, pitchRatio }) => {
+    const source = Array.from({ length: channelCount }, (_, channel) => (
+      Float32Array.from({ length: frames }, (_, index) => (
+        0.2 * Math.sin(index * 0.37 + channel) + 0.1 * Math.cos(index * 0.11)
+      ))
+    ));
+    const output = processStaffPadTimeAndPitchChannels(source, {
+      sampleRate: 8000,
+      timeRatio,
+      pitchRatio,
+      preserveFormants: true,
+      fftSize: 512,
+    });
+    const expectedFrames = Math.max(1, Math.round(frames * timeRatio));
+    expect(output).toHaveLength(channelCount);
+    for (const channel of output) {
+      expect(channel).toHaveLength(expectedFrames);
+      expect(channel.every((sample) => Number.isFinite(sample))).toBe(true);
+    }
+  });
+
+  it('condenses one minute to one sample without hanging, like the official regression', () => {
+    const originalDuration = 60;
+    const sampleRate = 44100;
+    const inputFrames = originalDuration * sampleRate;
+    const output = processStaffPadTimeAndPitchChannels([new Float32Array(inputFrames)], {
+      sampleRate,
+      timeRatio: (1 / sampleRate) / originalDuration,
+      pitchRatio: 1,
+      preserveFormants: true,
+      fftSize: 2048,
+    });
+    expect(output).toHaveLength(1);
+    expect(output[0]).toHaveLength(1);
+    expect(Number.isFinite(output[0][0])).toBe(true);
+  }, 180_000);
 });

@@ -11,6 +11,7 @@ the TypeScript browser port against those committed native outputs.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,13 @@ def run(*args: str) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="refresh native outputs explicitly instead of only comparing them",
+    )
+    arguments = parser.parse_args()
     audacity = Path(os.environ["AUDACITY_SOURCE_DIR"]).resolve()
     pffft = Path(os.environ["PFFFT_SOURCE_DIR"]).resolve()
     libraries = audacity / "au3/libraries"
@@ -57,12 +65,17 @@ def main() -> None:
         )
         for case in manifest["cases"]:
             output = build / f"{case['name']}-native.f32"
+            input_name = case.get("input", case["name"])
             run(
-                str(executable), str(FIXTURES / f"{case['name']}-input.f32"), str(output),
+                str(executable), str(FIXTURES / f"{input_name}-input.f32"), str(output),
                 str(case["channels"]), str(case["sampleRate"]), str(case["timeRatio"]),
                 str(case["pitchRatio"]), str(int(case["preserveFormants"])), str(case["fftSize"]),
             )
             expected = FIXTURES / f"{case['name']}-native.f32"
+            if arguments.refresh:
+                expected.write_bytes(output.read_bytes())
+                print(f"native oracle refreshed: {case['name']}")
+                continue
             if output.read_bytes() != expected.read_bytes():
                 raise AssertionError(f"Native oracle changed: {case['name']}")
             print(f"native oracle byte-identical: {case['name']}")

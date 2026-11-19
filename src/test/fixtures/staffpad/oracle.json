@@ -48,6 +48,42 @@
       "fftSize": 512,
       "nativeFrames": 2560,
       "nativePeak": 0.7632556557655334
+    },
+    {
+      "name": "voice-slow-stereo",
+      "input": "voice-stretch-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 2048,
+      "timeRatio": 100.0,
+      "pitchRatio": 0.5,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 204800
+    },
+    {
+      "name": "voice-fast-mono",
+      "input": "voice-up",
+      "channels": 1,
+      "sampleRate": 8000,
+      "inputFrames": 2048,
+      "timeRatio": 0.1,
+      "pitchRatio": 2.0,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 205
+    },
+    {
+      "name": "voice-ring-stereo",
+      "input": "voice-stretch-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 2048,
+      "timeRatio": 4.0,
+      "pitchRatio": 1.189207115002721,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 8192
     }
   ]
 }

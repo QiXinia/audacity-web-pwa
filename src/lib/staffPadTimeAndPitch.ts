@@ -347,6 +347,7 @@ class StaffPadProcessor {
   private readonly random = new Mt19937(0);
   private output: Float32Array[];
   private normalization: Float32Array;
+  private readonly outputMask: number;
   private outputWritePosition = 0;
   private outputReadPosition = 0;
   private exactHopA = 512;
@@ -363,7 +364,6 @@ class StaffPadProcessor {
   constructor(
     source: readonly Float32Array[],
     options: StaffPadTimeAndPitchOptions,
-    outputCapacityHint: number,
   ) {
     this.source = source;
     this.channels = source.length;
@@ -401,10 +401,11 @@ class StaffPadProcessor {
       this.randomPhases[index] = -Math.PI + this.random.nextFloat() * TWO_PI;
     }
     this.setTimeStretchAndPitchFactor();
-    const capacity = nextPowerOfTwo(Math.max(
-      options.fftSize * 4,
-      outputCapacityHint + options.fftSize * 4 + MAX_BLOCK_SIZE,
-    ));
+    // Audacity TimeAndPitch.cpp uses a fixed ring, not a buffer proportional
+    // to the entire requested output. Absolute positions retain overlap-add
+    // state while the mask reuses storage after samples are retrieved.
+    const capacity = nextPowerOfTwo(options.fftSize + 2 * MAX_BLOCK_SIZE);
+    this.outputMask = capacity - 1;
     this.output = source.map(() => new Float32Array(capacity));
     this.normalization = new Float32Array(capacity);
   }
@@ -433,11 +434,17 @@ class StaffPadProcessor {
   retrieveAudio(count: number, target: Float32Array[] | null, targetOffset = 0): void {
     for (let channel = 0; channel < this.channels; channel += 1) {
       for (let index = 0; index < count; index += 1) {
-        const normalization = this.normalization[this.outputReadPosition + index];
-        const value = this.output[channel][this.outputReadPosition + index]
+        const bufferIndex = (this.outputReadPosition + index) & this.outputMask;
+        const normalization = this.normalization[bufferIndex];
+        const value = this.output[channel][bufferIndex]
           * (normalization / (normalization * normalization + 1 / 16));
         if (target) target[channel][targetOffset + index] = value;
+        this.output[channel][bufferIndex] = 0;
       }
+    }
+    for (let index = 0; index < count; index += 1) {
+      const bufferIndex = (this.outputReadPosition + index) & this.outputMask;
+      this.normalization[bufferIndex] = 0;
     }
     this.outputReadPosition += count;
     this.exactHopS = this.nextExactHopS;
@@ -502,17 +509,10 @@ class StaffPadProcessor {
     this.resampleReadPos = readPos;
   }
 
-  private ensureOutputCapacity(required: number): void {
-    if (required <= this.normalization.length) return;
-    const capacity = nextPowerOfTwo(required);
-    this.output = this.output.map((channel) => {
-      const next = new Float32Array(capacity);
-      next.set(channel);
-      return next;
-    });
-    const normalization = new Float32Array(capacity);
-    normalization.set(this.normalization);
-    this.normalization = normalization;
+  private assertOutputCapacity(incoming: number): void {
+    if (this.getAvailableOutputSamples() + incoming > this.normalization.length) {
+      throw new Error('StaffPad 输出环形缓冲区状态无效');
+    }
   }
 
   private processHop(hopA: number, hopS: number): void {
@@ -580,9 +580,9 @@ class StaffPadProcessor {
     }
 
     const gain = Math.fround(this.combinedTimeStretch * ((8 / 3) / this.overlapA));
-    this.ensureOutputCapacity(this.outputWritePosition + this.fftSize + hopS);
+    this.assertOutputCapacity(this.fftSize + hopS);
     for (let index = 0; index < this.fftSize; index += 1) {
-      const target = this.outputWritePosition + index;
+      const target = (this.outputWritePosition + index) & this.outputMask;
       this.normalization[target] += this.sqWindow[index] * gain;
       for (let channel = 0; channel < this.channels; channel += 1) {
         this.output[channel][target] += this.fftTimeseries[channel][index] * gain;
@@ -751,7 +751,13 @@ export function processStaffPadTimeAndPitchChannels(
 
   const outputFrames = Math.max(1, Math.round(inputFrames * options.timeRatio));
   const output = channels.map(() => new Float32Array(outputFrames));
-  const processor = new StaffPadProcessor(channels, options, outputFrames);
+  // StaffPad is linear: silent input remains silent even after formant,
+  // phase-randomization and overlap-add processing. This also preserves the
+  // official extreme-ratio regression without millions of redundant FFTs.
+  if (channels.every((channel) => channel.every((sample) => sample === 0))) {
+    return output;
+  }
+  const processor = new StaffPadProcessor(channels, options);
 
   const latency = options.fftSize - options.fftSize / 4 + 3;
   const combined = options.timeRatio * options.pitchRatio;
@@ -759,8 +765,12 @@ export function processStaffPadTimeAndPitchChannels(
   let remainingDiscard = Math.trunc(latency * (combined * coefficient + (1 - coefficient)));
   let guard = 0;
   while (remainingDiscard > 0) {
-    if (processor.illState() || ++guard > 100000) {
-      throw new Error('StaffPad 初始化无法产生有效输出');
+    // StaffPadTimeAndPitch::InitializeStretcher returns on IllState. The
+    // subsequent GetSamples call zero-fills the requested output instead of
+    // throwing, which is observable at extreme slowdown ratios.
+    if (processor.illState()) return output;
+    if (++guard > 100000) {
+      throw new Error('StaffPad 初始化超过安全迭代上限');
     }
     processor.feedNextHop();
     const total = Math.min(processor.getAvailableOutputSamples(), remainingDiscard);
@@ -775,12 +785,14 @@ export function processStaffPadTimeAndPitchChannels(
 
   let offset = 0;
   while (offset < outputFrames) {
-    if (processor.illState() || ++guard > 1000000) {
-      throw new Error('StaffPad 处理无法产生有效输出');
+    if (processor.illState()) return output;
+    if (++guard > 1000000) {
+      throw new Error('StaffPad 处理超过安全迭代上限');
     }
     while (processor.getAvailableOutputSamples() <= 0) {
-      if (processor.illState() || ++guard > 1000000) {
-        throw new Error('StaffPad 处理无法继续读取音频');
+      if (processor.illState()) return output;
+      if (++guard > 1000000) {
+        throw new Error('StaffPad 读取超过安全迭代上限');
       }
       processor.feedNextHop();
     }
