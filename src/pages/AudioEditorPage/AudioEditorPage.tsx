@@ -552,6 +552,14 @@ import {
   setClipColor,
   setTrackColor,
 } from '@/lib/clipColor';
+import {
+  getTrackHalfWave,
+  getTrackViewMode,
+  getTrackVisualizationMode,
+  setTrackHalfWave,
+  setTrackViewMode,
+  type TrackVisualizationMode,
+} from '@/lib/trackVisualization';
 import { renameClipTitle } from '@/lib/clipTitle';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui/empty';
 import {
@@ -2254,6 +2262,32 @@ export default function AudioEditorPage() {
     } catch (error) {
       logger.error('Change track color failed', error);
       toast.error(error instanceof Error ? error.message : '轨道颜色保存失败');
+    }
+  }
+
+  async function changeTrackViewMode(trackId: string, mode: ViewMode): Promise<void> {
+    if (!project) return;
+    const updated = setTrackViewMode(project, trackId, mode);
+    if (updated === project) return;
+    try {
+      await projectService.saveProject(updated);
+      setProject(updated);
+    } catch (error) {
+      logger.error('Change track visualization failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道视图保存失败');
+    }
+  }
+
+  async function changeTrackHalfWave(trackId: string, value: boolean): Promise<void> {
+    if (!project) return;
+    const updated = setTrackHalfWave(project, trackId, value);
+    if (updated === project) return;
+    try {
+      await projectService.saveProject(updated);
+      setProject(updated);
+    } catch (error) {
+      logger.error('Change track Half-wave failed', error);
+      toast.error(error instanceof Error ? error.message : 'Half-wave 保存失败');
     }
   }
 
@@ -9006,6 +9040,11 @@ export default function AudioEditorPage() {
                   onRename={(name) => renameTrack(track.id, name)}
                   onDelete={() => deleteTrack(track.id)}
                   onDuplicate={() => void duplicateTrack(track.id)}
+                  viewMode={getTrackViewMode(track, viewMode)}
+                  halfWave={getTrackHalfWave(track, halfWave)}
+                  onViewModeChange={(mode) => void changeTrackViewMode(track.id, mode)}
+                  onHalfWaveChange={(value) => void changeTrackHalfWave(track.id, value)}
+                  onOpenSpectrogramSettings={() => setSpectrogramSettingsTrackId(track.id)}
                   onColorChange={(colorIndex) => void changeTrackColor(track.id, colorIndex)}
                   onMove={(direction) => void moveTrack(track.id, direction)}
                   onOpenEffects={() => {
@@ -9163,11 +9202,11 @@ export default function AudioEditorPage() {
                 totalWidth={totalWidth}
                 rulerWidth={rulerWidth}
                 dbRange={waveformDbRange}
-                viewMode={viewMode}
-                halfWave={halfWave}
-                onViewModeChange={setViewMode}
+                viewMode={getTrackViewMode(track, viewMode)}
+                halfWave={getTrackHalfWave(track, halfWave)}
+                onViewModeChange={(mode) => void changeTrackViewMode(track.id, mode)}
                 onOpenSpectrogramSettings={() => setSpectrogramSettingsTrackId(track.id)}
-                onHalfWaveChange={setHalfWave}
+                onHalfWaveChange={(value) => void changeTrackHalfWave(track.id, value)}
                 onVerticalZoomChange={setVerticalZoom}
                 selection={selection}
                 spectralSelection={spectralSelection}
@@ -10316,6 +10355,11 @@ function TrackPanelRow({
   onRename,
   onDelete,
   onDuplicate,
+  viewMode,
+  halfWave,
+  onViewModeChange,
+  onHalfWaveChange,
+  onOpenSpectrogramSettings,
   onColorChange,
   onMove,
   onOpenEffects,
@@ -10337,6 +10381,11 @@ function TrackPanelRow({
   onRename: (name: string) => void;
   onDelete: () => void;
   onDuplicate: () => void;
+  viewMode: ViewMode;
+  halfWave: boolean;
+  onViewModeChange: (mode: TrackVisualizationMode) => void;
+  onHalfWaveChange: (value: boolean) => void;
+  onOpenSpectrogramSettings: () => void;
   onColorChange: (colorIndex: number) => void;
   onMove: (direction: TrackMoveDirection) => void;
   onOpenEffects: () => void;
@@ -10547,6 +10596,39 @@ function TrackPanelRow({
               onClick={() => onMove('bottom')}
             >
               Move to bottom
+            </ContextMenuItem>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger data-testid="track-visualization-submenu">Track visualization</ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-48">
+            <ContextMenuRadioGroup
+              value={getTrackVisualizationMode(viewMode)}
+              onValueChange={(value) => onViewModeChange(value as TrackVisualizationMode)}
+            >
+              <ContextMenuRadioItem value="waveform" data-testid="track-view-waveform">
+                Waveform
+              </ContextMenuRadioItem>
+              <ContextMenuRadioItem value="spectrum" data-testid="track-view-spectrogram">
+                Spectrogram
+              </ContextMenuRadioItem>
+              <ContextMenuRadioItem value="both" data-testid="track-view-multi">
+                Multi-view
+              </ContextMenuRadioItem>
+            </ContextMenuRadioGroup>
+            <ContextMenuCheckboxItem
+              checked={halfWave}
+              onCheckedChange={(checked) => onHalfWaveChange(checked === true)}
+              data-testid="track-view-half-wave"
+            >
+              Half-wave
+            </ContextMenuCheckboxItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              data-testid="track-spectrogram-settings-menu"
+              onSelect={onOpenSpectrogramSettings}
+            >
+              Spectrogram settings
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>

@@ -72,7 +72,7 @@ vi.mock('@/services/projectService', () => ({
   projectService: {
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
-    saveProject: vi.fn(async () => undefined),
+    saveProject: vi.fn(async (project: IProject) => { mockProject = project; }),
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => null),
   },
@@ -257,7 +257,7 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     expect(audioEngine.seek).toHaveBeenLastCalledWith(2);
   });
 
-  it('switches Linear (dB), applies half-wave, and saves both in the active Workspace', async () => {
+  it('switches Linear (dB), applies half-wave, and saves both on the track without changing Workspace defaults', async () => {
     setWorkspaceViewMode('waveformDb');
     await renderProject();
     const ruler = await screen.findByTestId('track-db-ruler-track-db');
@@ -281,16 +281,18 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     await waitFor(() => expect(mocks.drawWaveform.mock.calls.some(
       (call) => call[10] === undefined && call[11] === true,
     )).toBe(true));
-    await waitFor(() => {
-      const stored = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
-      expect(stored.presets.find((preset: { id: string }) => preset.id === stored.activeId).layout).toMatchObject({
-        viewMode: 'waveformDbLinear',
-        halfWave: true,
-      });
+    await waitFor(() => expect(mockProject.tracks[0]).toMatchObject({
+      viewMode: 'waveformDbLinear',
+      halfWave: true,
+    }));
+    const stored = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+    expect(stored.presets.find((preset: { id: string }) => preset.id === stored.activeId).layout).toMatchObject({
+      viewMode: 'waveformDb',
+      halfWave: false,
     });
   });
 
-  it('zooms and resets from the ruler popup and returns to Linear (amp)', async () => {
+  it('keeps a per-track Linear (amp) override when Workspace changes and returns through the track ruler', async () => {
     setWorkspaceViewMode('waveformDbLinear');
     await renderProject();
     const ruler = await screen.findByTestId('track-db-ruler-track-db');
@@ -311,6 +313,15 @@ describe('AudioEditorPage dB waveform and ruler', () => {
     const linearDbTab = screen.getByRole('tab', { name: '线性 dB' });
     fireEvent.mouseDown(linearDbTab, { button: 0, ctrlKey: false });
     fireEvent.click(linearDbTab);
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+      expect(stored.presets.find((preset: { id: string }) => preset.id === stored.activeId).layout.viewMode).toBe('waveformDbLinear');
+    });
+    expect(screen.getByTestId('track-linear-ruler-track-db')).toHaveAttribute('data-ruler-format', 'waveform');
+    expect(mockProject.tracks[0]!.viewMode).toBe('waveform');
+
+    fireEvent.pointerDown(screen.getByTestId('track-ruler-settings-track-db'));
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Linear (dB)' }));
     await waitFor(() => expect(screen.getByTestId('track-db-ruler-track-db')).toHaveAttribute(
       'data-ruler-format',
       'waveformDbLinear',

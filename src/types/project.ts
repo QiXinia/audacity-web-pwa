@@ -93,6 +93,10 @@ export interface ITrack {
   color: string;
   clips: IClip[];
   effects: IEffect[];
+  /** Audacity per-track TrackViewType; legacy tracks inherit the Workspace default. */
+  viewMode?: ViewMode;
+  /** Audacity per-track Half-wave state; legacy tracks inherit the Workspace default. */
+  halfWave?: boolean;
   /** Audacity per-track Spectrogram settings; legacy tracks inherit the official global defaults. */
   spectrogramUseGlobalSettings?: boolean;
   spectrogramSettings?: ISpectrogramSettings;

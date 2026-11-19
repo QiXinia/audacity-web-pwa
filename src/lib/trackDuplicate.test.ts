@@ -15,6 +15,7 @@ function track(id: string, clips: IClip[]): ITrack {
   return {
     id, name: `Track ${id}`, type: 'audio', gain: -3, pan: 0.4,
     muted: true, solo: false, armed: true, color: '#abcdef', clips,
+    viewMode: 'both', halfWave: true,
     effects: [{ id: `effect-${id}`, type: 'reverb', bypassed: false, params: { decay: 2, wet: 0.3 } }],
     spectrogramUseGlobalSettings: false,
     spectrogramSettings: {
@@ -63,7 +64,8 @@ describe('duplicateTrackInProject', () => {
     expect(copy.id).not.toBe(source.id);
     expect(copy).toMatchObject({
       name: source.name, gain: -3, pan: 0.4, muted: true, solo: false,
-      armed: true, color: '#abcdef', spectrogramUseGlobalSettings: false,
+      armed: true, color: '#abcdef', viewMode: 'both', halfWave: true,
+      spectrogramUseGlobalSettings: false,
     });
     expect(copy.clips.map((item) => item.id)).not.toEqual(source.clips.map((item) => item.id));
     expect(copy.clips[0]).toMatchObject({
