@@ -67,6 +67,16 @@ export class AudioEngine {
   private _recordingSink: GainNode | null = null;
   private recordingStopResolver: (() => void) | null = null;
 
+  // Stopped-state microphone monitoring is independent from recording. The
+  // analyser branch feeds the meter; only inputMonitoring opens the audible gain.
+  private monitoringStream: MediaStream | null = null;
+  private monitoringSource: MediaStreamAudioSourceNode | null = null;
+  private monitoringGain: GainNode | null = null;
+  private monitoringMeter: StereoMeterNodes | null = null;
+  private monitoringStartPromise: Promise<void> | null = null;
+  private monitoringGeneration = 0;
+  private inputMonitoringEnabled = false;
+
   private bufferCache = new Map<string, AudioBufferCacheEntry>();
   private stretchedBufferCache = new Map<string, { channelData: Float32Array[]; sampleRate: number }>();
   private maxCacheSize = 50;
@@ -144,8 +154,121 @@ export class AudioEngine {
   }
 
   getRecordingLevels(): StereoLevels {
-    if (this._recordingState !== 'recording') return silentStereoLevels();
-    return this.readMeterLevels(this.recordingMeter);
+    if (this._recordingState === 'recording') return this.readMeterLevels(this.recordingMeter);
+    if (this.monitoringStream) return this.readMeterLevels(this.monitoringMeter);
+    return silentStereoLevels();
+  }
+
+  isMicrophoneMonitoringActive(): boolean {
+    return this.monitoringStream !== null;
+  }
+
+  /** Toggle the audible input branch without changing recording or meter capture. */
+  setMonitoringEnabled(enabled: boolean): void {
+    this.inputMonitoringEnabled = enabled;
+    if (this.monitoringGain) this.monitoringGain.gain.value = enabled ? 1 : 0;
+    if (this._recordingSink) this._recordingSink.gain.value = enabled ? 1 : 0;
+  }
+
+  async startMicrophoneMonitoring(options?: { audible?: boolean }): Promise<void> {
+    if (options?.audible !== undefined) this.setMonitoringEnabled(options.audible);
+    if (this._recordingState === 'recording' || this._playbackState !== 'stopped') return;
+    if (this.monitoringStream) {
+      try {
+        await this.ensureContext();
+      } catch (error) {
+        this.stopMicrophoneMonitoring();
+        throw error;
+      }
+      this.setMonitoringEnabled(this.inputMonitoringEnabled);
+      return;
+    }
+    if (this.monitoringStartPromise) {
+      await this.monitoringStartPromise;
+      if (this.monitoringStream || this._recordingState === 'recording' || this._playbackState !== 'stopped') {
+        this.setMonitoringEnabled(this.inputMonitoringEnabled);
+        return;
+      }
+      // A stop during the previous pending start invalidated that request. A
+      // newer caller must create its own stream instead of returning inactive.
+      return this.startMicrophoneMonitoring();
+    }
+
+    const generation = ++this.monitoringGeneration;
+    const pending = this.initializeMicrophoneMonitoring(generation);
+    this.monitoringStartPromise = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.monitoringStartPromise === pending) this.monitoringStartPromise = null;
+    }
+  }
+
+  private canUseMicrophoneMonitoring(generation: number): boolean {
+    return generation === this.monitoringGeneration
+      && this._recordingState === 'idle'
+      && this._playbackState === 'stopped';
+  }
+
+  private async initializeMicrophoneMonitoring(generation: number): Promise<void> {
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+      if (!this.canUseMicrophoneMonitoring(generation)) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      const ctx = await this.ensureContext();
+      if (!this.canUseMicrophoneMonitoring(generation)) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      this.monitoringStream = stream;
+      this.monitoringSource = ctx.createMediaStreamSource(stream);
+      this.monitoringMeter = this.createStereoMeter(ctx, this.monitoringSource);
+      this.monitoringGain = ctx.createGain();
+      this.monitoringGain.gain.value = this.inputMonitoringEnabled ? 1 : 0;
+      // Keep a zero-gain destination branch for metering so analyser nodes are
+      // pulled even when the user must not hear the microphone.
+      this.monitoringSource.connect(this.monitoringGain);
+      this.monitoringGain.connect(ctx.destination);
+    } catch (error) {
+      if (generation !== this.monitoringGeneration) {
+        stream?.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      if (this.monitoringStream && this.monitoringStream === stream) {
+        this.cleanupMicrophoneMonitoring();
+      } else {
+        stream?.getTracks().forEach((track) => track.stop());
+      }
+      throw error;
+    }
+  }
+
+  stopMicrophoneMonitoring(): void {
+    this.monitoringGeneration += 1;
+    this.cleanupMicrophoneMonitoring();
+  }
+
+  private cleanupMicrophoneMonitoring(): void {
+    this.disposeStereoMeter(this.monitoringMeter);
+    this.monitoringMeter = null;
+    if (this.monitoringGain) {
+      try { this.monitoringGain.disconnect(); } catch { /* already disconnected */ }
+      this.monitoringGain = null;
+    }
+    if (this.monitoringSource) {
+      try { this.monitoringSource.disconnect(); } catch { /* already disconnected */ }
+      this.monitoringSource = null;
+    }
+    if (this.monitoringStream) {
+      this.monitoringStream.getTracks().forEach((track) => track.stop());
+      this.monitoringStream = null;
+    }
   }
 
   private _resolveWorkletUrl(): string {
@@ -640,6 +763,7 @@ export class AudioEngine {
   }
 
   stopPlayback(): void {
+    this.stopMicrophoneMonitoring();
     const ctx = this.audioContext;
     this.playbackLoop = null;
     this.disposeStereoMeter(this.playbackMeter);
@@ -695,6 +819,9 @@ export class AudioEngine {
 
   // Recording — AudioWorklet 优先，不支持时降级为 ScriptProcessorNode
   async startRecording(options?: { stereo?: boolean }): Promise<void> {
+    // Audacity uses one input graph: recording takes over any stopped-state
+    // meter/monitor stream, and inputMonitoring controls its audible sink.
+    this.stopMicrophoneMonitoring();
     try {
       const audioConstraints: MediaTrackConstraints = {
         echoCancellation: false,
@@ -725,9 +852,9 @@ export class AudioEngine {
         ? Math.min(2, Math.max(1, deviceChannels ?? 2))
         : 1;
       const recordingSink = ctx.createGain();
-    recordingSink.gain.value = 0;
-    recordingSink.connect(ctx.destination);
-    this._recordingSink = recordingSink;
+      recordingSink.gain.value = this.inputMonitoringEnabled ? 1 : 0;
+      recordingSink.connect(ctx.destination);
+      this._recordingSink = recordingSink;
 
     this._recordingState = 'recording';
     this._recordingMode = 'worklet';

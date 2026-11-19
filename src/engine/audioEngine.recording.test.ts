@@ -422,4 +422,83 @@ describe('AudioEngine recording boundaries', () => {
     expect(engine.recordingState).toBe('idle');
     expect(engine.getRecordingLevels()).toEqual({ left: -60, right: -60 });
   });
+
+  it('keeps stopped-state mic metering silent unless input monitoring is enabled', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(2);
+    const { context, source, sink, splitter, analysers } = makeContext({ worklet: false });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    await engine.startMicrophoneMonitoring({ audible: false });
+
+    expect(engine.recordingState).toBe('idle');
+    expect(engine.isMicrophoneMonitoringActive()).toBe(true);
+    expect(source.connect).toHaveBeenCalledWith(splitter);
+    expect(source.connect).toHaveBeenCalledWith(sink);
+    expect(sink.connect).toHaveBeenCalledWith(context.destination);
+    expect(sink.gain.value).toBe(0);
+
+    analysers[0].getFloatTimeDomainData.mockImplementation((buffer: Float32Array) => {
+      buffer.fill(0);
+      buffer[0] = 0.5;
+    });
+    expect(engine.getRecordingLevels().left).toBeCloseTo(-6.0206, 3);
+    engine.setMonitoringEnabled(true);
+    expect(sink.gain.value).toBe(1);
+    engine.setMonitoringEnabled(false);
+    expect(sink.gain.value).toBe(0);
+
+    engine.stopMicrophoneMonitoring();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(source.disconnect).toHaveBeenCalledOnce();
+    expect(sink.disconnect).toHaveBeenCalledOnce();
+    expect(splitter.disconnect).toHaveBeenCalledOnce();
+    expect(engine.isMicrophoneMonitoringActive()).toBe(false);
+    expect(engine.getRecordingLevels()).toEqual({ left: -60, right: -60 });
+  });
+
+  it('stops a stale pending microphone stream instead of activating it after cancellation', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    let resolveStream: ((value: unknown) => void) | undefined;
+    const getUserMedia = vi.fn(() => new Promise((resolve) => { resolveStream = resolve; }));
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    const ensureContext = vi.spyOn(engine as any, 'ensureContext' as any);
+
+    const pending = engine.startMicrophoneMonitoring();
+    engine.stopMicrophoneMonitoring();
+    resolveStream?.(stream);
+    await pending;
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(ensureContext).not.toHaveBeenCalled();
+    expect(engine.isMicrophoneMonitoringActive()).toBe(false);
+  });
+
+  it('applies input monitoring to the recording sink without changing capture', async () => {
+    const engine = new AudioEngine();
+    const { stream } = makeMediaStream(1);
+    const { context, sink } = makeContext({ worklet: false });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    engine.setMonitoringEnabled(true);
+    await engine.startRecording();
+    expect(sink.gain.value).toBe(1);
+    engine.setMonitoringEnabled(false);
+    expect(sink.gain.value).toBe(0);
+    expect(engine.recordingState).toBe('recording');
+    await engine.stopRecording();
+    expect(engine.isMicrophoneMonitoringActive()).toBe(false);
+  });
 });

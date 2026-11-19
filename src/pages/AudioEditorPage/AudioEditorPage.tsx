@@ -571,6 +571,11 @@ import {
 } from '@/lib/levelMeter';
 import { getMeterDbRange } from '@/lib/meterPreferences';
 import {
+  loadRecordingMonitoringPreferences,
+  saveRecordingMonitoringPreferences,
+  type RecordingMonitoringPreferences,
+} from '@/lib/recordingMonitoringPreferences';
+import {
   buildDbLinearRulerValues,
   buildDbRulerValues,
   DB_WAVE_RULER_WIDTH,
@@ -669,6 +674,11 @@ export default function AudioEditorPage() {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [micPermissionState, setMicPermissionState] = useState<'granted' | 'denied' | 'unknown'>('unknown');
+  const [recordingMonitoringPreferences, setRecordingMonitoringPreferences] = useState<RecordingMonitoringPreferences>(
+    () => loadRecordingMonitoringPreferences(),
+  );
+  const [microphoneInputActive, setMicrophoneInputActive] = useState(false);
+  const [microphoneSyncNonce, setMicrophoneSyncNonce] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedClips, setSelectedClips] = useState<ClipKey[]>([]);
@@ -860,6 +870,10 @@ export default function AudioEditorPage() {
   const isPlayingRef = useRef(false);
   const recordingSampleRateRef = useRef(44100);
   const recordingStateRef = useRef<RecordingState>('idle');
+  const recordingMonitoringPreferencesRef = useRef(recordingMonitoringPreferences);
+  const microphoneSyncGenerationRef = useRef(0);
+  const microphoneErrorNotificationRef = useRef(false);
+  recordingMonitoringPreferencesRef.current = recordingMonitoringPreferences;
   const startRecordingRef = useRef<() => Promise<boolean>>(async () => false);
   const stopRecordingRef = useRef<() => Promise<IProject | null>>(async () => null);
   const timerRecordControllerRef = useRef<TimerRecordController | null>(null);
@@ -923,6 +937,55 @@ export default function AudioEditorPage() {
     loadProject(projectId);
     checkMicPermission();
   }, [projectId]);
+
+  // Audacity 4 starts microphone metering/monitoring only while stopped. The
+  // recording path takes over the input stream; playback suspends monitoring.
+  useEffect(() => {
+    const generation = ++microphoneSyncGenerationRef.current;
+    const preferences = recordingMonitoringPreferencesRef.current;
+    const shouldMonitor = playbackState === 'stopped'
+      && recordingState === 'idle'
+      && (preferences.showMicMetering || preferences.inputMonitoring);
+    audioEngine.setMonitoringEnabled?.(preferences.inputMonitoring);
+
+    if (!shouldMonitor) {
+      audioEngine.stopMicrophoneMonitoring?.();
+      setMicrophoneInputActive(false);
+      microphoneErrorNotificationRef.current = false;
+      return;
+    }
+
+    let current = true;
+    void (async () => {
+      try {
+        await audioEngine.startMicrophoneMonitoring?.({ audible: preferences.inputMonitoring });
+        if (!current || generation !== microphoneSyncGenerationRef.current) return;
+        const active = audioEngine.isMicrophoneMonitoringActive?.() ?? false;
+        setMicrophoneInputActive(active);
+        if (active) setMicPermissionState('granted');
+      } catch (error) {
+        if (!current || generation !== microphoneSyncGenerationRef.current) return;
+        setMicrophoneInputActive(false);
+        setMicPermissionState('denied');
+        logger.warn('麦克风监控未启动:', String(error));
+        if (microphoneErrorNotificationRef.current) {
+          toast.error(preferences.inputMonitoring
+            ? '无法启动输入监听，请检查麦克风权限与设备'
+            : '无法启动麦克风电平监控，请检查麦克风权限与设备');
+        }
+      } finally {
+        if (generation === microphoneSyncGenerationRef.current) {
+          microphoneErrorNotificationRef.current = false;
+        }
+      }
+    })();
+    return () => { current = false; };
+  }, [playbackState, recordingState, recordingMonitoringPreferences, projectId, microphoneSyncNonce]);
+
+  useEffect(() => () => {
+    microphoneSyncGenerationRef.current += 1;
+    audioEngine.stopMicrophoneMonitoring?.();
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1205,8 +1268,17 @@ export default function AudioEditorPage() {
     if (enabled !== undefined) setLoopEnabled(region ? enabled : false);
   }
 
-  function handleStop() {
+  function stopPlaybackAndSyncMonitoring() {
     audioEngine.stopPlayback();
+    // A stopped→stopped transition has no playback callback. Explicitly
+    // resynchronize so Stop and clip-processing cleanup cannot leave the mic
+    // stream closed while the UI still claims that metering is active.
+    setMicrophoneInputActive(false);
+    setMicrophoneSyncNonce((current) => current + 1);
+  }
+
+  function handleStop() {
+    stopPlaybackAndSyncMonitoring();
     setCursorPosition(0);
   }
 
@@ -1281,6 +1353,7 @@ export default function AudioEditorPage() {
   async function startRecording(): Promise<boolean> {
     if (!project || recordingStateRef.current === 'recording') return false;
     try {
+      audioEngine.setMonitoringEnabled?.(recordingMonitoringPreferencesRef.current.inputMonitoring);
       await audioEngine.ensureContext();
       await audioEngine.startRecording();
       recordingSampleRateRef.current = audioEngine.getSampleRate();
@@ -2165,7 +2238,7 @@ export default function AudioEditorPage() {
     const clip = project.tracks.find((track) => track.id === trackId)
       ?.clips.find((candidate) => candidate.id === clipId);
     if (!clip || !hasClipPitchOrSpeed(clip)) return;
-    audioEngine.stopPlayback();
+    stopPlaybackAndSyncMonitoring();
     const updated = applyClipPitchAndSpeed(project, key, {
       pitchCents: 0,
       speedPercentage: 100,
@@ -2183,7 +2256,7 @@ export default function AudioEditorPage() {
     if (!clip || !hasClipPitchOrSpeed(clip)) return;
 
     setRenderingPitchAndSpeedClipId(operationId);
-    audioEngine.stopPlayback();
+    stopPlaybackAndSyncMonitoring();
     try {
       const channels = await projectService.loadAudioChannels(clip.audioBufferId, project.sampleRate);
       if (!channels) throw new Error(`片段“${clip.name || clip.id}”的音频不可用`);
@@ -2212,7 +2285,7 @@ export default function AudioEditorPage() {
 
     const operationId = clipKeyId(key);
     setSplittingSilenceClipId(operationId);
-    audioEngine.stopPlayback();
+    stopPlaybackAndSyncMonitoring();
     try {
       const channels = await projectService.loadAudioChannels(clip.audioBufferId, project.sampleRate);
       if (!channels) throw new Error(`片段“${clip.name || clip.id}”的音频不可用`);
@@ -2239,7 +2312,7 @@ export default function AudioEditorPage() {
       ?.clips.find((candidate) => candidate.id === clipId);
     if (!clip) return;
     const enabled = !isClipStretchToMatchTempo(clip);
-    audioEngine.stopPlayback();
+    stopPlaybackAndSyncMonitoring();
     await commitClipEdit(
       toggleClipStretchToMatchTempo(project, { trackId, clipId }),
       enabled ? '启用 Stretch with tempo changes' : '停用 Stretch with tempo changes',
@@ -2367,6 +2440,16 @@ export default function AudioEditorPage() {
       channelHeightStorageWarningShownRef.current = true;
       toast.error('浏览器存储不可用，声道高度仅在本次会话保留');
     }
+  }
+
+  function changeRecordingMonitoringPreferences(patch: Partial<RecordingMonitoringPreferences>) {
+    const next = { ...recordingMonitoringPreferencesRef.current, ...patch };
+    if (!saveRecordingMonitoringPreferences(next)) {
+      toast.error('浏览器存储不可用，录音监控偏好未保存');
+      return;
+    }
+    microphoneErrorNotificationRef.current = true;
+    setRecordingMonitoringPreferences(next);
   }
 
   function applyWorkspaceLayout(layout: WorkspaceLayout) {
@@ -8474,9 +8557,15 @@ export default function AudioEditorPage() {
         <section
           aria-label="录音与播放电平表"
           data-testid="audio-level-meters"
+          data-mic-input-active={microphoneInputActive ? 'true' : 'false'}
+          data-mic-metering={recordingMonitoringPreferences.showMicMetering ? 'true' : 'false'}
+          data-input-monitoring={recordingMonitoringPreferences.inputMonitoring ? 'true' : 'false'}
           className="au-toolbar flex h-9 shrink-0 items-center justify-end gap-6 overflow-x-auto overflow-y-hidden border-b px-3"
         >
-          <LevelMeter mode="recording" active={recordingState === 'recording'} />
+          <LevelMeter
+            mode="recording"
+            active={recordingState === 'recording' || (microphoneInputActive && playbackState === 'stopped')}
+          />
           <LevelMeter mode="playback" active={playbackState === 'playing'} />
           <MeterDbRangeLabel />
         </section>
@@ -9046,6 +9135,12 @@ export default function AudioEditorPage() {
                   onHalfWaveChange={(value) => void changeTrackHalfWave(track.id, value)}
                   onOpenSpectrogramSettings={() => setSpectrogramSettingsTrackId(track.id)}
                   onColorChange={(colorIndex) => void changeTrackColor(track.id, colorIndex)}
+                  showVerticalRulers={showVerticalRulers}
+                  onShowVerticalRulersChange={(visible) => setShowVerticalRulers(visible)}
+                  showMicMetering={recordingMonitoringPreferences.showMicMetering}
+                  inputMonitoring={recordingMonitoringPreferences.inputMonitoring}
+                  onShowMicMeteringChange={(enabled) => changeRecordingMonitoringPreferences({ showMicMetering: enabled })}
+                  onInputMonitoringChange={(enabled) => changeRecordingMonitoringPreferences({ inputMonitoring: enabled })}
                   onMove={(direction) => void moveTrack(track.id, direction)}
                   onOpenEffects={() => {
                     setSelectedTrackId(track.id);
@@ -10361,6 +10456,12 @@ function TrackPanelRow({
   onHalfWaveChange,
   onOpenSpectrogramSettings,
   onColorChange,
+  showVerticalRulers,
+  onShowVerticalRulersChange,
+  showMicMetering,
+  inputMonitoring,
+  onShowMicMeteringChange,
+  onInputMonitoringChange,
   onMove,
   onOpenEffects,
 }: {
@@ -10387,6 +10488,12 @@ function TrackPanelRow({
   onHalfWaveChange: (value: boolean) => void;
   onOpenSpectrogramSettings: () => void;
   onColorChange: (colorIndex: number) => void;
+  showVerticalRulers: boolean;
+  onShowVerticalRulersChange: (visible: boolean) => void;
+  showMicMetering: boolean;
+  inputMonitoring: boolean;
+  onShowMicMeteringChange: (enabled: boolean) => void;
+  onInputMonitoringChange: (enabled: boolean) => void;
   onMove: (direction: TrackMoveDirection) => void;
   onOpenEffects: () => void;
 }) {
@@ -10654,6 +10761,35 @@ function TrackPanelRow({
                 </ContextMenuRadioItem>
               ))}
             </ContextMenuRadioGroup>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuCheckboxItem
+          data-testid="track-toggle-vertical-rulers"
+          checked={showVerticalRulers}
+          onCheckedChange={(checked) => onShowVerticalRulersChange(checked === true)}
+        >
+          Show vertical rulers
+        </ContextMenuCheckboxItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger data-testid="track-meters-monitoring-submenu">
+            Meters &amp; monitoring
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-56">
+            <ContextMenuCheckboxItem
+              data-testid="track-show-mic-metering"
+              checked={showMicMetering}
+              onCheckedChange={(checked) => onShowMicMeteringChange(checked === true)}
+            >
+              Show mic metering
+            </ContextMenuCheckboxItem>
+            <ContextMenuSeparator />
+            <ContextMenuCheckboxItem
+              data-testid="track-input-monitoring"
+              checked={inputMonitoring}
+              onCheckedChange={(checked) => onInputMonitoringChange(checked === true)}
+            >
+              Turn on input monitoring
+            </ContextMenuCheckboxItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
       </ContextMenuContent>
