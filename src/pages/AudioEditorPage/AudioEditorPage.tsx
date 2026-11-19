@@ -10795,6 +10795,7 @@ function TrackTimeline({
           onResolveDelta={(operation, delta, bypassSnap) => onResolveClipDelta(clip.id, operation, delta, bypassSnap)}
           onReset={() => onResetClip(clip.id)}
           onClipProperties={() => onClipProperties(clip.id)}
+          onOpenSpectrogramSettings={onOpenSpectrogramSettings}
           onPitchAndSpeed={() => onPitchAndSpeed(clip.id)}
           onResetPitchAndSpeed={() => onResetPitchAndSpeed(clip.id)}
           onRenderPitchAndSpeed={() => onRenderPitchAndSpeed(clip.id)}
@@ -11276,6 +11277,7 @@ function ClipItem({
   onResolveDelta,
   onReset,
   onClipProperties,
+  onOpenSpectrogramSettings,
   onPitchAndSpeed,
   onResetPitchAndSpeed,
   onRenderPitchAndSpeed,
@@ -11328,6 +11330,7 @@ function ClipItem({
   onResolveDelta: (operation: ClipSnapOperation, deltaSeconds: number, bypassSnap: boolean) => number;
   onReset: () => void;
   onClipProperties: () => void;
+  onOpenSpectrogramSettings: () => void;
   onPitchAndSpeed: () => void;
   onResetPitchAndSpeed: () => void;
   onRenderPitchAndSpeed: () => void;
@@ -12360,6 +12363,18 @@ function ClipItem({
         >
           {isRenderingPitchAndSpeed ? 'Rendering pitch and speed…' : 'Render pitch and speed'}
         </ContextMenuItem>
+        {(viewMode === 'spectrum' || viewMode === 'both') && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              data-testid="clip-spectrogram-settings-menu"
+              disabled={clipOperationInProgress}
+              onSelect={onOpenSpectrogramSettings}
+            >
+              Spectrogram settings
+            </ContextMenuItem>
+          </>
+        )}
           </>
         )}
       </ContextMenuContent>

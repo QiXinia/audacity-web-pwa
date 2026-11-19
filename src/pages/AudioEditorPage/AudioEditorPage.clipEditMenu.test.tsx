@@ -119,6 +119,7 @@ function clipboardData(): ReturnType<typeof parseAudioClipboard> {
 describe('AudioEditorPage single Clip edit menu', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    project.viewState.viewMode = 'waveform';
     window.localStorage.clear();
     window.localStorage.setItem('audacity-web:delete-preferences:v1', JSON.stringify({
       deleteBehavior: 'leave-gap', closeGapBehavior: 'per-track',
@@ -168,6 +169,29 @@ describe('AudioEditorPage single Clip edit menu', () => {
     expect(screen.queryByTestId('clip-cut-menu')).not.toBeInTheDocument();
     expect(screen.queryByTestId('clip-properties-menu')).not.toBeInTheDocument();
     expect(mocks.saveProject).not.toHaveBeenCalled();
+  });
+
+  it('shows the official Clip Spectrogram settings entry only in spectrum and Multi-view', async () => {
+    for (const mode of ['waveform', 'spectrum', 'both'] as const) {
+      project.viewState.viewMode = mode;
+      const clips = await renderProject();
+      if (mode !== 'waveform') {
+        const tab = screen.getByRole('tab', { name: mode === 'spectrum' ? '频谱' : '叠加' });
+        fireEvent.mouseDown(tab, { button: 0, ctrlKey: false });
+        fireEvent.click(tab);
+        await waitFor(() => expect(tab).toHaveAttribute('data-state', 'active'));
+      }
+      fireEvent.contextMenu(clips[0]!);
+      if (mode === 'waveform') {
+        await screen.findByTestId('clip-cut-menu');
+        expect(screen.queryByTestId('clip-spectrogram-settings-menu')).not.toBeInTheDocument();
+      } else {
+        const entry = await screen.findByTestId('clip-spectrogram-settings-menu');
+        fireEvent.click(entry);
+        expect(await screen.findByTestId('track-spectrogram-settings-dialog')).toBeInTheDocument();
+      }
+      cleanup();
+    }
   });
 
   it('copies only the right-clicked Clip track into the audio clipboard', async () => {
