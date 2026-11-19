@@ -1,0 +1,53 @@
+{
+  "source": "Audacity 4.0.2 StaffPadTimeAndPitch.cpp + PFFFT 67a4a6a113179ab4ac398298f46fce8dd60498dc",
+  "cases": [
+    {
+      "name": "voice-up",
+      "channels": 1,
+      "sampleRate": 8000,
+      "inputFrames": 2048,
+      "timeRatio": 1.0,
+      "pitchRatio": 1.189207115002721,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 2048,
+      "nativePeak": 0.5808588266372681
+    },
+    {
+      "name": "voice-down",
+      "channels": 1,
+      "sampleRate": 8000,
+      "inputFrames": 2048,
+      "timeRatio": 1.0,
+      "pitchRatio": 0.7937005259840998,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 2048,
+      "nativePeak": 1.0954890251159668
+    },
+    {
+      "name": "voice-stretch-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 2048,
+      "timeRatio": 0.8,
+      "pitchRatio": 1.3348398541700344,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 1638,
+      "nativePeak": 0.8884730935096741
+    },
+    {
+      "name": "voice-time-only",
+      "channels": 1,
+      "sampleRate": 8000,
+      "inputFrames": 2048,
+      "timeRatio": 1.25,
+      "pitchRatio": 1.0,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 2560,
+      "nativePeak": 0.7632556557655334
+    }
+  ]
+}

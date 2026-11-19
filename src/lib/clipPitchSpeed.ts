@@ -4,6 +4,7 @@ import { getClipStretchRatio, type ClipKey } from '@/lib/clipEditing';
 import { processChangeSpeedChannels } from '@/lib/changeSpeedEffect';
 import { timeStretchChannelsJs, type TimeStretchOptions } from '@/engine/timeStretch';
 import { wasmProcessor } from '@/wasm/processor';
+import { processStaffPadTimeAndPitchChannels } from '@/lib/staffPadTimeAndPitch';
 
 // Audacity 4.0.2 PitchSection.qml / SpeedSection.qml and ClipSegment.cpp.
 export const MIN_CLIP_PITCH_CENTS = -1200;
@@ -145,10 +146,10 @@ export function getClipPitchTimeStretchOptions(
 }
 
 /**
- * Non-destructive clip rendering. The JS stretcher follows Audacity's official
- * sample-rate-dependent analysis windows. Voice mode uses the shorter
- * preserveFormants window, but this WSOLA path does not claim to reproduce
- * StaffPad's cepstral formant shifter.
+ * Non-destructive clip rendering. Voice mode uses the browser StaffPad port,
+ * including its phase-locked vocoder and cepstral FormantShifter. The normal
+ * path keeps the existing resample-plus-stretch implementation with Audacity's
+ * sample-rate-dependent analysis window.
  */
 export function processClipPitchAndSpeedChannels(
   clip: IClip,
@@ -159,6 +160,19 @@ export function processClipPitchAndSpeedChannels(
   const pitchCents = getClipPitchCents(clip);
   const optimizeForVoice = getClipOptimizeForVoice(clip);
   const pitchRatio = 2 ** (pitchCents / 1200);
+  const stretchRatio = getClipStretchRatio(clip);
+
+  if (optimizeForVoice) {
+    return processStaffPadTimeAndPitchChannels(channels, {
+      sampleRate,
+      // IClip stores source seconds / timeline seconds; StaffPad uses its reciprocal.
+      timeRatio: 1 / stretchRatio,
+      pitchRatio,
+      preserveFormants: true,
+      fftSize: getAudacityTimeAndPitchFftSize(sampleRate, true),
+    });
+  }
+
   let processed: Float32Array[] = channels.map((channel) => channel.slice());
 
   if (pitchRatio !== 1) {
@@ -175,16 +189,8 @@ export function processClipPitchAndSpeedChannels(
     );
   }
 
-  const stretchRatio = getClipStretchRatio(clip);
   if (stretchRatio !== 1) {
-    processed = optimizeForVoice
-      ? timeStretchChannelsJs(
-        processed,
-        stretchRatio,
-        sampleRate,
-        getClipPitchTimeStretchOptions(sampleRate, true),
-      )
-      : wasmProcessor.timeStretch(processed, stretchRatio, sampleRate);
+    processed = wasmProcessor.timeStretch(processed, stretchRatio, sampleRate);
   }
   return processed;
 }

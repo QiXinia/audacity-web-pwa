@@ -20,7 +20,9 @@ describe('ClipPitchAndSpeedDialog', () => {
     expect(screen.getByLabelText('Cents')).toHaveValue(25);
     expect(screen.getByRole('spinbutton', { name: 'Clip speed' })).toHaveValue(150);
     expect(screen.getByText(/44.1kHz：普通 4096、语音 2048/)).toBeInTheDocument();
-    expect(screen.getByText(/不包含 StaffPad 共振峰补偿/)).toBeInTheDocument();
+    expect(screen.getByText(/StaffPad 相位锁定与 FormantShifter/)).toBeInTheDocument();
+    expect(screen.getByText(/0.002 秒 quefrency/)).toBeInTheDocument();
+    expect(screen.queryByText(/不包含 StaffPad 共振峰补偿/)).not.toBeInTheDocument();
     expect(screen.queryByText(/使用更长、更平滑/)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Semitones'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('Cents'), { target: { value: '-10' } });

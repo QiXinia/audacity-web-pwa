@@ -166,7 +166,7 @@ export function ClipPitchAndSpeedDialog({
           <span>
             <span className="font-medium">Optimize for voice</span>
             <span className="mt-0.5 block text-xs text-muted-foreground">
-              按 Audacity GetFftSize 公式使用更短的 WSOLA 分析窗（44.1kHz：普通 4096、语音 2048）；仅对齐官方窗长，不包含 StaffPad 共振峰补偿。
+              浏览器移植 Audacity StaffPad 相位锁定与 FormantShifter（44.1kHz：普通 4096、语音 2048）；音高变化时按 0.002 秒 quefrency 补偿共振峰。
             </span>
           </span>
         </label>

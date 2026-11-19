@@ -12,6 +12,7 @@ import {
   replaceClipWithRenderedPitchAndSpeed,
   splitClipPitchCents,
 } from './clipPitchSpeed';
+import { processStaffPadTimeAndPitchChannels } from './staffPadTimeAndPitch';
 
 function clip(overrides: Partial<IClip> = {}): IClip {
   return {
@@ -156,6 +157,14 @@ describe('Audacity 4 non-destructive clip PCM rendering', () => {
     expect(voice[1]).toHaveLength(voice[0].length);
     expect(voice[0]).not.toEqual(normal[0]);
     expect(Math.max(...voice[0].map(Math.abs))).toBeGreaterThan(0.01);
+    // IClip stretchRatio is source/timeline; official StaffPad timeRatio is its reciprocal.
+    expect(voice).toEqual(processStaffPadTimeAndPitchChannels([left, right], {
+      sampleRate,
+      timeRatio: 0.8,
+      pitchRatio: 2 ** (300 / 1200),
+      preserveFormants: true,
+      fftSize: 512,
+    }));
   });
 });
 
