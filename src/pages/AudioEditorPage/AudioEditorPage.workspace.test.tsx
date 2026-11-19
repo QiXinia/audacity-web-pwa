@@ -7,7 +7,11 @@ import { toast } from 'sonner';
 import AudioEditorPage from '@/pages/AudioEditorPage/AudioEditorPage';
 import { projectService } from '@/services/projectService';
 import { historyManager } from '@/services/historyService';
-import { WORKSPACE_STORAGE_KEY } from '@/services/workspaceService';
+import {
+  createWorkspace,
+  defaultWorkspaceStore,
+  WORKSPACE_STORAGE_KEY,
+} from '@/services/workspaceService';
 import { DEFAULT_HORIZONTAL_ZOOM } from '@/lib/horizontalZoom';
 import type { IProject } from '@/types/project';
 
@@ -53,6 +57,7 @@ vi.mock('@/engine/audioEngine', () => ({
     setStateChangeCallback: vi.fn(),
     getPlaybackLevels: vi.fn(() => ({ left: -Infinity, right: -Infinity })),
     getRecordingLevels: vi.fn(() => ({ left: -Infinity, right: -Infinity })),
+    seek: vi.fn(),
     cacheBuffer: vi.fn(),
     processClipChannels: vi.fn(),
   },
@@ -206,6 +211,29 @@ describe('AudioEditorPage Workspace storage integration', () => {
 
     await openWorkspaceMenu();
     expect(await screen.findAllByText('Storage failure recovery')).not.toHaveLength(0);
+  });
+
+  it('keeps the save dialog open with a clear error at the persistence limit', async () => {
+    let store = defaultWorkspaceStore();
+    const layout = store.presets[0].layout;
+    for (let index = store.presets.length; index < 50; index += 1) {
+      store = createWorkspace(store, `stored-${index}`, `Stored ${index}`, layout);
+    }
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(store));
+    renderEditor();
+    await screen.findByText(project.name);
+
+    fireEvent.click(await openWorkspaceMenu());
+    fireEvent.change(screen.getByLabelText('Workspace 名称'), {
+      target: { value: 'Overflow workspace' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存 Workspace' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Workspace limit reached (50)'));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect((screen.getByLabelText('Workspace 名称') as HTMLInputElement).value)
+      .toBe('Overflow workspace');
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
 

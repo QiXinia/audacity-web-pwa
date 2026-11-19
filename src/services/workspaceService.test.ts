@@ -212,6 +212,28 @@ describe('Workspace persistence', () => {
     expect(restored.activeId).toBe('classic');
   });
 
+  it('rejects creation beyond the persistence limit instead of dropping it on reload', () => {
+    let store = defaultWorkspaceStore();
+    for (let index = store.presets.length; index < 50; index += 1) {
+      store = createWorkspace(store, `custom-${index}`, `Workspace ${index}`, layout);
+    }
+    expect(store.presets).toHaveLength(50);
+    expect(store.activeId).toBe('custom-49');
+
+    expect(() => createWorkspace(store, 'overflow', 'Overflow', layout))
+      .toThrow('Workspace limit reached (50)');
+
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    expect(saveWorkspaceStore(store, storage)).toBe(true);
+    const restored = loadWorkspaceStore(storage);
+    expect(restored.presets).toHaveLength(50);
+    expect(restored.activeId).toBe('custom-49');
+  });
+
   it('reports browser storage write failures without throwing', () => {
     const storage = {
       setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },

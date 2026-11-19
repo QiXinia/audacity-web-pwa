@@ -27,6 +27,7 @@ export interface WorkspaceStore {
 }
 
 export const WORKSPACE_STORAGE_KEY = 'audacity-web:workspaces:v1';
+export const MAX_WORKSPACE_PRESETS = 50;
 
 function normalizeWorkspaceId(id: string): string {
   return id.trim().slice(0, 80);
@@ -132,7 +133,7 @@ export function loadWorkspaceStore(storage?: Pick<Storage, 'getItem'>): Workspac
     if (!Array.isArray(parsed.presets)) return fallback;
     const seenIds = new Set<string>();
     const seenNames = new Set<string>();
-    const presets = parsed.presets.slice(0, 50).flatMap((candidate, index) => {
+    const presets = parsed.presets.slice(0, MAX_WORKSPACE_PRESETS).flatMap((candidate, index) => {
       if (!candidate || typeof candidate.id !== 'string' || typeof candidate.name !== 'string') return [];
       const id = normalizeWorkspaceId(candidate.id);
       if (!id || seenIds.has(id)) return [];
@@ -193,6 +194,9 @@ export function createWorkspace(
   }
   if (store.presets.some((preset) => workspaceNameKey(preset.name) === workspaceNameKey(normalizedName))) {
     throw new Error('Workspace name already exists');
+  }
+  if (store.presets.length >= MAX_WORKSPACE_PRESETS) {
+    throw new Error(`Workspace limit reached (${MAX_WORKSPACE_PRESETS})`);
   }
   const preset: WorkspacePreset = {
     id: normalizedId,
