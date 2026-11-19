@@ -185,6 +185,7 @@ import {
 } from '@/lib/generatorEditing';
 import { resolveMixAndRenderTrackIds } from '@/lib/mixAndRenderEffect';
 import { resolveRemoveTrackFocus } from '@/lib/trackRemoval';
+import { moveTrackInOrder, type TrackMoveDirection } from '@/lib/trackMove';
 import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
 import {
   alignProjectTracks,
@@ -637,6 +638,8 @@ export default function AudioEditorPage() {
   const [isPanningTracks, setIsPanningTracks] = useState(false);
   const [isRemovingTracks, setIsRemovingTracks] = useState(false);
   const [isSortingTracks, setIsSortingTracks] = useState(false);
+  const [isMovingTrack, setIsMovingTrack] = useState(false);
+  const [trackContextMenuId, setTrackContextMenuId] = useState<string | null>(null);
   const [isAligningTracks, setIsAligningTracks] = useState(false);
   const [moveSelectionWithTracks, setMoveSelectionWithTracks] = useState(
     () => projectService.getPreferences?.()?.moveSelectionWithTracks ?? false,
@@ -1810,6 +1813,34 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? error.message : '轨道排序保存失败');
     } finally {
       setIsSortingTracks(false);
+    }
+  }
+
+  async function moveTrack(trackId: string, direction: TrackMoveDirection): Promise<void> {
+    if (!project || isMovingTrack) return;
+    const ordered = moveTrackInOrder(project.tracks, trackId, direction);
+    if (ordered.every((track, index) => track.id === project.tracks[index]?.id)) return;
+
+    const before = structuredClone(project);
+    const updated: IProject = { ...project, tracks: ordered };
+    setIsMovingTrack(true);
+    try {
+      await projectService.saveProject(updated);
+      const persisted = await projectService.getProject(project.id);
+      if (!persisted) throw new Error('轨道移动后无法重新加载工程');
+      setProject(persisted);
+      setSelectedTrackId(trackId);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Move track',
+        execute: () => persisted,
+        undo: () => before,
+      });
+    } catch (error) {
+      logger.error('Move track failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道移动保存失败');
+    } finally {
+      setIsMovingTrack(false);
     }
   }
 
@@ -8891,11 +8922,22 @@ export default function AudioEditorPage() {
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              {project.tracks.map((track) => (
+              {project.tracks.map((track, trackIndex) => (
                 <TrackPanelRow
                   key={track.id}
                   track={track}
                   isSelected={selectedTrackId === track.id}
+                  isMoving={isMovingTrack}
+                  canMoveUp={trackIndex > 0}
+                  canMoveDown={trackIndex < project.tracks.length - 1}
+                  contextMenuOpen={trackContextMenuId === track.id}
+                  onContextMenuOpenChange={(open) => {
+                    setTrackContextMenuId((current) => open ? track.id : current === track.id ? null : current);
+                    if (open) {
+                      setSelectedTrackId(track.id);
+                      setEffectsPanelTrackId(track.id);
+                    }
+                  }}
                   onSelect={() => {
                     setSelectedTrackId(track.id);
                     setEffectsPanelTrackId(track.id);
@@ -8907,6 +8949,7 @@ export default function AudioEditorPage() {
                   onPanChange={(pan) => updateTrackPan(track.id, pan)}
                   onRename={(name) => renameTrack(track.id, name)}
                   onDelete={() => deleteTrack(track.id)}
+                  onMove={(direction) => void moveTrack(track.id, direction)}
                   onOpenEffects={() => {
                     setSelectedTrackId(track.id);
                     setEffectsPanelTrackId(track.id);
@@ -10200,6 +10243,11 @@ export default function AudioEditorPage() {
 function TrackPanelRow({
   track,
   isSelected,
+  isMoving,
+  canMoveUp,
+  canMoveDown,
+  contextMenuOpen,
+  onContextMenuOpenChange,
   onSelect,
   onMute,
   onSolo,
@@ -10208,10 +10256,16 @@ function TrackPanelRow({
   onPanChange,
   onRename,
   onDelete,
+  onMove,
   onOpenEffects,
 }: {
   track: ITrack;
   isSelected: boolean;
+  isMoving: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  contextMenuOpen: boolean;
+  onContextMenuOpenChange: (open: boolean) => void;
   onSelect: () => void;
   onMute: () => void;
   onSolo: () => void;
@@ -10220,6 +10274,7 @@ function TrackPanelRow({
   onPanChange: (pan: number) => void;
   onRename: (name: string) => void;
   onDelete: () => void;
+  onMove: (direction: TrackMoveDirection) => void;
   onOpenEffects: () => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
@@ -10233,12 +10288,15 @@ function TrackPanelRow({
   }
 
   return (
-    <div
-      className={`au-panel relative flex h-[100px] flex-col border-b p-1.5 transition-colors ${
-        isSelected ? 'shadow-[inset_0_0_0_1px_#84b5ff]' : 'hover:bg-[#373e45]'
-      }`}
-      onClick={onSelect}
-    >
+    <ContextMenu open={contextMenuOpen} onOpenChange={onContextMenuOpenChange}>
+      <ContextMenuTrigger asChild>
+        <div
+          data-testid={`track-panel-row-${track.id}`}
+          className={`au-panel relative flex h-[100px] flex-col border-b p-1.5 transition-colors ${
+            isSelected ? 'shadow-[inset_0_0_0_1px_#84b5ff]' : 'hover:bg-[#373e45]'
+          }`}
+          onClick={onSelect}
+        >
       <div className="mb-1 flex h-[18px] items-center gap-1">
         <GripVertical className="size-3 shrink-0 text-[#aab0b6]" />
         {isEditing ? (
@@ -10372,7 +10430,55 @@ function TrackPanelRow({
           <span className="ml-auto rounded-sm bg-[#252b31]/70 px-1 text-[9px]">{track.effects.length}</span>
         )}
       </Button>
-    </div>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-56" data-testid={`track-context-menu-${track.id}`}>
+        <ContextMenuItem
+          data-testid="track-rename-menu"
+          onSelect={() => { window.setTimeout(() => setIsEditing(true), 0); }}
+        >
+          Rename track
+        </ContextMenuItem>
+        <ContextMenuItem data-testid="track-delete-menu" onSelect={onDelete}>
+          Delete track
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuSub>
+          <ContextMenuSubTrigger data-testid="track-move-submenu">Move track</ContextMenuSubTrigger>
+          <ContextMenuSubContent className="w-48">
+            <ContextMenuItem
+              data-testid="track-move-up-menu"
+              disabled={isMoving || !canMoveUp}
+              onClick={() => onMove('up')}
+            >
+              Move up
+            </ContextMenuItem>
+            <ContextMenuItem
+              data-testid="track-move-down-menu"
+              disabled={isMoving || !canMoveDown}
+              onClick={() => onMove('down')}
+            >
+              Move down
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              data-testid="track-move-top-menu"
+              disabled={isMoving || !canMoveUp}
+              onClick={() => onMove('top')}
+            >
+              Move to top
+            </ContextMenuItem>
+            <ContextMenuItem
+              data-testid="track-move-bottom-menu"
+              disabled={isMoving || !canMoveDown}
+              onClick={() => onMove('bottom')}
+            >
+              Move to bottom
+            </ContextMenuItem>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
