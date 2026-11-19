@@ -347,6 +347,8 @@ export default function SettingsPage() {
           <QualityPreferencesCard
             value={preferences?.highQualityDither ?? 'shaped'}
             onChange={(value) => { void updatePreference('highQualityDither', value); }}
+            converterValue={preferences?.highQualitySampleRateConverter ?? 'bestQuality'}
+            onConverterChange={(value) => { void updatePreference('highQualitySampleRateConverter', value); }}
           />
 
           {/* Audacity Playback Preferences: meter dB range */}

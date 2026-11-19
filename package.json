@@ -93,6 +93,7 @@
     "vaul": "^1.1.2",
     "vite-plugin-pwa": "^2.0.0",
     "vitest": "^5.1.0",
+    "wasm-audio-resampler": "2.0.0",
     "workbox-precaching": "^7.4.1",
     "workbox-routing": "^7.4.1",
     "workbox-strategies": "^7.4.1",

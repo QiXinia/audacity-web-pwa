@@ -123,7 +123,13 @@ describe('ProjectService Resample transactions', () => {
     const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
     const result = await projectService.resampleTracksOnTracks('resample-project', ['b', 'a'], 2000);
 
-    expect(result).toEqual({ trackCount: 2, clipCount: 3, outputSampleCount: 20, sampleRate: 2000 });
+    expect(result).toEqual({
+      trackCount: 2,
+      clipCount: 3,
+      outputSampleCount: 20,
+      sampleRate: 2000,
+      backend: 'libsoxr-wasm',
+    });
     expect(save).toHaveBeenCalledTimes(1);
     const saved = save.mock.calls[0]![0];
     expect(saved.sampleRate).toBe(1000);
@@ -143,8 +149,12 @@ describe('ProjectService Resample transactions', () => {
     expect(writes).toHaveLength(3);
     expect(writes.map((write) => write.sampleRate)).toEqual([2000, 2000, 2000]);
     expect(writes.map((write) => write.length)).toEqual([8, 8, 4]);
-    expect(Array.from(new Float32Array(writes[0]!.channelData[0]!))).toEqual(new Array(8).fill(0.5));
-    expect(Array.from(new Float32Array(writes[1]!.channelData[0]!))).toEqual(new Array(8).fill(-0.25));
+    const firstPcm = Array.from(new Float32Array(writes[0]!.channelData[0]!));
+    const secondPcm = Array.from(new Float32Array(writes[1]!.channelData[0]!));
+    expect(firstPcm).toHaveLength(8);
+    expect(secondPcm).toHaveLength(8);
+    expect(firstPcm.every(Number.isFinite)).toBe(true);
+    expect(secondPcm.every(Number.isFinite)).toBe(true);
     expect(Array.from(new Float32Array(writes[2]!.channelData[0]!))).toEqual(new Array(4).fill(Math.fround(1.6)));
     expect(audioEngine.cacheBuffer).toHaveBeenCalledTimes(3);
   });
@@ -191,6 +201,39 @@ describe('ProjectService Resample transactions', () => {
 
     const raw = await projectService.loadAudioChannels('buffer-a2');
     expect(raw?.[0]).toHaveLength(2);
+  });
+
+  it('passes the persisted HQ converter preference into real libsoxr processing', async () => {
+    const source = new Float32Array(137);
+    let state = 0x5eed1234;
+    for (let index = 0; index < source.length; index += 1) {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      source[index] = Math.fround(((state >>> 8) / 8388607.5 - 1) * 0.75);
+    }
+    records.set('buffer-a1', {
+      ...record('buffer-a1', 1000, [Array.from(source)]),
+    });
+    const project = makeProject();
+    project.tracks = [{ ...project.tracks[0]!, clips: [project.tracks[0]!.clips[0]!] }];
+    setCurrentProject(project);
+    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
+
+    const best = await projectService.resampleTracksOnTracks('resample-project', ['a'], 1600);
+    const bestPcm = new Float32Array(vi.mocked(audioDb.audioBuffers.put).mock.calls[0]![0].channelData[0]!);
+    expect(best.backend).toBe('libsoxr-wasm');
+    expect(bestPcm).toHaveLength(219);
+
+    setCurrentProject(project);
+    projectService.savePreferences({
+      ...projectService.getPreferences(),
+      highQualitySampleRateConverter: 'lowQuality',
+    });
+    const low = await projectService.resampleTracksOnTracks('resample-project', ['a'], 1600);
+    const lowPcm = new Float32Array(vi.mocked(audioDb.audioBuffers.put).mock.calls[1]![0].channelData[0]!);
+    expect(low.backend).toBe('libsoxr-wasm');
+    expect(lowPcm).toHaveLength(219);
+    expect(Array.from(lowPcm)).not.toEqual(Array.from(bestPcm));
+    expect(save).toHaveBeenCalledTimes(2);
   });
 
   it('cleans every staged resampled buffer when the project save fails', async () => {

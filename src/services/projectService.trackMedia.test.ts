@@ -155,6 +155,7 @@ describe('ProjectService Track Format and Rate transactions', () => {
     project.tracks = [{ ...project.tracks[0]!, clips: [project.tracks[0]!.clips[0]!] }];
     setCurrentProject(project);
     expect(projectService.getPreferences().highQualityDither).toBe('shaped');
+    expect(projectService.getPreferences().highQualitySampleRateConverter).toBe('bestQuality');
     const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
 
     await projectService.changeTrackFormatOnTracks('track-media-project', ['a'], 'int16');

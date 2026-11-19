@@ -1679,6 +1679,7 @@ export default function AudioEditorPage() {
       toast.success(result.clipCount === 0
         ? `已将 ${result.trackCount} 条空轨的速率设为 ${newRate} Hz`
         : `已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段重采样为 ${newRate} Hz`);
+      if (result.fallbackWarning) toast.warning(result.fallbackWarning);
     } catch (error) {
       logger.error('Resample failed', error);
       toast.error(error instanceof Error ? error.message : '重采样失败');
@@ -1963,6 +1964,7 @@ export default function AudioEditorPage() {
       toast.success(result.clipCount === 0
         ? `已将 ${result.trackCount} 条空轨的速率设为 ${newRate} Hz`
         : `已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段重采样为 ${newRate} Hz`);
+      if (result.fallbackWarning) toast.warning(result.fallbackWarning);
     } catch (error) {
       logger.error('Resample track context failed', error);
       toast.error(error instanceof Error ? error.message : '轨道重采样失败');

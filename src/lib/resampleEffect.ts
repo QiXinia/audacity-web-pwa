@@ -1,7 +1,9 @@
 // Audacity 4.0.2 Tracks -> Resample: constant-rate, whole-clip PCM conversion.
-// Official references: TrackMenus.cpp OnResample, WaveTrack.cpp Resample and
-// WaveClip.cpp Resample. Audacity uses libsoxr; this browser fallback uses a
-// deterministic Blackman-windowed sinc kernel and does not claim bit-exactness.
+// Official references: TrackMenus.cpp OnResample, WaveTrack.cpp Resample,
+// WaveClip.cpp Resample and au3-math/Resample.cpp (libsoxr).
+
+import type { HighQualitySampleRateConverter } from '@/types/project';
+import { resampleChannelsWithSoxr } from '@/lib/soxrResampler';
 
 export const MIN_RESAMPLE_RATE = 1;
 export const MAX_RESAMPLE_RATE = 1_000_000;
@@ -11,6 +13,28 @@ export const RESAMPLE_RATE_CHOICES = Object.freeze([
   8000, 11025, 16000, 22050, 32000, 44100,
   48000, 88200, 96000, 176400, 192000, 352800, 384000,
 ]);
+
+export const SAMPLE_RATE_CONVERTER_OPTIONS: ReadonlyArray<{
+  value: HighQualitySampleRateConverter;
+  label: string;
+}> = [
+  { value: 'lowQuality', label: 'Low Quality (Fastest)' },
+  { value: 'mediumQuality', label: 'Medium Quality' },
+  { value: 'highQuality', label: 'High Quality' },
+  { value: 'bestQuality', label: 'Best Quality (Slowest)' },
+];
+
+export const DEFAULT_SAMPLE_RATE_CONVERTER: HighQualitySampleRateConverter = 'bestQuality';
+export const SOXR_FALLBACK_WARNING =
+  'libsoxr WASM 加载或处理失败，已使用确定性浏览器降级；输出不保证与 Audacity 的 libsoxr 一致。';
+
+export type ResampleBackend = 'libsoxr-wasm' | 'typescript-fallback' | 'same-rate';
+
+export interface ResampleChannelsResult {
+  channels: Float32Array[];
+  backend: ResampleBackend;
+  warning?: string;
+}
 
 /** Match the editable official combo box: integer text from 1 to 1,000,000. */
 export function parseResampleRate(value: string): number | null {
@@ -34,6 +58,7 @@ export function validateResampleRate(rate: number): void {
   }
 }
 
+/** Conservative allocation/preflight estimate; libsoxr determines final frames. */
 export function getResampledLength(
   inputLength: number,
   fromRate: number,
@@ -67,27 +92,12 @@ function validateChannels(channels: readonly Float32Array[]): number {
   return inputLength;
 }
 
-/**
- * Resample complete source buffers without changing timeline metadata. Every
- * channel shares positions and weights; normalization preserves DC and no
- * clipping is applied to valid floating-point audio outside [-1, 1].
- */
-export function resampleChannels(
+/** Previous deterministic browser path, retained only as an explicit fallback. */
+function resampleChannelsWithSinc(
   channels: readonly Float32Array[],
-  fromRate: number,
-  toRate: number,
+  inputLength: number,
+  outputLength: number,
 ): Float32Array[] {
-  const inputLength = validateChannels(channels);
-  const outputLength = getResampledLength(inputLength, fromRate, toRate);
-  const totalOutput = outputLength * channels.length;
-  if (
-    !Number.isSafeInteger(totalOutput)
-    || totalOutput > MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES
-  ) {
-    throw new RangeError('Resample 输出超过浏览器内存上限，请降低采样率或减少片段');
-  }
-  if (fromRate === toRate) return channels.map((channel) => channel.slice());
-
   const sourceStep = inputLength / outputLength;
   const cutoff = Math.min(1, 1 / sourceStep);
   const radius = Math.min(Math.ceil(8 / cutoff), inputLength + 8);
@@ -128,4 +138,63 @@ export function resampleChannels(
     }
   }
   return output;
+}
+
+/**
+ * Prefer the same libsoxr 0.1.3 algorithms and block protocol as Audacity.
+ * If WASM cannot be loaded, retain the previous deterministic sinc path and
+ * return an explicit warning so the UI never presents it as libsoxr output.
+ */
+export async function resampleChannelsDetailed(
+  channels: readonly Float32Array[],
+  fromRate: number,
+  toRate: number,
+  quality: HighQualitySampleRateConverter = DEFAULT_SAMPLE_RATE_CONVERTER,
+): Promise<ResampleChannelsResult> {
+  const inputLength = validateChannels(channels);
+  if (!SAMPLE_RATE_CONVERTER_OPTIONS.some((option) => option.value === quality)) {
+    throw new RangeError(`未知的采样率转换器质量：${quality}`);
+  }
+  const outputLength = getResampledLength(inputLength, fromRate, toRate);
+  const totalOutput = outputLength * channels.length;
+  if (
+    !Number.isSafeInteger(totalOutput)
+    || totalOutput > MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES
+  ) {
+    throw new RangeError('Resample 输出超过浏览器内存上限，请降低采样率或减少片段');
+  }
+  if (fromRate === toRate) {
+    return { channels: channels.map((channel) => channel.slice()), backend: 'same-rate' };
+  }
+
+  const maximumOutputFramesPerChannel = Math.floor(MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES / channels.length);
+  try {
+    return {
+      channels: await resampleChannelsWithSoxr(
+        channels,
+        fromRate,
+        toRate,
+        quality,
+        maximumOutputFramesPerChannel,
+      ),
+      backend: 'libsoxr-wasm',
+    };
+  } catch (error) {
+    const warning = `${SOXR_FALLBACK_WARNING} 原因：${error instanceof Error ? error.message : String(error)}`;
+    console.warn(warning, error);
+    return {
+      channels: resampleChannelsWithSinc(channels, inputLength, outputLength),
+      backend: 'typescript-fallback',
+      warning,
+    };
+  }
+}
+
+export async function resampleChannels(
+  channels: readonly Float32Array[],
+  fromRate: number,
+  toRate: number,
+  quality: HighQualitySampleRateConverter = DEFAULT_SAMPLE_RATE_CONVERTER,
+): Promise<Float32Array[]> {
+  return (await resampleChannelsDetailed(channels, fromRate, toRate, quality)).channels;
 }

@@ -163,6 +163,12 @@ export interface IProject {
   createdAt: number;
 }
 
+export type HighQualitySampleRateConverter =
+  | 'lowQuality'
+  | 'mediumQuality'
+  | 'highQuality'
+  | 'bestQuality';
+
 export interface IPreferences {
   theme: 'dark' | 'light';
   defaultSampleRate: number;
@@ -175,6 +181,8 @@ export interface IPreferences {
   useWasm: boolean;
   /** Audacity /Quality/HQDitherAlgorithmChoice; defaults to shaped. */
   highQualityDither: DitherType;
+  /** Audacity /Quality/LibsoxrHQSampleRateConverterChoice; defaults to bestQuality. */
+  highQualitySampleRateConverter: HighQualitySampleRateConverter;
   /** Audacity /GUI/MoveSelectionWithTracks; defaults to false. */
   moveSelectionWithTracks: boolean;
   /** Audacity /GUI/SyncLockTracks; defaults to false. */

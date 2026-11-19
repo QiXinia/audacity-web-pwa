@@ -264,8 +264,10 @@ import {
 import {
   getResampledLength,
   MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES,
-  resampleChannels,
+  resampleChannelsDetailed,
+  SOXR_FALLBACK_WARNING,
   validateResampleRate,
+  type ResampleBackend,
 } from '@/lib/resampleEffect';
 import {
   assertTrackSampleFormat,
@@ -292,6 +294,9 @@ export interface ResampleTracksResult {
   clipCount: number;
   outputSampleCount: number;
   sampleRate: number;
+  /** Present when at least one source clip required sample-rate conversion. */
+  backend?: Extract<ResampleBackend, 'libsoxr-wasm' | 'typescript-fallback'>;
+  fallbackWarning?: string;
 }
 
 export interface TrackMediaTracksResult {
@@ -410,6 +415,7 @@ const DEFAULT_PREFS: IPreferences = {
   maxRecordingDuration: 600,
   useWasm: true,
   highQualityDither: 'shaped',
+  highQualitySampleRateConverter: 'bestQuality',
   moveSelectionWithTracks: false,
   syncLockTracks: false,
 };
@@ -2991,7 +2997,7 @@ class ProjectService {
       channels: Float32Array[];
       fromRate: number;
     }> = [];
-    let outputSampleCount = 0;
+    let estimatedOutputSampleCount = 0;
     for (const track of selectedTracks) {
       for (const clip of track.clips) {
         const record = await audioDb.audioBuffers.get(clip.audioBufferId);
@@ -3001,11 +3007,11 @@ class ProjectService {
         const inputLength = channels[0]?.length ?? 0;
         const outputLength = getResampledLength(inputLength, record.sampleRate, newRate);
         const clipOutput = outputLength * channels.length;
-        outputSampleCount += clipOutput;
+        estimatedOutputSampleCount += clipOutput;
         if (
           !Number.isSafeInteger(clipOutput)
-          || !Number.isSafeInteger(outputSampleCount)
-          || outputSampleCount > MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES
+          || !Number.isSafeInteger(estimatedOutputSampleCount)
+          || estimatedOutputSampleCount > MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES
         ) {
           throw new RangeError('Resample 总输出超过浏览器内存上限，请降低采样率或减少轨道');
         }
@@ -3019,12 +3025,26 @@ class ProjectService {
       return { trackCount: 0, clipCount: 0, outputSampleCount: 0, sampleRate: newRate };
     }
 
-    // All records and output sizes are validated before PCM conversion or I/O.
+    // All records and estimated output sizes are validated before PCM conversion or I/O.
     const pendingBuffers: PendingAudioBuffer[] = [];
     const replacements = new Map<string, Map<string, IClip>>();
+    const converterQuality = this.getPreferences().highQualitySampleRateConverter;
+    let outputSampleCount = 0;
+    let backend: ResampleTracksResult['backend'];
+    let fallbackWarning: string | undefined;
     for (const { track, clip, channels, fromRate } of planned) {
-      const resampled = resampleChannels(channels, fromRate, newRate);
-      const sampleData = convertTrackSampleFormatChannels(resampled, track.sampleFormat ?? 'float32');
+      const result = await resampleChannelsDetailed(channels, fromRate, newRate, converterQuality);
+      if (result.backend === 'typescript-fallback') {
+        backend = 'typescript-fallback';
+        fallbackWarning = result.warning ?? SOXR_FALLBACK_WARNING;
+      } else if (result.backend === 'libsoxr-wasm' && !backend) {
+        backend = 'libsoxr-wasm';
+      }
+      outputSampleCount += result.channels.reduce((total, channel) => total + channel.length, 0);
+      if (!Number.isSafeInteger(outputSampleCount) || outputSampleCount > MAX_RESAMPLE_TOTAL_OUTPUT_SAMPLES) {
+        throw new RangeError('Resample 实际输出超过浏览器内存上限，请降低采样率或减少轨道');
+      }
+      const sampleData = convertTrackSampleFormatChannels(result.channels, track.sampleFormat ?? 'float32');
       const bufferId = generateId();
       pendingBuffers.push({ id: bufferId, sampleRate: newRate, sampleData });
       const trackReplacements = replacements.get(track.id) ?? new Map<string, IClip>();
@@ -3059,6 +3079,8 @@ class ProjectService {
       clipCount: planned.length,
       outputSampleCount,
       sampleRate: newRate,
+      ...(backend ? { backend } : {}),
+      ...(fallbackWarning ? { fallbackWarning } : {}),
     };
   }
 
