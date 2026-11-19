@@ -639,6 +639,7 @@ export default function AudioEditorPage() {
   const [isRemovingTracks, setIsRemovingTracks] = useState(false);
   const [isSortingTracks, setIsSortingTracks] = useState(false);
   const [isMovingTrack, setIsMovingTrack] = useState(false);
+  const [isDuplicatingTrack, setIsDuplicatingTrack] = useState(false);
   const [trackContextMenuId, setTrackContextMenuId] = useState<string | null>(null);
   const [isAligningTracks, setIsAligningTracks] = useState(false);
   const [moveSelectionWithTracks, setMoveSelectionWithTracks] = useState(
@@ -1442,7 +1443,14 @@ export default function AudioEditorPage() {
     await projectService.removeTrack(project.id, trackId);
     const updated = await projectService.getProject(project.id);
     if (updated) {
+      const fallbackTrackId = updated.tracks[0]?.id ?? null;
       setProject(updated);
+      setSelectedTrackId((current) => current && updated.tracks.some((track) => track.id === current)
+        ? current
+        : fallbackTrackId);
+      setEffectsPanelTrackId((current) => current && updated.tracks.some((track) => track.id === current)
+        ? current
+        : fallbackTrackId);
       pushHistoryCmd({
         id: generateId(),
         label: '删除轨道',
@@ -1841,6 +1849,33 @@ export default function AudioEditorPage() {
       toast.error(error instanceof Error ? error.message : '轨道移动保存失败');
     } finally {
       setIsMovingTrack(false);
+    }
+  }
+
+  async function duplicateTrack(trackId: string): Promise<void> {
+    if (!project || isDuplicatingTrack) return;
+    const source = project.tracks.find((track) => track.id === trackId);
+    if (!source) return;
+    const before = structuredClone(project);
+    setIsDuplicatingTrack(true);
+    try {
+      const duplicated = await projectService.duplicateTrack(project.id, trackId);
+      if (!duplicated) throw new Error('目标轨道不可用');
+      const persisted = await projectService.getProject(project.id);
+      if (!persisted) throw new Error('轨道复制后无法重新加载工程');
+      setProject(persisted);
+      pushHistoryCmd({
+        id: generateId(),
+        label: 'Duplicate track',
+        execute: () => persisted,
+        undo: () => before,
+      });
+      toast.success(`已复制轨道「${source.name}」`);
+    } catch (error) {
+      logger.error('Duplicate track failed', error);
+      toast.error(error instanceof Error ? error.message : '轨道复制失败');
+    } finally {
+      setIsDuplicatingTrack(false);
     }
   }
 
@@ -8928,6 +8963,7 @@ export default function AudioEditorPage() {
                   track={track}
                   isSelected={selectedTrackId === track.id}
                   isMoving={isMovingTrack}
+                  isDuplicating={isDuplicatingTrack}
                   canMoveUp={trackIndex > 0}
                   canMoveDown={trackIndex < project.tracks.length - 1}
                   contextMenuOpen={trackContextMenuId === track.id}
@@ -8949,6 +8985,7 @@ export default function AudioEditorPage() {
                   onPanChange={(pan) => updateTrackPan(track.id, pan)}
                   onRename={(name) => renameTrack(track.id, name)}
                   onDelete={() => deleteTrack(track.id)}
+                  onDuplicate={() => void duplicateTrack(track.id)}
                   onMove={(direction) => void moveTrack(track.id, direction)}
                   onOpenEffects={() => {
                     setSelectedTrackId(track.id);
@@ -10244,6 +10281,7 @@ function TrackPanelRow({
   track,
   isSelected,
   isMoving,
+  isDuplicating,
   canMoveUp,
   canMoveDown,
   contextMenuOpen,
@@ -10256,12 +10294,14 @@ function TrackPanelRow({
   onPanChange,
   onRename,
   onDelete,
+  onDuplicate,
   onMove,
   onOpenEffects,
 }: {
   track: ITrack;
   isSelected: boolean;
   isMoving: boolean;
+  isDuplicating: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   contextMenuOpen: boolean;
@@ -10274,6 +10314,7 @@ function TrackPanelRow({
   onPanChange: (pan: number) => void;
   onRename: (name: string) => void;
   onDelete: () => void;
+  onDuplicate: () => void;
   onMove: (direction: TrackMoveDirection) => void;
   onOpenEffects: () => void;
 }) {
@@ -10438,6 +10479,13 @@ function TrackPanelRow({
           onSelect={() => { window.setTimeout(() => setIsEditing(true), 0); }}
         >
           Rename track
+        </ContextMenuItem>
+        <ContextMenuItem
+          data-testid="track-duplicate-menu"
+          disabled={isDuplicating}
+          onSelect={onDuplicate}
+        >
+          Duplicate track
         </ContextMenuItem>
         <ContextMenuItem data-testid="track-delete-menu" onSelect={onDelete}>
           Delete track

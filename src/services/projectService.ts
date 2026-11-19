@@ -18,6 +18,7 @@ import {
 } from '@/lib/spectralSelection';
 import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect } from '@/types/project';
 import { deserializeAnalysisLabels, serializeAnalysisLabels } from '@/lib/analysisLabels';
+import { duplicateTrackInProject } from '@/lib/trackDuplicate';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
@@ -693,6 +694,41 @@ class ProjectService {
     project.tracks.push(newTrack);
     await this.saveProject(project);
     return newTrack;
+  }
+
+  /** Duplicate a complete Audacity track with independent clips and PCM buffers. */
+  async duplicateTrack(projectId: string, trackId: string): Promise<ITrack | null> {
+    const project = this.currentProject?.id === projectId
+      ? this.currentProject
+      : await this.getProject(projectId);
+    if (!project) return null;
+    const plan = duplicateTrackInProject(project, trackId, generateId);
+    if (!plan) return null;
+
+    // Read and validate every source before any write. Split clips can share a
+    // source buffer; the plan deliberately creates only one independent copy.
+    const pendingBuffers: PendingAudioBuffer[] = [];
+    for (const copy of plan.audioBufferCopies) {
+      const [channels, metadata] = await Promise.all([
+        this.loadAudioChannels(copy.sourceBufferId),
+        this.loadAudioBufferMetadata(copy.sourceBufferId),
+      ]);
+      const length = channels?.[0]?.length ?? 0;
+      if (!channels || !metadata || length < 1) {
+        throw new Error(`无法读取片段音频缓冲：${copy.sourceBufferId}`);
+      }
+      if (channels.some((channel) => channel.length !== length)) {
+        throw new Error(`片段音频声道长度不一致：${copy.sourceBufferId}`);
+      }
+      pendingBuffers.push({
+        id: copy.targetBufferId,
+        sampleRate: metadata.sampleRate,
+        sampleData: channels.map((channel) => new Float32Array(channel)),
+      });
+    }
+
+    await this.commitPendingAudioBuffers(projectId, pendingBuffers, plan.project);
+    return plan.track;
   }
 
   async removeTrack(projectId: string, trackId: string): Promise<void> {
