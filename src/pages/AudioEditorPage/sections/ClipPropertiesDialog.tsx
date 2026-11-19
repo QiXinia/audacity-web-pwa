@@ -132,7 +132,7 @@ export function ClipPropertiesDialog({ open, onOpenChange, clip, track }: ClipPr
             <PropertyRow label="Stretch with tempo changes" value={isClipStretchToMatchTempo(clip) ? 'On' : 'Off'} />
             <PropertyRow label="Clip tempo" value={clip.clipTempo ? `${clip.clipTempo} BPM` : 'Not set'} />
             <PropertyRow label="Source tempo" value={clip.rawAudioTempo ? `${clip.rawAudioTempo} BPM` : 'Not set'} />
-            <PropertyRow label="Optimize for voice" value={getClipOptimizeForVoice(clip) ? 'On · WSOLA browser approximation' : 'Off'} />
+            <PropertyRow label="Optimize for voice" value={getClipOptimizeForVoice(clip) ? 'On · Official-window WSOLA · no formant shifter' : 'Off'} />
           </PropertySection>
         </div>
 

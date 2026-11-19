@@ -2,7 +2,7 @@ import type { IClip, IProject } from '@/types/project';
 import { clamp } from '@/lib/audioUtils';
 import { getClipStretchRatio, type ClipKey } from '@/lib/clipEditing';
 import { processChangeSpeedChannels } from '@/lib/changeSpeedEffect';
-import { timeStretchChannelsJs } from '@/engine/timeStretch';
+import { timeStretchChannelsJs, type TimeStretchOptions } from '@/engine/timeStretch';
 import { wasmProcessor } from '@/wasm/processor';
 
 // Audacity 4.0.2 PitchSection.qml / SpeedSection.qml and ClipSegment.cpp.
@@ -113,15 +113,42 @@ export function applyClipPitchAndSpeed(
     : project;
 }
 
-const VOICE_TIME_STRETCH_OPTIONS = Object.freeze({
-  windowSize: 8192,
-  searchRadius: 2048,
-});
+/**
+ * Audacity 4.0.2 StaffPadTimeAndPitch.cpp GetFftSize.
+ * C++ std::round rounds halfway cases away from zero, unlike Math.round for
+ * negative values, so keep that boundary behavior explicit.
+ */
+export function getAudacityTimeAndPitchFftSize(
+  sampleRate: number,
+  preserveFormants: boolean,
+): number {
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+    throw new RangeError('采样率必须是有限的正数');
+  }
+  const octaveOffset = Math.log2(sampleRate / 44100);
+  const roundedOffset = Math.sign(octaveOffset) * Math.floor(Math.abs(octaveOffset) + 0.5);
+  const fftSize = 2 ** ((preserveFormants ? 11 : 12) + roundedOffset);
+  if (!Number.isSafeInteger(fftSize) || fftSize < 64) {
+    throw new RangeError('采样率超出了音高与速度分析窗的有效范围');
+  }
+  return fftSize;
+}
+
+export function getClipPitchTimeStretchOptions(
+  sampleRate: number,
+  optimizeForVoice: boolean,
+): TimeStretchOptions {
+  const windowSize = getAudacityTimeAndPitchFftSize(sampleRate, optimizeForVoice);
+  return optimizeForVoice
+    ? { windowSize, searchRadius: windowSize / 4 }
+    : { windowSize };
+}
 
 /**
- * Non-destructive clip rendering. Pitch uses the project's deterministic
- * band-limited resampling + WSOLA path; voice mode uses longer, smoother
- * analysis windows as a browser approximation of Audacity's formant preset.
+ * Non-destructive clip rendering. The JS stretcher follows Audacity's official
+ * sample-rate-dependent analysis windows. Voice mode uses the shorter
+ * preserveFormants window, but this WSOLA path does not claim to reproduce
+ * StaffPad's cepstral formant shifter.
  */
 export function processClipPitchAndSpeedChannels(
   clip: IClip,
@@ -144,14 +171,19 @@ export function processClipPitchAndSpeedChannels(
       resampled,
       1 / pitchRatio,
       sampleRate,
-      optimizeForVoice ? VOICE_TIME_STRETCH_OPTIONS : undefined,
+      getClipPitchTimeStretchOptions(sampleRate, optimizeForVoice),
     );
   }
 
   const stretchRatio = getClipStretchRatio(clip);
   if (stretchRatio !== 1) {
     processed = optimizeForVoice
-      ? timeStretchChannelsJs(processed, stretchRatio, sampleRate, VOICE_TIME_STRETCH_OPTIONS)
+      ? timeStretchChannelsJs(
+        processed,
+        stretchRatio,
+        sampleRate,
+        getClipPitchTimeStretchOptions(sampleRate, true),
+      )
       : wasmProcessor.timeStretch(processed, stretchRatio, sampleRate);
   }
   return processed;

@@ -166,7 +166,7 @@ export function ClipPitchAndSpeedDialog({
           <span>
             <span className="font-medium">Optimize for voice</span>
             <span className="mt-0.5 block text-xs text-muted-foreground">
-              使用更长、更平滑的 WSOLA 分析窗，作为 Audacity 人声共振峰预设的浏览器近似。
+              按 Audacity GetFftSize 公式使用更短的 WSOLA 分析窗（44.1kHz：普通 4096、语音 2048）；仅对齐官方窗长，不包含 StaffPad 共振峰补偿。
             </span>
           </span>
         </label>

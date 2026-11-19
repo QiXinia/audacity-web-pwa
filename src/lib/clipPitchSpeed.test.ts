@@ -3,6 +3,8 @@ import {
   applyClipPitchAndSpeed,
   composeClipPitchCents,
   getClipSpeedPercentage,
+  getAudacityTimeAndPitchFftSize,
+  getClipPitchTimeStretchOptions,
   hasClipPitchOrSpeed,
   normalizeClipSpeedPercentage,
   processClipPitchAndSpeedChannels,
@@ -83,6 +85,38 @@ describe('Audacity 4 clip pitch and speed model', () => {
     expect(malformed.pitchCents).toBe(1200);
     expect(malformed.optimizeForVoice).toBe(false);
     expect(malformed.stretchRatio).toBe(1);
+  });
+});
+
+describe('Audacity StaffPad analysis-window mapping', () => {
+  it('matches the official sample-rate table and shortens the voice window', () => {
+    for (const [sampleRate, normal, voice] of [
+      [8000, 1024, 512],
+      [11025, 1024, 512],
+      [22050, 2048, 1024],
+      [44100, 4096, 2048],
+      [48000, 4096, 2048],
+      [88200, 8192, 4096],
+      [96000, 8192, 4096],
+      [192000, 16384, 8192],
+    ] as const) {
+      expect(getAudacityTimeAndPitchFftSize(sampleRate, false)).toBe(normal);
+      expect(getAudacityTimeAndPitchFftSize(sampleRate, true)).toBe(voice);
+    }
+    expect(getClipPitchTimeStretchOptions(44100, false)).toEqual({ windowSize: 4096 });
+    expect(getClipPitchTimeStretchOptions(44100, true)).toEqual({ windowSize: 2048, searchRadius: 512 });
+  });
+
+  it('uses C++ halfway rounding and rejects invalid sample rates', () => {
+    const negativeHalfway = 44100 * 2 ** -2.5;
+    const positiveHalfway = 44100 * 2 ** 2.5;
+    expect(getAudacityTimeAndPitchFftSize(negativeHalfway, false)).toBe(512);
+    expect(getAudacityTimeAndPitchFftSize(negativeHalfway, true)).toBe(256);
+    expect(getAudacityTimeAndPitchFftSize(positiveHalfway, false)).toBe(32768);
+    expect(getAudacityTimeAndPitchFftSize(positiveHalfway, true)).toBe(16384);
+    for (const sampleRate of [0, -44100, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => getAudacityTimeAndPitchFftSize(sampleRate, true)).toThrow('采样率');
+    }
   });
 });
 

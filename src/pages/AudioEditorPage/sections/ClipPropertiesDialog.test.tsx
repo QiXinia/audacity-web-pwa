@@ -58,7 +58,7 @@ describe('ClipPropertiesDialog', () => {
     expect(screen.getByTestId('clip-property-speed')).toHaveTextContent('150.000%');
     expect(screen.getByTestId('clip-property-pitch')).toHaveTextContent('+125 cents total');
     expect(screen.getByText('Violet')).toBeInTheDocument();
-    expect(screen.getByText('On · WSOLA browser approximation')).toBeInTheDocument();
+    expect(screen.getByText('On · Official-window WSOLA · no formant shifter')).toBeInTheDocument();
     expect(mocks.loadMetadata).toHaveBeenCalledWith('buffer-a');
 
     fireEvent.click(screen.getByTestId('clip-properties-close'));
