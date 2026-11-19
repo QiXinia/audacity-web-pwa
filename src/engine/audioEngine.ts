@@ -66,6 +66,7 @@ export class AudioEngine {
   private _workletUrl: string | null = null;
   private _recordingSink: GainNode | null = null;
   private recordingStopResolver: (() => void) | null = null;
+  private recordingStartPromise: Promise<void> | null = null;
 
   // Stopped-state microphone monitoring is independent from recording. The
   // analyser branch feeds the meter; only inputMonitoring opens the audible gain.
@@ -867,6 +868,21 @@ export class AudioEngine {
 
   // Recording — AudioWorklet 优先，不支持时降级为 ScriptProcessorNode
   async startRecording(options?: { stereo?: boolean }): Promise<void> {
+    // Audacity AudioIO::StartStream and ProjectAudioManager::DoRecord reject
+    // busy reentry. Coalesce pending browser startup too, before permission or
+    // graph initialization can overwrite the only references used for cleanup.
+    if (this._recordingState === 'recording') return;
+    if (this.recordingStartPromise) return this.recordingStartPromise;
+    const pending = this.startRecordingInternal(options);
+    this.recordingStartPromise = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.recordingStartPromise === pending) this.recordingStartPromise = null;
+    }
+  }
+
+  private async startRecordingInternal(options?: { stereo?: boolean }): Promise<void> {
     // Audacity uses one input graph: recording takes over any stopped-state
     // meter/monitor stream, and inputMonitoring controls its audible sink.
     this.stopMicrophoneMonitoring();

@@ -12,7 +12,7 @@ function makeMediaStream(channelCount = 2) {
   };
 }
 
-function makeContext(options: { worklet?: boolean; workletError?: boolean } = {}) {
+function makeContext(options: { worklet?: boolean; workletError?: boolean; meterPairs?: number } = {}) {
   const source = { connect: vi.fn(), disconnect: vi.fn() };
   const sink = {
     gain: { value: 1 },
@@ -26,7 +26,7 @@ function makeContext(options: { worklet?: boolean; workletError?: boolean } = {}
   };
   const createScriptProcessor = vi.fn(() => processor);
   const splitter = { connect: vi.fn(), disconnect: vi.fn() };
-  const analysers = Array.from({ length: 2 }, () => ({
+  const analysers = Array.from({ length: 2 * (options.meterPairs ?? 1) }, () => ({
     fftSize: 0,
     smoothingTimeConstant: 1,
     disconnect: vi.fn(),
@@ -480,6 +480,46 @@ describe('AudioEngine recording boundaries', () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(ensureContext).not.toHaveBeenCalled();
     expect(engine.isMicrophoneMonitoringActive()).toBe(false);
+  });
+
+  it('coalesces concurrent starts and ignores reentry without replacing the active fallback session', async () => {
+    const engine = new AudioEngine();
+    const first = makeMediaStream(1);
+    const unexpected = makeMediaStream(1);
+    const { context, processor, createScriptProcessor } = makeContext({ worklet: false, meterPairs: 3 });
+    let resolveFirstStream: ((value: unknown) => void) | undefined;
+    const getUserMedia = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstStream = resolve; }))
+      .mockResolvedValue(unexpected.stream);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const initialStart = engine.startRecording();
+    const concurrentStart = engine.startRecording();
+    resolveFirstStream?.(first.stream);
+    await Promise.all([initialStart, concurrentStart]);
+    await engine.startRecording();
+
+    processor.onaudioprocess?.({
+      inputBuffer: {
+        numberOfChannels: 1,
+        length: 2,
+        getChannelData: () => new Float32Array([0.1, 0.2]),
+      },
+    });
+    const result = await engine.stopRecording();
+
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    expect(createScriptProcessor).toHaveBeenCalledOnce();
+    expect(Array.from(result?.[0] ?? [])).toEqual([
+      0.10000000149011612,
+      0.20000000298023224,
+    ]);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(unexpected.stop).not.toHaveBeenCalled();
   });
 
   it('applies input monitoring to the recording sink without changing capture', async () => {
