@@ -654,15 +654,22 @@ class ProjectService {
     project.updatedAt = Date.now();
     // Capture this invocation before queuing so later mutations cannot rewrite its snapshot.
     const record = this.projectToRecord(project);
-    await this.enqueueProjectWrite(async () => {
-      const existing = await audioDb.projects.get(record.id);
-      if (existing?.status === 'deleted') {
-        // Saving an editor snapshot must not implicitly restore a trashed project.
-        record.status = 'deleted';
-        record.deletedAt = existing.deletedAt;
-      }
-      await audioDb.projects.put(record);
-    });
+    await this.enqueueProjectWrite(() => audioDb.transaction(
+      'rw',
+      audioDb.projects,
+      async () => {
+        const existing = await audioDb.projects.get(record.id);
+        // New records are created explicitly by createProject. An editor save
+        // must not recreate a record permanently deleted by another tab.
+        if (!existing) return;
+        if (existing.status === 'deleted') {
+          // Saving an editor snapshot must not implicitly restore a trashed project.
+          record.status = 'deleted';
+          record.deletedAt = existing.deletedAt;
+        }
+        await audioDb.projects.put(record);
+      },
+    ));
     this.currentProject = project;
   }
 

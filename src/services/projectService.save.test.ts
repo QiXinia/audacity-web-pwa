@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Dexie from 'dexie';
 import {
   audioDb,
@@ -207,6 +207,18 @@ function mockPermanentDeleteState(
 
   return { records, buffers, snapshots };
 }
+
+beforeEach(() => {
+  // saveProject updates an existing record; createProject owns new records.
+  vi.mocked(audioDb.projects.get).mockImplementation(() => (
+    Dexie.Promise.resolve(makeRecord('existing'))
+  ));
+  vi.mocked(audioDb.transaction).mockImplementation((async (...args: unknown[]) => {
+    const operation = args[args.length - 1];
+    if (typeof operation !== 'function') throw new TypeError('Missing transaction callback');
+    return (operation as () => Promise<unknown>)();
+  }) as never);
+});
 
 afterEach(() => {
   vi.clearAllMocks();
