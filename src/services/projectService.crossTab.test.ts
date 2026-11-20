@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Dexie from 'dexie';
-import { audioDb, type ProjectRecord } from '@/db/audioDb';
+import { audioDb, type AudioBufferRecord, type ProjectRecord } from '@/db/audioDb';
+import { audioEngine } from '@/engine/audioEngine';
 import { projectService } from '@/services/projectService';
 import type { IProject } from '@/types/project';
 
 vi.mock('@/db/audioDb', () => ({
   audioDb: {
     projects: { get: vi.fn(), put: vi.fn(), delete: vi.fn() },
-    audioBuffers: {},
+    audioBuffers: { put: vi.fn(), delete: vi.fn() },
     clipboard: {},
     historySnapshots: {},
     transaction: vi.fn(),
@@ -16,6 +17,10 @@ vi.mock('@/db/audioDb', () => ({
   deserializeTracks: (data: string) => JSON.parse(data),
   serializeSelection: (selection: unknown) => selection ? JSON.stringify(selection) : null,
   deserializeSelection: (data: string | null) => data ? JSON.parse(data) : null,
+}));
+
+vi.mock('@/engine/audioEngine', () => ({
+  audioEngine: { cacheBuffer: vi.fn(), evictBuffer: vi.fn() },
 }));
 
 const mutableService = projectService as unknown as {
@@ -79,11 +84,29 @@ function makeRecord(
   };
 }
 
+function makeEmptyTrack(id: string): IProject['tracks'][number] {
+  return {
+    id,
+    name: id,
+    type: 'audio',
+    gain: 0,
+    pan: 0,
+    muted: false,
+    solo: false,
+    armed: false,
+    color: '',
+    clips: [],
+    effects: [],
+  };
+}
+
 let records: Map<string, ProjectRecord>;
+let audioBuffers: Map<string, AudioBufferRecord>;
 let transactionTail: Promise<void>;
 
 beforeEach(() => {
   records = new Map();
+  audioBuffers = new Map();
   transactionTail = Promise.resolve();
   vi.mocked(audioDb.projects.get).mockImplementation(((id: string) => {
     const record = records.get(id);
@@ -95,6 +118,16 @@ beforeEach(() => {
   }) as never);
   vi.mocked(audioDb.projects.delete).mockImplementation(((id: string) => {
     records.delete(id);
+    return Dexie.Promise.resolve();
+  }) as never);
+  vi.mocked(audioDb.audioBuffers.put).mockImplementation(((record: AudioBufferRecord) => (
+    audioDb.transaction('rw', audioDb.audioBuffers, async () => {
+      audioBuffers.set(record.id, { ...record });
+      return record.id;
+    })
+  )) as never);
+  vi.mocked(audioDb.audioBuffers.delete).mockImplementation(((id: string) => {
+    audioBuffers.delete(id);
     return Dexie.Promise.resolve();
   }) as never);
 
@@ -263,5 +296,86 @@ describe('ProjectService cross-tab lifecycle mutations', () => {
     expect(records.has('cross-tab-project')).toBe(false);
     expect(audioDb.projects.put).not.toHaveBeenCalled();
     expect(mutableService.currentProject.name).toBe('in-memory-name');
+  });
+});
+
+describe('ProjectService cross-tab audio commits', () => {
+  function setTwoTrackProject(): IProject {
+    const project = makeProject('audio-editor');
+    project.tracks = [makeEmptyTrack('track-a'), makeEmptyTrack('track-b')];
+    mutableService.currentProject = project;
+    return project;
+  }
+
+  function generateTwoBuffers(project: IProject): Promise<unknown> {
+    return projectService.addGeneratedAudioToTracks(project.id, [
+      { trackId: 'track-a', sampleData: [Float32Array.from([0.1, 0.2])] },
+      { trackId: 'track-b', sampleData: [Float32Array.from([0.3, 0.4])] },
+    ], 44100, 0, 'Race tone');
+  }
+
+  it('commits and caches every staged buffer while the project still exists', async () => {
+    records.set('cross-tab-project', makeRecord('before'));
+    const project = setTwoTrackProject();
+
+    const clips = await generateTwoBuffers(project);
+
+    expect(clips).toHaveLength(2);
+    expect(records.has('cross-tab-project')).toBe(true);
+    expect(audioBuffers.size).toBe(2);
+    expect(audioEngine.cacheBuffer).toHaveBeenCalledTimes(2);
+    expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
+  });
+
+  it('rejects and cleans a later buffer when permanent deletion commits between staged writes', async () => {
+    records.set('cross-tab-project', makeRecord('before'));
+    const project = setTwoTrackProject();
+    const firstBufferStaged = deferred();
+    const releaseFirstBuffer = deferred();
+    let writeCount = 0;
+    vi.mocked(audioDb.audioBuffers.put).mockImplementation(((record: AudioBufferRecord) => (
+      audioDb.transaction('rw', audioDb.audioBuffers, async () => {
+        audioBuffers.set(record.id, { ...record });
+        writeCount += 1;
+        if (writeCount === 1) {
+          firstBufferStaged.resolve();
+          await releaseFirstBuffer.promise;
+        }
+        return record.id;
+      })
+    )) as never);
+
+    const commit = generateTwoBuffers(project);
+    const outcome = commit.then(
+      () => ({ error: null as unknown }),
+      (error: unknown) => ({ error }),
+    );
+    await firstBufferStaged.promise;
+
+    // This independent transaction represents another tab. It deletes the
+    // project and the first buffer before the second staged write can begin.
+    const otherTabDelete = audioDb.transaction(
+      'rw',
+      audioDb.projects,
+      audioDb.audioBuffers,
+      async () => {
+        await audioDb.projects.delete('cross-tab-project');
+        for (const [id, buffer] of audioBuffers) {
+          if (buffer.projectId === 'cross-tab-project') {
+            await audioDb.audioBuffers.delete(id);
+          }
+        }
+      },
+    );
+    releaseFirstBuffer.resolve();
+    const [result] = await Promise.all([outcome, otherTabDelete]);
+
+    expect(records.has('cross-tab-project')).toBe(false);
+    expect(audioBuffers.size).toBe(0);
+    expect(result.error).toEqual(expect.objectContaining({
+      message: '工程已被永久删除，音频提交已取消',
+    }));
+    expect(audioEngine.cacheBuffer).not.toHaveBeenCalled();
+    expect(audioEngine.evictBuffer).toHaveBeenCalledTimes(2);
   });
 });

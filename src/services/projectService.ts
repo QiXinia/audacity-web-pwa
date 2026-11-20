@@ -650,27 +650,30 @@ class ProjectService {
     return pendingBuffers.length;
   }
 
-  async saveProject(project: IProject): Promise<void> {
+  /** Return false when permanent deletion won the race and no project was written. */
+  async saveProject(project: IProject): Promise<boolean | void> {
     project.updatedAt = Date.now();
     // Capture this invocation before queuing so later mutations cannot rewrite its snapshot.
     const record = this.projectToRecord(project);
-    await this.enqueueProjectWrite(() => audioDb.transaction(
+    const saved = await this.enqueueProjectWrite(() => audioDb.transaction(
       'rw',
       audioDb.projects,
       async () => {
         const existing = await audioDb.projects.get(record.id);
         // New records are created explicitly by createProject. An editor save
         // must not recreate a record permanently deleted by another tab.
-        if (!existing) return;
+        if (!existing) return false;
         if (existing.status === 'deleted') {
           // Saving an editor snapshot must not implicitly restore a trashed project.
           record.status = 'deleted';
           record.deletedAt = existing.deletedAt;
         }
         await audioDb.projects.put(record);
+        return true;
       },
     ));
     this.currentProject = project;
+    return saved;
   }
 
   async openProject(id: string): Promise<IProject | null> {
@@ -1048,7 +1051,12 @@ class ProjectService {
   ): Promise<void> {
     try {
       await this.storePendingAudioBuffers(projectId, buffers);
-      await this.saveProject(updatedProject);
+      const saved = await this.saveProject(updatedProject);
+      // A missing project must not turn later staged writes into orphans.
+      // Undefined remains compatible with existing saveProject adapters.
+      if (saved === false) {
+        throw new Error('工程已被永久删除，音频提交已取消');
+      }
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       for (const buffer of buffers) {
