@@ -871,8 +871,12 @@ export class AudioEngine {
   // Recording — AudioWorklet 优先，不支持时降级为 ScriptProcessorNode
   async startRecording(options?: { stereo?: boolean }): Promise<void> {
     // Audacity AudioIO::StartStream and ProjectAudioManager::DoRecord reject
-    // busy reentry. Coalesce pending browser startup too, before permission or
-    // graph initialization can overwrite the only references used for cleanup.
+    // busy reentry. A Worklet stop remains busy through its tail flush and
+    // cleanup, so wait for that shared stop instead of silently treating a
+    // rapid restart as an already-active session. Concurrent callers then
+    // coalesce through recordingStartPromise below.
+    const pendingStop = this.recordingStopPromise;
+    if (pendingStop) await pendingStop;
     if (this._recordingState === 'recording') return;
     if (this.recordingStartPromise) {
       const pending = this.recordingStartPromise;

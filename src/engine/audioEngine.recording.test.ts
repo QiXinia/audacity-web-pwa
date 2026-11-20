@@ -219,6 +219,79 @@ describe('AudioEngine recording boundaries', () => {
     expect(node!.port.close).toHaveBeenCalledOnce();
   });
 
+  it('waits for a pending stop before coalescing rapid recording restarts', async () => {
+    const engine = new AudioEngine();
+    const first = makeMediaStream(1);
+    const second = makeMediaStream(1);
+    const { context } = makeContext({ meterPairs: 2 });
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(first.stream)
+      .mockResolvedValueOnce(second.stream);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const nodes: MockWorkletNode[] = [];
+    class MockWorkletNode {
+      port = {
+        onmessage: null as ((event: { data: Record<string, unknown> }) => void) | null,
+        postMessage: vi.fn(),
+        close: vi.fn(),
+      };
+      connect = vi.fn();
+      disconnect = vi.fn();
+      constructor() {
+        nodes.push(this);
+      }
+    }
+    vi.stubGlobal('AudioWorkletNode', MockWorkletNode);
+
+    await engine.startRecording();
+    nodes[0]!.port.onmessage?.({
+      data: {
+        type: 'recording',
+        audioData: new Float32Array([0.125]),
+        numChannels: 1,
+      },
+    });
+    const firstStop = engine.stopRecording();
+    const firstRestart = engine.startRecording();
+    const secondRestart = engine.startRecording();
+
+    // The old stream must finish its tail and cleanup before a replacement opens.
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    nodes[0]!.port.onmessage?.({ data: { type: 'stopped' } });
+    const firstResult = await firstStop;
+    await Promise.all([firstRestart, secondRestart]);
+
+    expect(Array.from(firstResult?.[0] ?? [])).toHaveLength(1);
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(nodes).toHaveLength(2);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(second.stop).not.toHaveBeenCalled();
+    expect(engine.recordingState).toBe('recording');
+
+    nodes[1]!.port.onmessage?.({
+      data: {
+        type: 'recording',
+        audioData: new Float32Array([0.875]),
+        numChannels: 1,
+      },
+    });
+    const secondStop = engine.stopRecording();
+    nodes[1]!.port.onmessage?.({ data: { type: 'stopped' } });
+    const secondResult = await secondStop;
+
+    expect(Array.from(secondResult?.[0] ?? [])).toHaveLength(1);
+    expect(secondResult?.[0]?.[0]).toBeCloseTo(0.875, 6);
+    expect(secondResult).not.toBe(firstResult);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(second.stop).toHaveBeenCalledOnce();
+    expect(engine.recordingState).toBe('idle');
+  });
+
   it('uses the device channel count for stereo ScriptProcessor fallback', async () => {
     const engine = new AudioEngine();
     const { stream, stop } = makeMediaStream(2);
