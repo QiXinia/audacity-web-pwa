@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject } from '@/types/project';
 import { toDateTimeLocalValue } from '@/lib/timerRecord';
@@ -301,26 +301,63 @@ describe('AudioEditorPage Timer Record', () => {
     expect(mocks.saveProject).toHaveBeenCalledTimes(1);
   }, 10_000);
 
-  it('coalesces repeated record clicks while microphone startup is pending', async () => {
+  it('cancels a pending manual startup and permits a clean restart', async () => {
+    let resolveFirstStart!: () => void;
+    mocks.startRecording
+      .mockImplementationOnce(() => new Promise<void>((resolve) => {
+        resolveFirstStart = resolve;
+      }))
+      .mockResolvedValueOnce(undefined);
+    mocks.stopRecording.mockResolvedValueOnce(null);
+    render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+
+    fireEvent.click(getRecordButton('开始录音'));
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1));
+    fireEvent.click(getRecordButton('开始录音'));
+
+    await waitFor(() => expect(mocks.stopRecording).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getRecordButton('开始录音')).toBeInTheDocument());
+    fireEvent.click(getRecordButton('开始录音'));
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      resolveFirstStart();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(getRecordButton('停止录音')).toBeInTheDocument());
+    expect(mocks.info.mock.calls.filter(([message]) => String(message).startsWith('正在录音'))).toHaveLength(1);
+    expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it('cancels Timer Record immediately while microphone startup is pending', async () => {
     let resolveStart!: () => void;
     mocks.startRecording.mockReturnValue(new Promise<void>((resolve) => {
       resolveStart = resolve;
     }));
+    mocks.stopRecording.mockResolvedValue(null);
     render(<AudioEditorPage />);
-    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+    await openTimerRecordDialog();
+    setDuration('0', '1', '0');
+    submitTimerRecord();
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1), { timeout: 2000 });
 
-    const recordButton = getRecordButton('开始录音');
-    fireEvent.click(recordButton);
-    fireEvent.click(recordButton);
-    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1));
-    resolveStart();
+    fireEvent.pointerDown(screen.getByRole('button', { name: '走带' }));
+    fireEvent.click(screen.getAllByRole('menuitem', { name: '停止定时录音' })[0]!);
+    await waitFor(() => expect(mocks.stopRecording).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('timer-record-status')).not.toBeInTheDocument();
+    await act(async () => {
+      resolveStart();
+      await Promise.resolve();
+    });
 
-    await waitFor(() => expect(getRecordButton('停止录音')).toBeInTheDocument());
-    expect(mocks.startRecording).toHaveBeenCalledTimes(1);
-    expect(mocks.info.mock.calls.filter(([message]) => String(message).startsWith('正在录音'))).toHaveLength(1);
+    await waitFor(() => expect(mocks.info).toHaveBeenCalledWith('已取消定时录音'));
+    expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.info.mock.calls.filter(([message]) => String(message).startsWith('正在录音'))).toHaveLength(0);
+    expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
   }, 10_000);
 
-  it('allows a clean retry after a coalesced microphone startup fails', async () => {
+  it('allows a clean retry after microphone startup fails', async () => {
     let rejectStart!: (reason: Error) => void;
     mocks.startRecording
       .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
@@ -330,9 +367,7 @@ describe('AudioEditorPage Timer Record', () => {
     render(<AudioEditorPage />);
     expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
 
-    const recordButton = getRecordButton('开始录音');
-    fireEvent.click(recordButton);
-    fireEvent.click(recordButton);
+    fireEvent.click(getRecordButton('开始录音'));
     await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1));
     rejectStart(new Error('permission denied'));
 

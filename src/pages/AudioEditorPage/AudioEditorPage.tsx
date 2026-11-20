@@ -910,6 +910,7 @@ export default function AudioEditorPage() {
   recordingMonitoringPreferencesRef.current = recordingMonitoringPreferences;
   const startRecordingRef = useRef<() => Promise<boolean>>(async () => false);
   const startRecordingPromiseRef = useRef<Promise<boolean> | null>(null);
+  const recordingStartGenerationRef = useRef(0);
   const stopRecordingRef = useRef<() => Promise<IProject | null>>(async () => null);
   const stopRecordingPromiseRef = useRef<Promise<IProject | null> | null>(null);
   const manualRecordStopPromiseRef = useRef<Promise<void> | null>(null);
@@ -1335,7 +1336,14 @@ export default function AudioEditorPage() {
   // Recording
   function stopRecording(): Promise<IProject | null> {
     if (stopRecordingPromiseRef.current) return stopRecordingPromiseRef.current;
-    if (recordingStateRef.current !== 'recording') return Promise.resolve(null);
+    const pendingStart = startRecordingPromiseRef.current;
+    if (recordingStateRef.current !== 'recording' && !pendingStart) return Promise.resolve(null);
+    if (pendingStart) {
+      // Invalidate the UI continuation as well as the engine startup. The old
+      // promise must not later restore recording state or block a clean restart.
+      recordingStartGenerationRef.current += 1;
+      startRecordingPromiseRef.current = null;
+    }
 
     const stopOperation = stopRecordingInternal();
     const sharedStopOperation = stopOperation.finally(() => {
@@ -1404,7 +1412,8 @@ export default function AudioEditorPage() {
     if (startRecordingPromiseRef.current) return startRecordingPromiseRef.current;
     if (!project || recordingStateRef.current === 'recording') return Promise.resolve(false);
 
-    const startOperation = startRecordingInternal();
+    const generation = ++recordingStartGenerationRef.current;
+    const startOperation = startRecordingInternal(generation);
     const sharedStartOperation = startOperation.finally(() => {
       if (startRecordingPromiseRef.current === sharedStartOperation) {
         startRecordingPromiseRef.current = null;
@@ -1414,11 +1423,13 @@ export default function AudioEditorPage() {
     return sharedStartOperation;
   }
 
-  async function startRecordingInternal(): Promise<boolean> {
+  async function startRecordingInternal(generation: number): Promise<boolean> {
     try {
       audioEngine.setMonitoringEnabled?.(recordingMonitoringPreferencesRef.current.inputMonitoring);
       await audioEngine.ensureContext();
+      if (generation !== recordingStartGenerationRef.current) return false;
       await audioEngine.startRecording();
+      if (generation !== recordingStartGenerationRef.current) return false;
       recordingSampleRateRef.current = audioEngine.getSampleRate();
       recordingStateRef.current = 'recording';
       setRecordingState('recording');
@@ -1426,6 +1437,7 @@ export default function AudioEditorPage() {
       setMicPermissionState('granted');
       return true;
     } catch (e) {
+      if (generation !== recordingStartGenerationRef.current) return false;
       recordingStateRef.current = 'idle';
       setRecordingState('idle');
       toast.error('无法访问麦克风，请检查权限设置');
@@ -1496,7 +1508,7 @@ export default function AudioEditorPage() {
       return;
     }
 
-    if (recordingStateRef.current === 'recording') {
+    if (startRecordingPromiseRef.current || recordingStateRef.current === 'recording') {
       const activeSession = timerRecordSession;
       timerRecordControllerRef.current?.cancel();
       timerRecordControllerRef.current = null;
@@ -1577,7 +1589,9 @@ export default function AudioEditorPage() {
     timerRecordControllerRef.current?.cancel();
     timerRecordControllerRef.current = null;
     setTimerRecordSession(null);
-    if (recordingStateRef.current === 'recording') await stopRecordingRef.current();
+    if (startRecordingPromiseRef.current || recordingStateRef.current === 'recording') {
+      await stopRecordingRef.current();
+    }
     toast.info('已取消定时录音');
   }
 
