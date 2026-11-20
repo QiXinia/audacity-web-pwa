@@ -11,6 +11,7 @@ vi.mock('@/db/audioDb', () => ({
     audioBuffers: { where: vi.fn(), delete: vi.fn() },
     clipboard: {},
     historySnapshots: {},
+    transaction: vi.fn(),
   },
   serializeTracks: (tracks: unknown) => JSON.stringify(tracks),
   deserializeTracks: (data: string) => JSON.parse(data),
@@ -24,6 +25,7 @@ vi.mock('@/engine/audioEngine', () => ({
 
 const mutableService = projectService as unknown as {
   currentProject: IProject | null;
+  currentProjectId: string | null;
   saveQueue: Promise<void>;
 };
 
@@ -145,6 +147,23 @@ function mockPermanentDeleteState(
     buffers.delete(id);
     return Dexie.Promise.resolve();
   });
+  vi.mocked(audioDb.transaction).mockImplementation((async (...args: unknown[]) => {
+    const operation = args[args.length - 1];
+    if (typeof operation !== 'function') {
+      throw new TypeError('Missing transaction callback');
+    }
+    const recordSnapshot = new Map(records);
+    const bufferSnapshot = new Map(buffers);
+    try {
+      return await (operation as () => Promise<unknown>)();
+    } catch (error) {
+      records.clear();
+      for (const [id, record] of recordSnapshot) records.set(id, record);
+      buffers.clear();
+      for (const [id, buffer] of bufferSnapshot) buffers.set(id, buffer);
+      throw error;
+    }
+  }) as never);
 
   return { records, buffers };
 }
@@ -154,6 +173,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   mutableService.currentProject = null;
+  mutableService.currentProjectId = null;
   mutableService.saveQueue = Promise.resolve();
 });
 
@@ -311,5 +331,101 @@ describe('ProjectService ordered project saves', () => {
     expect(results[0]).toMatchObject({ status: 'rejected' });
     expect(results[1]).toMatchObject({ status: 'fulfilled' });
     expect(state.records.get('save-race-project')?.name).toBe('after-failed-delete');
+  });
+
+  it('rolls back a permanent deletion when an audio buffer delete fails', async () => {
+    const originalRecord = makeRecord('before', 'deleted');
+    const state = mockPermanentDeleteState(
+      [originalRecord],
+      [
+        makeBuffer('buffer-a', 'save-race-project'),
+        makeBuffer('buffer-b', 'save-race-project'),
+      ],
+    );
+    mutableService.currentProject = makeProject('before');
+    mutableService.currentProjectId = 'save-race-project';
+    vi.mocked(audioDb.audioBuffers.delete).mockImplementation((id) => {
+      if (id === 'buffer-b') {
+        return Dexie.Promise.reject(new Error('buffer delete failed'));
+      }
+      state.buffers.delete(id);
+      return Dexie.Promise.resolve();
+    });
+
+    await expect(projectService.permanentlyDeleteProject('save-race-project'))
+      .rejects.toThrow('buffer delete failed');
+
+    expect(state.records.get('save-race-project')).toEqual(originalRecord);
+    expect([...state.buffers.keys()]).toEqual(['buffer-a', 'buffer-b']);
+    expect(audioEngine.evictBuffer).not.toHaveBeenCalled();
+    expect(mutableService.currentProject?.id).toBe('save-race-project');
+    expect(mutableService.currentProjectId).toBe('save-race-project');
+    expect(audioDb.transaction).toHaveBeenCalledWith(
+      'rw',
+      audioDb.projects,
+      audioDb.audioBuffers,
+      expect.any(Function),
+    );
+  });
+
+  it('cleans up only committed projects when clearing trash partially fails', async () => {
+    const state = mockPermanentDeleteState(
+      [
+        makeRecord('first', 'deleted'),
+        { ...makeRecord('second', 'deleted'), id: 'other-project' },
+        { ...makeRecord('third', 'deleted'), id: 'third-project' },
+      ],
+      [
+        makeBuffer('buffer-a', 'save-race-project'),
+        makeBuffer('buffer-b1', 'other-project'),
+        makeBuffer('buffer-b2', 'other-project'),
+        makeBuffer('buffer-c', 'third-project'),
+      ],
+    );
+    mutableService.currentProject = makeProject('first');
+    mutableService.currentProjectId = 'save-race-project';
+    vi.mocked(audioDb.audioBuffers.delete).mockImplementation((id) => {
+      if (id === 'buffer-b2') {
+        return Dexie.Promise.reject(new Error('second project failed'));
+      }
+      state.buffers.delete(id);
+      return Dexie.Promise.resolve();
+    });
+
+    await expect(projectService.clearDeletedProjects()).rejects.toThrow('second project failed');
+
+    expect(state.records.has('save-race-project')).toBe(false);
+    expect(state.records.has('other-project')).toBe(true);
+    expect(state.records.has('third-project')).toBe(true);
+    expect([...state.buffers.keys()]).toEqual(['buffer-b1', 'buffer-b2', 'buffer-c']);
+    expect(audioEngine.evictBuffer).toHaveBeenCalledTimes(1);
+    expect(audioEngine.evictBuffer).toHaveBeenCalledWith('buffer-a');
+    expect(mutableService.currentProject).toBeNull();
+    expect(mutableService.currentProjectId).toBeNull();
+  });
+
+  it('continues with a later save after an audio buffer delete fails', async () => {
+    const state = mockPermanentDeleteState(
+      [makeRecord('before', 'deleted')],
+      [makeBuffer('buffer-a', 'save-race-project')],
+    );
+    vi.mocked(audioDb.audioBuffers.delete).mockImplementation(() => (
+      Dexie.Promise.reject(new Error('buffer delete failed'))
+    ));
+    const laterProject = makeProject('after-buffer-failure');
+
+    const deletion = projectService.permanentlyDeleteProject('save-race-project');
+    const laterSave = projectService.saveProject(laterProject);
+    const results = await Promise.allSettled([deletion, laterSave]);
+
+    expect(results[0]).toMatchObject({ status: 'rejected' });
+    expect(results[1]).toMatchObject({ status: 'fulfilled' });
+    expect(state.records.get('save-race-project')).toMatchObject({
+      name: 'after-buffer-failure',
+      status: 'deleted',
+    });
+    expect([...state.buffers.keys()]).toEqual(['buffer-a']);
+    expect(audioEngine.evictBuffer).not.toHaveBeenCalled();
+    expect(mutableService.currentProject).toBe(laterProject);
   });
 });

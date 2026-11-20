@@ -713,34 +713,39 @@ class ProjectService {
 
   async permanentlyDeleteProject(id: string): Promise<void> {
     await this.enqueueProjectWrite(() => this.permanentlyDeleteProjectNow(id));
+  }
+
+  private async permanentlyDeleteProjectNow(id: string): Promise<void> {
+    const buffers = await audioDb.transaction(
+      'rw',
+      audioDb.projects,
+      audioDb.audioBuffers,
+      async () => {
+        await audioDb.projects.delete(id);
+        const projectBuffers = await audioDb.audioBuffers.where('projectId').equals(id).toArray();
+        for (const buf of projectBuffers) {
+          await audioDb.audioBuffers.delete(buf.id);
+        }
+        return projectBuffers;
+      },
+    );
+    // Evict only after the transaction commits so failed deletions remain readable.
+    for (const buf of buffers) {
+      audioEngine.evictBuffer(buf.id);
+    }
     if (this.currentProject?.id === id) {
       this.currentProject = null;
       this.currentProjectId = null;
     }
   }
 
-  private async permanentlyDeleteProjectNow(id: string): Promise<void> {
-    await audioDb.projects.delete(id);
-    // Also delete all associated audio buffers
-    const buffers = await audioDb.audioBuffers.where('projectId').equals(id).toArray();
-    for (const buf of buffers) {
-      await audioDb.audioBuffers.delete(buf.id);
-      audioEngine.evictBuffer(buf.id);
-    }
-  }
-
   async clearDeletedProjects(): Promise<void> {
-    const deletedIds = await this.enqueueProjectWrite(async () => {
+    await this.enqueueProjectWrite(async () => {
       const deleted = await audioDb.projects.filter((p) => p.status === 'deleted').toArray();
       for (const p of deleted) {
         await this.permanentlyDeleteProjectNow(p.id);
       }
-      return deleted.map((project) => project.id);
     });
-    if (this.currentProject && deletedIds.includes(this.currentProject.id)) {
-      this.currentProject = null;
-      this.currentProjectId = null;
-    }
   }
 
   // Track operations
