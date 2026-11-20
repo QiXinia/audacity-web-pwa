@@ -683,39 +683,51 @@ class ProjectService {
   }
 
   async renameProject(id: string, name: string): Promise<void> {
-    const renamed = await this.enqueueProjectWrite(async () => {
-      const record = await audioDb.projects.get(id);
-      if (!record) return false;
-      record.name = name;
-      record.updatedAt = Date.now();
-      await audioDb.projects.put(record);
-      return true;
-    });
+    const renamed = await this.enqueueProjectWrite(() => audioDb.transaction(
+      'rw',
+      audioDb.projects,
+      async () => {
+        const record = await audioDb.projects.get(id);
+        if (!record) return false;
+        record.name = name;
+        record.updatedAt = Date.now();
+        await audioDb.projects.put(record);
+        return true;
+      },
+    ));
     if (renamed && this.currentProject?.id === id) {
       this.currentProject.name = name;
     }
   }
 
   async deleteProject(id: string): Promise<void> {
-    await this.enqueueProjectWrite(async () => {
-      const record = await audioDb.projects.get(id);
-      if (!record) return;
-      record.status = 'deleted';
-      record.deletedAt = Date.now();
-      record.updatedAt = Date.now();
-      await audioDb.projects.put(record);
-    });
+    await this.enqueueProjectWrite(() => audioDb.transaction(
+      'rw',
+      audioDb.projects,
+      async () => {
+        const record = await audioDb.projects.get(id);
+        if (!record) return;
+        record.status = 'deleted';
+        record.deletedAt = Date.now();
+        record.updatedAt = Date.now();
+        await audioDb.projects.put(record);
+      },
+    ));
   }
 
   async restoreProject(id: string): Promise<void> {
-    await this.enqueueProjectWrite(async () => {
-      const record = await audioDb.projects.get(id);
-      if (!record) return;
-      record.status = 'active';
-      record.deletedAt = undefined;
-      record.updatedAt = Date.now();
-      await audioDb.projects.put(record);
-    });
+    await this.enqueueProjectWrite(() => audioDb.transaction(
+      'rw',
+      audioDb.projects,
+      async () => {
+        const record = await audioDb.projects.get(id);
+        if (!record) return;
+        record.status = 'active';
+        record.deletedAt = undefined;
+        record.updatedAt = Date.now();
+        await audioDb.projects.put(record);
+      },
+    ));
   }
 
   async permanentlyDeleteProject(id: string): Promise<void> {

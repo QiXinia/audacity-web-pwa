@@ -181,3 +181,87 @@ describe('ProjectService cross-tab permanent deletion', () => {
     });
   });
 });
+
+describe('ProjectService cross-tab lifecycle mutations', () => {
+  async function expectPermanentDeleteToWin(
+    status: ProjectRecord['status'],
+    operation: () => Promise<void>,
+  ) {
+    records.set('cross-tab-project', makeRecord('before', status));
+    const putReached = deferred();
+    const releasePut = deferred();
+    let delayFirstPut = true;
+    vi.mocked(audioDb.projects.put).mockImplementation(((record: ProjectRecord) => {
+      if (delayFirstPut) {
+        delayFirstPut = false;
+        putReached.resolve();
+        return releasePut.promise.then(() => {
+          records.set(record.id, { ...record });
+          return record.id;
+        });
+      }
+      records.set(record.id, { ...record });
+      return Dexie.Promise.resolve(record.id);
+    }) as never);
+
+    const mutation = operation();
+    await putReached.promise;
+    const otherTabDelete = audioDb.transaction('rw', audioDb.projects, async () => {
+      await audioDb.projects.delete('cross-tab-project');
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    releasePut.resolve();
+    await Promise.all([mutation, otherTabDelete]);
+
+    expect(records.has('cross-tab-project')).toBe(false);
+  }
+
+  it('does not resurrect a project renamed while another tab permanently deletes it', async () => {
+    await expectPermanentDeleteToWin('active', () => (
+      projectService.renameProject('cross-tab-project', 'stale-rename')
+    ));
+  });
+
+  it('does not resurrect a project soft-deleted while another tab permanently deletes it', async () => {
+    await expectPermanentDeleteToWin('active', () => (
+      projectService.deleteProject('cross-tab-project')
+    ));
+  });
+
+  it('does not resurrect a project restored while another tab permanently deletes it', async () => {
+    await expectPermanentDeleteToWin('deleted', () => (
+      projectService.restoreProject('cross-tab-project')
+    ));
+  });
+
+  it('preserves same-tab rename, soft-delete and restore behavior', async () => {
+    records.set('cross-tab-project', makeRecord('before'));
+
+    await projectService.renameProject('cross-tab-project', 'renamed');
+    expect(records.get('cross-tab-project')).toMatchObject({ name: 'renamed', status: 'active' });
+
+    await projectService.deleteProject('cross-tab-project');
+    expect(records.get('cross-tab-project')).toMatchObject({ status: 'deleted' });
+    expect(records.get('cross-tab-project')?.deletedAt).toEqual(expect.any(Number));
+
+    await projectService.restoreProject('cross-tab-project');
+    expect(records.get('cross-tab-project')).toMatchObject({
+      name: 'renamed',
+      status: 'active',
+      deletedAt: undefined,
+    });
+  });
+
+  it('keeps lifecycle operations on an already-deleted record as no-ops', async () => {
+    mutableService.currentProject = makeProject('in-memory-name');
+
+    await projectService.renameProject('cross-tab-project', 'must-not-apply');
+    await projectService.deleteProject('cross-tab-project');
+    await projectService.restoreProject('cross-tab-project');
+
+    expect(records.has('cross-tab-project')).toBe(false);
+    expect(audioDb.projects.put).not.toHaveBeenCalled();
+    expect(mutableService.currentProject.name).toBe('in-memory-name');
+  });
+});
