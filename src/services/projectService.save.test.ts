@@ -6,7 +6,7 @@ import type { IProject } from '@/types/project';
 
 vi.mock('@/db/audioDb', () => ({
   audioDb: {
-    projects: { put: vi.fn() },
+    projects: { get: vi.fn(), put: vi.fn() },
     audioBuffers: {},
     clipboard: {},
     historySnapshots: {},
@@ -41,6 +41,48 @@ function makeProject(name: string): IProject {
     updatedAt: 100,
     createdAt: 50,
   };
+}
+
+function makeRecord(name: string, status: ProjectRecord['status'] = 'active'): ProjectRecord {
+  return {
+    id: 'save-race-project',
+    name,
+    sampleRate: 44100,
+    duration: 0,
+    trackCount: 0,
+    status,
+    updatedAt: 100,
+    createdAt: 50,
+    deletedAt: status === 'deleted' ? 90 : undefined,
+    tracksData: '[]',
+    viewStateData: '{}',
+    tempo: 120,
+    timeSignature: { numerator: 4, denominator: 4 },
+    cursorPosition: 0,
+    selectionData: null,
+  };
+}
+
+function mockDelayedFirstPut(initial: ProjectRecord) {
+  const state: { persisted: ProjectRecord | undefined; secondWrite?: ProjectRecord } = {
+    persisted: initial,
+  };
+  let writeCount = 0;
+  vi.mocked(audioDb.projects.get).mockImplementation(() => (
+    Dexie.Promise.resolve(state.persisted ? { ...state.persisted } : undefined)
+  ));
+  vi.mocked(audioDb.projects.put).mockImplementation((record) => {
+    writeCount += 1;
+    const delay = writeCount === 1 ? 25 : 0;
+    if (writeCount === 2) state.secondWrite = record;
+    return new Dexie.Promise<string>((resolve) => {
+      setTimeout(() => {
+        state.persisted = record;
+        resolve(record.id);
+      }, delay);
+    });
+  });
+  return state;
 }
 
 afterEach(() => {
@@ -111,5 +153,41 @@ describe('ProjectService ordered project saves', () => {
     expect(writes.map(({ name }) => name)).toEqual(['before', 'after']);
     expect(mutableService.currentProject).toBe(project);
     expect(mutableService.currentProject.name).toBe('after');
+  });
+
+  it('keeps a later rename when an older save finishes last', async () => {
+    const state = mockDelayedFirstPut(makeRecord('initial'));
+    const save = projectService.saveProject(makeProject('before'));
+    await Promise.resolve();
+    const rename = projectService.renameProject('save-race-project', 'renamed');
+    await Promise.all([save, rename]);
+
+    expect(state.persisted?.name).toBe('renamed');
+    expect(mutableService.currentProject?.name).toBe('renamed');
+  });
+
+  it('keeps a later soft deletion when an older save finishes last', async () => {
+    const state = mockDelayedFirstPut(makeRecord('before'));
+    const save = projectService.saveProject(makeProject('before'));
+    await Promise.resolve();
+    const deletion = projectService.deleteProject('save-race-project');
+    await Promise.all([save, deletion]);
+
+    expect(state.persisted?.status).toBe('deleted');
+    expect(state.persisted?.deletedAt).toEqual(expect.any(Number));
+  });
+
+  it('keeps later restore metadata when an older save finishes last', async () => {
+    vi.spyOn(Date, 'now').mockReturnValueOnce(1000).mockReturnValueOnce(2000);
+    const state = mockDelayedFirstPut(makeRecord('before', 'deleted'));
+    const save = projectService.saveProject(makeProject('before'));
+    await Promise.resolve();
+    const restoration = projectService.restoreProject('save-race-project');
+    await Promise.all([save, restoration]);
+
+    expect(state.secondWrite?.updatedAt).toEqual(expect.any(Number));
+    expect(state.persisted?.status).toBe('active');
+    expect(state.persisted?.deletedAt).toBeUndefined();
+    expect(state.persisted?.updatedAt).toBe(state.secondWrite?.updatedAt);
   });
 });
