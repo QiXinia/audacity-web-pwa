@@ -189,7 +189,7 @@ import { moveTrackInOrder, type TrackMoveDirection } from '@/lib/trackMove';
 import { needsMakeStereoRenderWarning } from '@/lib/trackChannelOperations';
 import { getTrackSampleFormatLabel, TRACK_SAMPLE_FORMATS } from '@/lib/trackMedia';
 import { RESAMPLE_RATE_CHOICES } from '@/lib/resampleEffect';
-import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
+import type { TrackSortMode } from '@/lib/trackSorting';
 import {
   alignProjectTracks,
   getTrackAlignLabel,
@@ -2347,26 +2347,24 @@ function AudioEditorPageContent() {
       return;
     }
 
-    const before = structuredClone(project);
-    const updated: IProject = {
-      ...project,
-      tracks: sortTrackList(project.tracks, mode),
-    };
     const label = mode === 'time' ? 'Sort by Time' : 'Sort by Name';
     setIsSortingTracks(true);
     try {
       // Audacity sorts every track, independent of the current track selection.
-      await projectService.saveProject(updated);
+      // Resolve the source inside ProjectService's queue instead of saving this
+      // render's complete track array over concurrently committed mutations.
+      const result = await projectService.sortTracks(project.id, mode);
+      if (!result) return;
       const persisted = await projectService.getProject(project.id);
       if (!persisted) throw new Error('轨道排序后无法重新加载工程');
       setProject(persisted);
       pushHistoryCmd({
         id: generateId(),
         label,
-        execute: () => persisted,
-        undo: () => before,
+        execute: () => result.after,
+        undo: () => result.before,
       });
-      toast.success(`已按${mode === 'time' ? '开始时间' : '名称'}排序 ${persisted.tracks.length} 条轨道`);
+      toast.success(`已按${mode === 'time' ? '开始时间' : '名称'}排序 ${result.after.tracks.length} 条轨道`);
     } catch (error) {
       logger.error('Sort Tracks failed', error);
       toast.error(error instanceof Error ? error.message : '轨道排序保存失败');
@@ -2380,11 +2378,10 @@ function AudioEditorPageContent() {
     const ordered = moveTrackInOrder(project.tracks, trackId, direction);
     if (ordered.every((track, index) => track.id === project.tracks[index]?.id)) return;
 
-    const before = structuredClone(project);
-    const updated: IProject = { ...project, tracks: ordered };
     setIsMovingTrack(true);
     try {
-      await projectService.saveProject(updated);
+      const result = await projectService.moveTrack(project.id, trackId, direction);
+      if (!result) return;
       const persisted = await projectService.getProject(project.id);
       if (!persisted) throw new Error('轨道移动后无法重新加载工程');
       setProject(persisted);
@@ -2392,8 +2389,8 @@ function AudioEditorPageContent() {
       pushHistoryCmd({
         id: generateId(),
         label: 'Move track',
-        execute: () => persisted,
-        undo: () => before,
+        execute: () => result.after,
+        undo: () => result.before,
       });
     } catch (error) {
       logger.error('Move track failed', error);

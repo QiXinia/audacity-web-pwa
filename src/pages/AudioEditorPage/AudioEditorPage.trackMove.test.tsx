@@ -1,10 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject, ITrack } from '@/types/project';
+import { moveTrackInOrder, type TrackMoveDirection } from '@/lib/trackMove';
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(), success: vi.fn(), warning: vi.fn(), error: vi.fn(),
-  saveProject: vi.fn(), updateTrack: vi.fn(), loadChannels: vi.fn(),
+  saveProject: vi.fn(), moveTrack: vi.fn(), updateTrack: vi.fn(), loadChannels: vi.fn(),
 }));
 let mockProject: IProject;
 
@@ -36,6 +37,7 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    moveTrack: mocks.moveTrack,
     updateTrack: mocks.updateTrack,
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
@@ -100,6 +102,18 @@ describe('AudioEditorPage Track context movement', () => {
     vi.clearAllMocks();
     mockProject = makeProject();
     mocks.saveProject.mockImplementation(async (project: IProject) => { mockProject = project; });
+    mocks.moveTrack.mockImplementation(async (
+      _projectId: string,
+      trackId: string,
+      direction: TrackMoveDirection,
+    ) => {
+      const before = structuredClone(mockProject);
+      const ordered = moveTrackInOrder(mockProject.tracks, trackId, direction);
+      if (ordered.every((track, index) => track.id === mockProject.tracks[index]?.id)) return null;
+      const after = { ...mockProject, tracks: ordered };
+      mockProject = after;
+      return { before, after };
+    });
     mocks.updateTrack.mockImplementation(async (_projectId: string, trackId: string, updates: Partial<ITrack>) => {
       mockProject = {
         ...mockProject,
@@ -116,7 +130,7 @@ describe('AudioEditorPage Track context movement', () => {
     await openMoveMenu('b');
     fireEvent.click(await screen.findByTestId('track-move-up-menu'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.moveTrack).toHaveBeenCalledTimes(1));
     expect(mockProject.tracks.map((track) => track.id)).toEqual(['b', 'a', 'c']);
     expectVisibleOrder(['Beta', 'Alpha', 'Gamma']);
     expect(mocks.push).toHaveBeenCalledTimes(1);
@@ -132,7 +146,7 @@ describe('AudioEditorPage Track context movement', () => {
     await openMoveMenu('c');
     fireEvent.click(await screen.findByTestId('track-move-bottom-menu'));
     await waitFor(() => expect(mockProject.tracks.map((track) => track.id)).toEqual(['a', 'b', 'c']));
-    expect(mocks.saveProject).toHaveBeenCalledTimes(2);
+    expect(mocks.moveTrack).toHaveBeenCalledTimes(2);
     expect(mocks.push).toHaveBeenCalledTimes(2);
   });
 
@@ -175,12 +189,48 @@ describe('AudioEditorPage Track context movement', () => {
   });
 
   it('keeps the visible order and creates no history when saving fails', async () => {
-    mocks.saveProject.mockRejectedValue(new Error('storage unavailable'));
+    mocks.moveTrack.mockRejectedValue(new Error('storage unavailable'));
     await renderEditor();
     await openMoveMenu('b');
     fireEvent.click(await screen.findByTestId('track-move-up-menu'));
     await waitFor(() => expect(mocks.error).toHaveBeenCalledWith('storage unavailable'));
     expectVisibleOrder(['Alpha', 'Beta', 'Gamma']);
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite a rename committed while the move is waiting to save', async () => {
+    let resolveSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => { resolveSave = resolve; });
+    mocks.moveTrack.mockImplementation(async (
+      _projectId: string,
+      trackId: string,
+      direction: TrackMoveDirection,
+    ) => {
+      const before = structuredClone(mockProject);
+      await saveGate;
+      const after = {
+        ...mockProject,
+        tracks: moveTrackInOrder(mockProject.tracks, trackId, direction),
+      };
+      mockProject = after;
+      return { before, after };
+    });
+    await renderEditor();
+    await openMoveMenu('b');
+    fireEvent.click(await screen.findByTestId('track-move-up-menu'));
+    await waitFor(() => expect(mocks.moveTrack).toHaveBeenCalledTimes(1));
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-b'));
+    fireEvent.click(await screen.findByTestId('track-rename-menu'));
+    const input = await screen.findByLabelText('轨道名称');
+    fireEvent.change(input, { target: { value: 'Renamed during move' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(mockProject.tracks.find((track) => track.id === 'b')?.name)
+      .toBe('Renamed during move'));
+
+    resolveSave();
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['b', 'a', 'c']);
+    expect(mockProject.tracks.find((track) => track.id === 'b')?.name).toBe('Renamed during move');
   });
 });

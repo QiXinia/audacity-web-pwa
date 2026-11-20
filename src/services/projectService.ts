@@ -20,6 +20,8 @@ import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect, T
 import { deserializeAnalysisLabels, serializeAnalysisLabels } from '@/lib/analysisLabels';
 import { deserializeLabelTracks, serializeLabelTracks } from '@/lib/labelTracks';
 import { duplicateTrackInProject } from '@/lib/trackDuplicate';
+import { moveTrackInOrder, type TrackMoveDirection } from '@/lib/trackMove';
+import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
@@ -800,6 +802,45 @@ class ProjectService {
       };
       const saved = await this.saveProjectFromQueue(updatedProject);
       return saved ? newTrack : null;
+    });
+  }
+
+  /** Reorder the latest queued project and return immutable undo/redo snapshots. */
+  async moveTrack(
+    projectId: string,
+    trackId: string,
+    direction: TrackMoveDirection,
+  ): Promise<{ before: IProject; after: IProject } | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
+      const ordered = moveTrackInOrder(project.tracks, trackId, direction);
+      if (ordered.every((track, index) => track.id === project.tracks[index]?.id)) return null;
+
+      const before = structuredClone(project);
+      const after: IProject = { ...project, tracks: ordered };
+      const saved = await this.saveProjectFromQueue(after);
+      return saved ? { before, after } : null;
+    });
+  }
+
+  /** Sort every track only after all earlier project mutations have committed. */
+  async sortTracks(
+    projectId: string,
+    mode: TrackSortMode,
+  ): Promise<{ before: IProject; after: IProject } | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project || project.tracks.length === 0) return null;
+
+      const before = structuredClone(project);
+      const after: IProject = { ...project, tracks: sortTrackList(project.tracks, mode) };
+      const saved = await this.saveProjectFromQueue(after);
+      return saved ? { before, after } : null;
     });
   }
 

@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject, ITrack } from '@/types/project';
+import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -8,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   warning: vi.fn(),
   error: vi.fn(),
   saveProject: vi.fn(),
+  sortTracks: vi.fn(),
   loadChannels: vi.fn(),
   setStateChangeCallback: vi.fn(),
 }));
@@ -66,6 +68,7 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    sortTracks: mocks.sortTracks,
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
   },
@@ -129,7 +132,7 @@ async function openSortMenu(): Promise<HTMLElement> {
 }
 
 function savedProject(): IProject {
-  return mocks.saveProject.mock.calls[0]![0] as IProject;
+  return mockProject;
 }
 
 function expectVisibleOrder(names: string[]): void {
@@ -146,6 +149,13 @@ describe('AudioEditorPage Sort Tracks', () => {
     mocks.saveProject.mockImplementation(async (project: IProject) => {
       mockProject = project;
     });
+    mocks.sortTracks.mockImplementation(async (_projectId: string, mode: TrackSortMode) => {
+      if (mockProject.tracks.length === 0) return null;
+      const before = structuredClone(mockProject);
+      const after = { ...mockProject, tracks: sortTrackList(mockProject.tracks, mode) };
+      mockProject = after;
+      return { before, after };
+    });
     mocks.loadChannels.mockResolvedValue([Float32Array.from([0.2, 0.4])]);
   });
 
@@ -157,7 +167,7 @@ describe('AudioEditorPage Sort Tracks', () => {
     await openSortMenu();
     fireEvent.click(await screen.findByText('By Start Time 按开始时间'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.sortTracks).toHaveBeenCalledTimes(1));
     expect(savedProject().tracks.map((track) => track.id)).toEqual(['early', 'early-2', 'late']);
     expectVisibleOrder(['Alpha', 'Beta', 'beta']);
     expect(mocks.push).toHaveBeenCalledTimes(1);
@@ -169,7 +179,7 @@ describe('AudioEditorPage Sort Tracks', () => {
     await openSortMenu();
     fireEvent.click(await screen.findByText('By Name 按名称'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.sortTracks).toHaveBeenCalledTimes(1));
     expect(savedProject().tracks.map((track) => track.name)).toEqual(['Alpha', 'beta', 'Beta']);
     expectVisibleOrder(['Alpha', 'beta', 'Beta']);
     expect(mocks.push).toHaveBeenCalledTimes(1);
@@ -185,7 +195,7 @@ describe('AudioEditorPage Sort Tracks', () => {
     expect(item).not.toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(item);
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.sortTracks).toHaveBeenCalledTimes(1));
     expect(mocks.push).toHaveBeenCalledTimes(1);
   });
 
@@ -199,14 +209,40 @@ describe('AudioEditorPage Sort Tracks', () => {
   });
 
   it('keeps the visible order and creates no history when saving fails', async () => {
-    mocks.saveProject.mockRejectedValue(new Error('storage unavailable'));
+    mocks.sortTracks.mockRejectedValue(new Error('storage unavailable'));
     await renderEditor();
     await openSortMenu();
     fireEvent.click(await screen.findByText('By Name 按名称'));
 
     await waitFor(() => expect(mocks.error).toHaveBeenCalledWith('storage unavailable'));
-    expect(mocks.saveProject).toHaveBeenCalledTimes(1);
+    expect(mocks.sortTracks).toHaveBeenCalledTimes(1);
     expect(mocks.push).not.toHaveBeenCalled();
     expectVisibleOrder(['beta', 'Alpha', 'Beta']);
+  });
+
+  it('keeps a track added while the sort is waiting to save', async () => {
+    let resolveSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => { resolveSave = resolve; });
+    mocks.sortTracks.mockImplementation(async (_projectId: string, mode: TrackSortMode) => {
+      const before = structuredClone(mockProject);
+      await saveGate;
+      const after = { ...mockProject, tracks: sortTrackList(mockProject.tracks, mode) };
+      mockProject = after;
+      return { before, after };
+    });
+    await renderEditor();
+    await openSortMenu();
+    fireEvent.click(await screen.findByText('By Start Time 按开始时间'));
+    await waitFor(() => expect(mocks.sortTracks).toHaveBeenCalledTimes(1));
+
+    mockProject = {
+      ...mockProject,
+      tracks: [...mockProject.tracks, makeTrack('added-during-sort', 'Aardvark', 0)],
+    };
+    resolveSave();
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+
+    expect(mockProject.tracks.map((track) => track.id))
+      .toEqual(['added-during-sort', 'early', 'early-2', 'late']);
   });
 });
