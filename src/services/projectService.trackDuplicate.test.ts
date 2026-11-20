@@ -1,14 +1,15 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { audioDb } from '@/db/audioDb';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { audioDb, type ProjectRecord } from '@/db/audioDb';
 import { audioEngine } from '@/engine/audioEngine';
 import { projectService } from '@/services/projectService';
-import type { IProject } from '@/types/project';
+import type { IProject, ITrack } from '@/types/project';
 
 vi.mock('@/db/audioDb', () => ({
   audioDb: {
-    projects: {},
+    projects: { get: vi.fn(), put: vi.fn() },
     audioBuffers: { put: vi.fn(), delete: vi.fn() },
     clipboard: {}, historySnapshots: {},
+    transaction: vi.fn(),
   },
   serializeTracks: (tracks: unknown) => JSON.stringify(tracks),
   deserializeTracks: (data: string) => JSON.parse(data),
@@ -20,6 +21,13 @@ vi.mock('@/engine/audioEngine', () => ({
   audioEngine: { cacheBuffer: vi.fn(), evictBuffer: vi.fn() },
 }));
 vi.mock('@/wasm/processor', () => ({ isWasmAvailable: vi.fn(() => false), wasmProcessor: {} }));
+
+const mutableService = projectService as unknown as {
+  currentProject: IProject | null;
+  currentProjectId: string | null;
+  saveQueue: Promise<void>;
+  projectToRecord(project: IProject): ProjectRecord;
+};
 
 function makeProject(): IProject {
   return {
@@ -59,20 +67,59 @@ function mockSources(sources: Record<string, Float32Array[]>): void {
   });
 }
 
+let records: Map<string, ProjectRecord>;
+
+function installProject(): IProject {
+  const project = makeProject();
+  records.set(project.id, mutableService.projectToRecord(project));
+  mutableService.currentProject = project;
+  mutableService.currentProjectId = project.id;
+  return project;
+}
+
+function persistedTracks(): ITrack[] {
+  const record = records.get('duplicate-service-project');
+  return record ? JSON.parse(record.tracksData) as ITrack[] : [];
+}
+
+beforeEach(() => {
+  records = new Map();
+  vi.mocked(audioDb.projects.get).mockImplementation(((id: string) => {
+    const record = records.get(id);
+    return Promise.resolve(record ? { ...record } : undefined);
+  }) as never);
+  vi.mocked(audioDb.projects.put).mockImplementation(((record: ProjectRecord) => {
+    records.set(record.id, { ...record });
+    return Promise.resolve(record.id);
+  }) as never);
+  vi.mocked(audioDb.transaction).mockImplementation((async (...args: unknown[]) => {
+    const operation = args[args.length - 1];
+    if (typeof operation !== 'function') throw new TypeError('Missing transaction callback');
+    const snapshot = new Map(records);
+    try {
+      return await (operation as () => Promise<unknown>)();
+    } catch (error) {
+      records.clear();
+      for (const [id, record] of snapshot) records.set(id, record);
+      throw error;
+    }
+  }) as never);
+});
+
 afterEach(() => {
-  vi.clearAllMocks();
   vi.restoreAllMocks();
-  (projectService as unknown as { currentProject: IProject | null }).currentProject = null;
+  vi.clearAllMocks();
+  mutableService.currentProject = null;
+  mutableService.currentProjectId = null;
+  mutableService.saveQueue = Promise.resolve();
 });
 
 describe('ProjectService complete Track duplicate', () => {
   it('copies every unique PCM buffer once and commits the complete track atomically', async () => {
-    const project = makeProject();
-    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const project = installProject();
     const sourceA = Float32Array.from([0.1, 0.2]);
     const sourceB = Float32Array.from([0.3]);
     mockSources({ 'buffer-a': [sourceA], 'buffer-b': [sourceB] });
-    const save = vi.spyOn(projectService, 'saveProject').mockResolvedValue();
 
     const copy = await projectService.duplicateTrack(project.id, 'source');
     expect(copy).not.toBeNull();
@@ -80,9 +127,10 @@ describe('ProjectService complete Track duplicate', () => {
     expect(copy!.name).toBe('Lead');
     expect(copy!.clips).toHaveLength(3);
     expect(copy!.clips[0]!.audioBufferId).toBe(copy!.clips[1]!.audioBufferId);
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(save.mock.calls[0]![0].tracks).toHaveLength(2);
-    expect(save.mock.calls[0]![0].tracks[0]).toBe(project.tracks[0]);
+    expect(audioDb.projects.put).toHaveBeenCalledTimes(1);
+    expect(persistedTracks().map((track) => track.id)).toEqual(['source', copy!.id]);
+    expect(mutableService.currentProject?.tracks.map((track) => track.id)).toEqual(['source', copy!.id]);
+    expect(mutableService.currentProject?.tracks[0]).toBe(project.tracks[0]);
     expect(vi.mocked(audioDb.audioBuffers.put)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(audioEngine.cacheBuffer)).toHaveBeenCalledTimes(2);
 
@@ -94,41 +142,41 @@ describe('ProjectService complete Track duplicate', () => {
   });
 
   it('returns null for an unknown track without loading or writing audio', async () => {
-    const project = makeProject();
-    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const project = installProject();
     const load = vi.spyOn(projectService, 'loadAudioChannels');
-    const save = vi.spyOn(projectService, 'saveProject');
 
     await expect(projectService.duplicateTrack(project.id, 'missing')).resolves.toBeNull();
     expect(load).not.toHaveBeenCalled();
-    expect(save).not.toHaveBeenCalled();
+    expect(audioDb.projects.put).not.toHaveBeenCalled();
     expect(vi.mocked(audioDb.audioBuffers.put)).not.toHaveBeenCalled();
   });
 
   it('rejects a missing source buffer before any project or PCM write', async () => {
-    const project = makeProject();
-    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    const project = installProject();
     mockSources({});
-    const save = vi.spyOn(projectService, 'saveProject');
 
     await expect(projectService.duplicateTrack(project.id, 'source'))
       .rejects.toThrow('无法读取片段音频缓冲');
-    expect(save).not.toHaveBeenCalled();
+    expect(audioDb.projects.put).not.toHaveBeenCalled();
     expect(vi.mocked(audioDb.audioBuffers.put)).not.toHaveBeenCalled();
     expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
+    expect(mutableService.currentProject).toBe(project);
   });
 
   it('cleans every newly staged buffer when the project commit fails', async () => {
-    const project = makeProject();
+    const project = installProject();
     project.tracks[0]!.clips = [project.tracks[0]!.clips[0]!];
-    (projectService as unknown as { currentProject: IProject }).currentProject = project;
+    records.set(project.id, mutableService.projectToRecord(project));
+    const originalRecord = records.get(project.id)!;
     mockSources({ 'buffer-a': [Float32Array.from([0.1, 0.2])] });
-    vi.spyOn(projectService, 'saveProject').mockRejectedValue(new Error('storage unavailable'));
+    vi.mocked(audioDb.projects.put).mockRejectedValue(new Error('storage unavailable') as never);
 
     await expect(projectService.duplicateTrack(project.id, 'source')).rejects.toThrow('storage unavailable');
     const staged = vi.mocked(audioDb.audioBuffers.put).mock.calls[0]![0];
     expect(vi.mocked(audioDb.audioBuffers.delete)).toHaveBeenCalledWith(staged.id);
     expect(vi.mocked(audioEngine.evictBuffer)).toHaveBeenCalledWith(staged.id);
     expect(vi.mocked(audioEngine.cacheBuffer)).not.toHaveBeenCalled();
+    expect(records.get(project.id)).toEqual(originalRecord);
+    expect(mutableService.currentProject).toBe(project);
   });
 });

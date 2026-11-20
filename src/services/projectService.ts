@@ -805,54 +805,66 @@ class ProjectService {
 
   /** Duplicate a complete Audacity track with independent clips and PCM buffers. */
   async duplicateTrack(projectId: string, trackId: string): Promise<ITrack | null> {
-    const project = this.currentProject?.id === projectId
-      ? this.currentProject
-      : await this.getProject(projectId);
-    if (!project) return null;
-    const plan = duplicateTrackInProject(project, trackId, generateId);
-    if (!plan) return null;
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
+      const plan = duplicateTrackInProject(project, trackId, generateId);
+      if (!plan) return null;
 
-    // Read and validate every source before any write. Split clips can share a
-    // source buffer; the plan deliberately creates only one independent copy.
-    const pendingBuffers: PendingAudioBuffer[] = [];
-    for (const copy of plan.audioBufferCopies) {
-      const [channels, metadata] = await Promise.all([
-        this.loadAudioChannels(copy.sourceBufferId),
-        this.loadAudioBufferMetadata(copy.sourceBufferId),
-      ]);
-      const length = channels?.[0]?.length ?? 0;
-      if (!channels || !metadata || length < 1) {
-        throw new Error(`无法读取片段音频缓冲：${copy.sourceBufferId}`);
+      // Read and validate every source before any write. Split clips can share a
+      // source buffer; the plan deliberately creates only one independent copy.
+      const pendingBuffers: PendingAudioBuffer[] = [];
+      for (const copy of plan.audioBufferCopies) {
+        const [channels, metadata] = await Promise.all([
+          this.loadAudioChannels(copy.sourceBufferId),
+          this.loadAudioBufferMetadata(copy.sourceBufferId),
+        ]);
+        const length = channels?.[0]?.length ?? 0;
+        if (!channels || !metadata || length < 1) {
+          throw new Error(`无法读取片段音频缓冲：${copy.sourceBufferId}`);
+        }
+        if (channels.some((channel) => channel.length !== length)) {
+          throw new Error(`片段音频声道长度不一致：${copy.sourceBufferId}`);
+        }
+        pendingBuffers.push({
+          id: copy.targetBufferId,
+          sampleRate: metadata.sampleRate,
+          sampleData: channels.map((channel) => new Float32Array(channel)),
+        });
       }
-      if (channels.some((channel) => channel.length !== length)) {
-        throw new Error(`片段音频声道长度不一致：${copy.sourceBufferId}`);
-      }
-      pendingBuffers.push({
-        id: copy.targetBufferId,
-        sampleRate: metadata.sampleRate,
-        sampleData: channels.map((channel) => new Float32Array(channel)),
-      });
-    }
 
-    await this.commitPendingAudioBuffers(projectId, pendingBuffers, plan.project);
-    return plan.track;
+      // PCM reads can be slow. Keep the entire read/copy/commit operation in the
+      // same queue so plan.project cannot overwrite a concurrently committed track.
+      await this.commitPendingAudioBuffers(
+        projectId,
+        pendingBuffers,
+        plan.project,
+        (updatedProject) => this.saveProjectFromQueue(updatedProject),
+      );
+      return plan.track;
+    });
   }
 
   async removeTrack(projectId: string, trackId: string): Promise<void> {
-    const project = this.currentProject?.id === projectId
-      ? this.currentProject
-      : await this.getProject(projectId);
-    if (!project || project.tracks.length <= 1) return;
-    if (!project.tracks.some((track) => track.id === trackId)) return;
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project || project.tracks.length <= 1) return;
+      if (!project.tracks.some((track) => track.id === trackId)) return;
 
-    // Audacity keeps removed tracks alive through undo history. Remaining clips
-    // can also share a buffer with the removed track, so PCM cleanup belongs to
-    // permanent project deletion rather than this reversible track operation.
-    const updatedProject: IProject = {
-      ...project,
-      tracks: project.tracks.filter((track) => track.id !== trackId),
-    };
-    await this.saveProject(updatedProject);
+      // Audacity keeps removed tracks alive through undo history. Remaining clips
+      // can also share a buffer with the removed track, so PCM cleanup belongs to
+      // permanent project deletion rather than this reversible track operation.
+      const updatedProject: IProject = {
+        ...project,
+        tracks: project.tracks.filter((track) => track.id !== trackId),
+      };
+      // Read the latest project only after earlier removals have committed.
+      await this.saveProjectFromQueue(updatedProject);
+    });
   }
 
   async updateTrack(
@@ -1072,10 +1084,11 @@ class ProjectService {
     projectId: string,
     buffers: readonly PendingAudioBuffer[],
     updatedProject: IProject,
+    save: (project: IProject) => Promise<boolean | void> = (project) => this.saveProject(project),
   ): Promise<void> {
     try {
       await this.storePendingAudioBuffers(projectId, buffers);
-      const saved = await this.saveProject(updatedProject);
+      const saved = await save(updatedProject);
       // A missing project must not turn later staged writes into orphans.
       // Undefined remains compatible with existing saveProject adapters.
       if (saved === false) {

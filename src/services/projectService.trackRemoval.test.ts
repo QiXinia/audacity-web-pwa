@@ -8,7 +8,7 @@ import type { IClip, IProject, ITrack } from '@/types/project';
 vi.mock('@/db/audioDb', () => ({
   audioDb: {
     projects: { get: vi.fn(), put: vi.fn() },
-    audioBuffers: { delete: vi.fn() },
+    audioBuffers: { put: vi.fn(), delete: vi.fn() },
     clipboard: {},
     historySnapshots: {},
     transaction: vi.fn(),
@@ -164,6 +164,7 @@ beforeEach(() => {
 afterEach(() => {
   historyManager.clear();
   historyManager.setPersistEnabled(true);
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   mutableService.currentProject = null;
   mutableService.currentProjectId = null;
@@ -274,5 +275,60 @@ describe('ProjectService safe track removal', () => {
     expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
     expect(before.tracks).toHaveLength(1);
     expect(buffers.size).toBe(3);
+  });
+
+  it('does not lose a concurrent track addition while duplicate reads source PCM', async () => {
+    const before = installProject();
+    let releaseChannels: ((channels: Float32Array[]) => void) | undefined;
+    const channels = new Promise<Float32Array[]>((resolve) => {
+      releaseChannels = resolve;
+    });
+    vi.spyOn(projectService, 'loadAudioChannels').mockReturnValue(channels);
+    vi.spyOn(projectService, 'loadAudioBufferMetadata').mockImplementation(async (id) => makeBuffer(id));
+
+    const duplicate = projectService.duplicateTrack(before.id, 'track-remove');
+    const addition = projectService.addTrack(before.id);
+    // Let the old implementation commit the addition while duplication is
+    // waiting for PCM. A queued implementation resumes both after this gate.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    releaseChannels!([Float32Array.from([0.25])]);
+    const [copied, added] = await Promise.all([duplicate, addition]);
+
+    expect(copied).not.toBeNull();
+    expect(added).not.toBeNull();
+    const expectedIds = ['track-remove', 'track-keep', copied!.id, added!.id];
+    expect(persistedTrackIds()).toHaveLength(4);
+    expect(persistedTrackIds()).toEqual(expect.arrayContaining(expectedIds));
+    expect(mutableService.currentProject?.tracks.map((track) => track.id))
+      .toEqual(persistedTrackIds());
+    expect(before.tracks.map((track) => track.id)).toEqual(['track-remove', 'track-keep']);
+  });
+
+  it('serializes consecutive removals so neither deleted track reappears', async () => {
+    const before = installProject();
+    before.tracks.push(makeTrack('track-third', [makeClip('third-clip', 'buffer-third')]));
+    records.set(before.id, mutableService.projectToRecord(before));
+    let writes = 0;
+    vi.mocked(audioDb.projects.put).mockImplementation(((record: ProjectRecord) => {
+      writes += 1;
+      const delay = writes === 1 ? 20 : 0;
+      return new Promise<string>((resolve) => {
+        setTimeout(() => {
+          records.set(record.id, { ...record });
+          resolve(record.id);
+        }, delay);
+      });
+    }) as never);
+
+    await Promise.all([
+      projectService.removeTrack(before.id, 'track-remove'),
+      projectService.removeTrack(before.id, 'track-keep'),
+    ]);
+
+    expect(persistedTrackIds()).toEqual(['track-third']);
+    expect(mutableService.currentProject?.tracks.map((track) => track.id)).toEqual(['track-third']);
+    expect(before.tracks.map((track) => track.id)).toEqual([
+      'track-remove', 'track-keep', 'track-third',
+    ]);
   });
 });
