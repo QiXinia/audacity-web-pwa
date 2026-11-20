@@ -238,10 +238,24 @@ class HistoryManager {
     append(undoCommands, 'undo');
     append(redoCommands, 'redo');
 
-    await audioDb.historySnapshots.where('projectId').equals(projectId).delete();
-    if (records.length > 0) {
-      await audioDb.historySnapshots.bulkAdd(records);
-    }
+    // Serialize with project lifecycle writes on the overlapping stores. If
+    // permanent deletion commits first, the missing project record suppresses
+    // the queued write; if this transaction commits first, deletion removes
+    // these snapshots afterwards. Replacement is atomic on write failure.
+    await audioDb.transaction(
+      'rw',
+      audioDb.projects,
+      audioDb.historySnapshots,
+      async () => {
+        const project = await audioDb.projects.get(projectId);
+        if (!project) return;
+
+        await audioDb.historySnapshots.where('projectId').equals(projectId).delete();
+        if (records.length > 0) {
+          await audioDb.historySnapshots.bulkAdd(records);
+        }
+      },
+    );
   }
 }
 

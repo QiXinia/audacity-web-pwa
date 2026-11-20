@@ -8,10 +8,17 @@ vi.mock('@/db/audioDb', async (importOriginal) => {
   return {
     ...actual,
     audioDb: {
+      projects: {
+        get: vi.fn((id: string) => Promise.resolve({ id })),
+      },
       historySnapshots: {
         where: vi.fn(),
         bulkAdd: vi.fn().mockResolvedValue([]),
       },
+      transaction: vi.fn(async (...args: unknown[]) => {
+        const operation = args[args.length - 1] as () => Promise<unknown>;
+        return operation();
+      }),
     },
   };
 });
