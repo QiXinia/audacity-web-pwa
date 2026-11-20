@@ -81,6 +81,10 @@ function makeProject(): IProject {
         makeClip('kept-unique', 'buffer-keep'),
       ]),
     ],
+    analysisLabels: [
+      { id: 'label-remove', kind: 'manual', trackId: 'track-remove', start: 0, end: 1, text: 'Remove' },
+      { id: 'label-keep', kind: 'manual', trackId: 'track-keep', start: 1, end: 2, text: 'Keep' },
+    ],
     cursorPosition: 0,
     selection: null,
     viewState: {
@@ -113,6 +117,21 @@ let buffers: Map<string, AudioBufferRecord>;
 function persistedTrackIds(): string[] {
   const record = records.get('track-removal-project');
   return record ? (JSON.parse(record.tracksData) as ITrack[]).map((track) => track.id) : [];
+}
+
+function delayNextProjectPut(): () => void {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let delayed = false;
+  vi.mocked(audioDb.projects.put).mockImplementation((async (record: ProjectRecord) => {
+    if (!delayed) {
+      delayed = true;
+      await gate;
+    }
+    records.set(record.id, { ...record });
+    return record.id;
+  }) as never);
+  return release;
 }
 
 function installProject(): IProject {
@@ -275,6 +294,85 @@ describe('ProjectService safe track removal', () => {
     expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
     expect(before.tracks).toHaveLength(1);
     expect(buffers.size).toBe(3);
+  });
+
+  it('bulk-removes every selected track and label with independent undo snapshots', async () => {
+    const before = installProject();
+
+    const result = await projectService.removeTracks(before.id, ['track-remove', 'track-keep']);
+
+    expect(result?.before.tracks.map((track) => track.id)).toEqual(['track-remove', 'track-keep']);
+    expect(result?.after.tracks).toEqual([]);
+    expect(result?.after.analysisLabels).toEqual([]);
+    expect(result?.before).not.toBe(before);
+    expect(before.tracks).toHaveLength(2);
+    expect(persistedTrackIds()).toEqual([]);
+    expect(records.get(before.id)?.analysisLabelsData).toBe('[]');
+    expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
+    expect(audioEngine.evictBuffer).not.toHaveBeenCalled();
+
+    result!.before.tracks[0]!.name = 'changed snapshot';
+    expect(before.tracks[0]!.name).toBe('track-remove');
+  });
+
+  it('preserves a rename and addition queued behind an in-flight bulk removal', async () => {
+    const before = installProject();
+    const release = delayNextProjectPut();
+
+    const removing = projectService.removeTracks(before.id, ['track-remove']);
+    await vi.waitFor(() => expect(audioDb.projects.put).toHaveBeenCalledTimes(1));
+    const renaming = projectService.updateTrack(before.id, 'track-keep', { name: 'Renamed keep' });
+    const adding = projectService.addTrack(before.id);
+    release();
+
+    const removed = await removing;
+    await renaming;
+    const added = await adding;
+    expect(added).not.toBeNull();
+    expect(removed?.before.tracks.map((track) => track.id)).toEqual(['track-remove', 'track-keep']);
+    expect(removed?.after.tracks.map((track) => track.id)).toEqual(['track-keep']);
+    expect(persistedTrackIds()).toEqual(['track-keep', added!.id]);
+    const persisted = JSON.parse(records.get(before.id)!.tracksData) as ITrack[];
+    expect(persisted[0]?.name).toBe('Renamed keep');
+    expect(mutableService.currentProject?.tracks.map((track) => track.id))
+      .toEqual(persistedTrackIds());
+  });
+
+  it('keeps bulk-removal state intact when saving fails', async () => {
+    const before = installProject();
+    const originalRecord = records.get(before.id)!;
+    vi.mocked(audioDb.projects.put).mockRejectedValue(new Error('quota exceeded') as never);
+
+    await expect(projectService.removeTracks(before.id, ['track-remove']))
+      .rejects.toThrow('quota exceeded');
+
+    expect(records.get(before.id)).toEqual(originalRecord);
+    expect(mutableService.currentProject).toBe(before);
+    expect(before.analysisLabels).toHaveLength(2);
+    expect(buffers.size).toBe(3);
+  });
+
+  it('does not recreate a project when permanent deletion wins over bulk removal', async () => {
+    const before = installProject();
+    records.clear();
+
+    await expect(projectService.removeTracks(before.id, ['track-remove'])).resolves.toBeNull();
+
+    expect(records.has(before.id)).toBe(false);
+    expect(mutableService.currentProject).toBe(before);
+    expect(audioDb.projects.put).not.toHaveBeenCalled();
+    expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown and empty bulk removals write-free', async () => {
+    const before = installProject();
+
+    await expect(projectService.removeTracks(before.id, [])).resolves.toBeNull();
+    await expect(projectService.removeTracks(before.id, ['missing'])).resolves.toBeNull();
+
+    expect(audioDb.projects.put).not.toHaveBeenCalled();
+    expect(mutableService.currentProject).toBe(before);
+    expect(persistedTrackIds()).toEqual(['track-remove', 'track-keep']);
   });
 
   it('does not lose a concurrent track addition while duplicate reads source PCM', async () => {

@@ -2300,23 +2300,18 @@ function AudioEditorPageContent() {
     }
 
     const targets = new Set(targetTrackIds);
-    const focusedTrackId = resolveRemoveTrackFocus(
-      project.tracks.map((track) => track.id),
-      targetTrackIds,
-    );
-    const before = structuredClone(project);
-    const updated: IProject = {
-      ...project,
-      tracks: project.tracks.filter((track) => !targets.has(track.id)),
-      analysisLabels: project.analysisLabels?.filter((label) => !targets.has(label.trackId)),
-    };
     setIsRemovingTracks(true);
     try {
-      // Keep clip buffers intact so the single Remove Track history step can
-      // restore both track metadata and playable audio without orphaned undo data.
-      await projectService.saveProject(updated);
+      // Resolve tracks, labels, and undo state inside the project write queue.
+      // Saving this render's complete project would overwrite concurrent edits.
+      const result = await projectService.removeTracks(project.id, targetTrackIds);
+      if (!result) return;
       const persisted = await projectService.getProject(project.id);
       if (!persisted) throw new Error('轨道移除后无法重新加载工程');
+      const focusedTrackId = resolveRemoveTrackFocus(
+        result.before.tracks.map((track) => track.id),
+        targetTrackIds,
+      );
       setProject(persisted);
       setSelectedTrackId(
         focusedTrackId && persisted.tracks.some((track) => track.id === focusedTrackId)
@@ -2328,10 +2323,11 @@ function AudioEditorPageContent() {
       pushHistoryCmd({
         id: generateId(),
         label: 'Remove Track',
-        execute: () => persisted,
-        undo: () => before,
+        execute: () => result.after,
+        undo: () => result.before,
       });
-      toast.success(`已移除 ${targetTrackIds.length} 条选中轨道`);
+      const removedCount = result.before.tracks.length - result.after.tracks.length;
+      toast.success(`已移除 ${removedCount} 条选中轨道`);
     } catch (error) {
       logger.error('Remove Tracks failed', error);
       toast.error(error instanceof Error ? error.message : '选中轨道移除失败');

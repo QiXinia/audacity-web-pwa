@@ -888,6 +888,32 @@ class ProjectService {
     });
   }
 
+  /** Remove selected tracks and their labels from the latest queued project. */
+  async removeTracks(
+    projectId: string,
+    trackIds: readonly string[],
+  ): Promise<{ before: IProject; after: IProject } | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
+      const targets = new Set(trackIds);
+      if (targets.size === 0 || !project.tracks.some((track) => targets.has(track.id))) return null;
+
+      const before = structuredClone(project);
+      const after: IProject = {
+        ...project,
+        tracks: project.tracks.filter((track) => !targets.has(track.id)),
+        analysisLabels: project.analysisLabels?.filter((label) => !targets.has(label.trackId)),
+      };
+      // Keep every PCM buffer for the single reversible Remove Track history
+      // step. Permanent project deletion owns eventual buffer cleanup.
+      const saved = await this.saveProjectFromQueue(after);
+      return saved ? { before, after } : null;
+    });
+  }
+
   async removeTrack(projectId: string, trackId: string): Promise<void> {
     return this.enqueueProjectWrite(async () => {
       const project = this.currentProject?.id === projectId

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   warning: vi.fn(),
   error: vi.fn(),
   saveProject: vi.fn(),
+  removeTracks: vi.fn(),
   loadChannels: vi.fn(),
   deleteBuffer: vi.fn(),
   setStateChangeCallback: vi.fn(),
@@ -72,6 +73,7 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    removeTracks: mocks.removeTracks,
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
   },
@@ -133,7 +135,11 @@ async function openRemoveMenuItem(): Promise<HTMLElement> {
 }
 
 function savedProject(): IProject {
-  return mocks.saveProject.mock.calls[0]![0] as IProject;
+  return mockProject;
+}
+
+function removalCallCount(): number {
+  return mocks.saveProject.mock.calls.length + mocks.removeTracks.mock.calls.length;
 }
 
 describe('AudioEditorPage Remove Tracks', () => {
@@ -142,6 +148,17 @@ describe('AudioEditorPage Remove Tracks', () => {
     mockProject = makeProject();
     mocks.saveProject.mockImplementation(async (project: IProject) => {
       mockProject = project;
+    });
+    mocks.removeTracks.mockImplementation(async (_projectId: string, trackIds: string[]) => {
+      const before = structuredClone(mockProject);
+      const targets = new Set(trackIds);
+      const after: IProject = {
+        ...mockProject,
+        tracks: mockProject.tracks.filter((track) => !targets.has(track.id)),
+        analysisLabels: mockProject.analysisLabels?.filter((label) => !targets.has(label.trackId)),
+      };
+      mockProject = after;
+      return { before, after };
     });
     mocks.loadChannels.mockResolvedValue([Float32Array.from([0.2, 0.4])]);
   });
@@ -153,7 +170,7 @@ describe('AudioEditorPage Remove Tracks', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^Clip B/ }));
     fireEvent.click(await openRemoveMenuItem());
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(removalCallCount()).toBe(1));
     expect(savedProject().tracks.map((track) => track.id)).toEqual(['track-a', 'track-c']);
     expect(savedProject().analysisLabels?.map((label) => label.trackId)).toEqual(['track-a', 'track-c']);
     expect(mocks.deleteBuffer).not.toHaveBeenCalled();
@@ -169,7 +186,7 @@ describe('AudioEditorPage Remove Tracks', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Clip B/ }), { shiftKey: true });
     fireEvent.click(await openRemoveMenuItem());
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(removalCallCount()).toBe(1));
     expect(savedProject().tracks.map((track) => track.id)).toEqual(['track-c']);
     expect(savedProject().analysisLabels?.map((label) => label.trackId)).toEqual(['track-c']);
     expect(mocks.push).toHaveBeenCalledTimes(1);
@@ -182,7 +199,7 @@ describe('AudioEditorPage Remove Tracks', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Clip C/ }), { shiftKey: true });
     fireEvent.click(await openRemoveMenuItem());
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(removalCallCount()).toBe(1));
     expect(savedProject().tracks).toEqual([]);
     expect(savedProject().analysisLabels).toEqual([]);
     expect(await screen.findByText('空工程')).toBeInTheDocument();
@@ -194,7 +211,7 @@ describe('AudioEditorPage Remove Tracks', () => {
     mockProject = { ...mockProject, tracks: [], analysisLabels: [] };
     await renderEditor();
     expect(await openRemoveMenuItem()).toHaveAttribute('aria-disabled', 'true');
-    expect(mocks.saveProject).not.toHaveBeenCalled();
+    expect(removalCallCount()).toBe(0);
     expect(mocks.push).not.toHaveBeenCalled();
   });
 
@@ -203,18 +220,82 @@ describe('AudioEditorPage Remove Tracks', () => {
     const onPlaybackStateChange = mocks.setStateChangeCallback.mock.calls.at(-1)![0] as (state: string) => void;
     act(() => onPlaybackStateChange('playing'));
     expect(await openRemoveMenuItem()).toHaveAttribute('aria-disabled', 'true');
-    expect(mocks.saveProject).not.toHaveBeenCalled();
+    expect(removalCallCount()).toBe(0);
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('preserves concurrent additions, renames, labels, and undo snapshots while removal waits', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.saveProject.mockImplementation(async (project: IProject) => {
+      await gate;
+      // The stale full-project write commits after the concurrent mutation.
+      mockProject = project;
+    });
+    mocks.removeTracks.mockImplementation(async (_projectId: string, trackIds: string[]) => {
+      await gate;
+      // Model the service contract: resolve the source only when this queued
+      // mutation runs, after all earlier writes have committed.
+      const before = structuredClone(mockProject);
+      const targets = new Set(trackIds);
+      const after: IProject = {
+        ...mockProject,
+        tracks: mockProject.tracks.filter((track) => !targets.has(track.id)),
+        analysisLabels: mockProject.analysisLabels?.filter((label) => !targets.has(label.trackId)),
+      };
+      mockProject = after;
+      return { before, after };
+    });
+
+    await renderEditor();
+    fireEvent.click(await screen.findByRole('button', { name: /^Clip B/ }));
+    fireEvent.click(await openRemoveMenuItem());
+    await waitFor(() => expect(removalCallCount()).toBe(1));
+
+    const added = makeTrack('d');
+    mockProject = {
+      ...mockProject,
+      tracks: [
+        ...mockProject.tracks.map((track) => (
+          track.id === 'track-c' ? { ...track, name: 'Renamed C' } : track
+        )),
+        added,
+      ],
+      analysisLabels: [
+        ...(mockProject.analysisLabels ?? []),
+        {
+          id: 'label-d', kind: 'manual', trackId: 'track-d',
+          start: 3, end: 4, text: 'Label D',
+        },
+      ],
+    };
+    release();
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['track-a', 'track-c', 'track-d']);
+    expect(mockProject.tracks[1]?.name).toBe('Renamed C');
+    expect(mockProject.analysisLabels?.map((label) => label.trackId)).toEqual([
+      'track-a', 'track-c', 'track-d',
+    ]);
+    const command = mocks.push.mock.calls[0]![0];
+    expect(command.execute().tracks.map((track: ITrack) => track.id)).toEqual([
+      'track-a', 'track-c', 'track-d',
+    ]);
+    expect(command.undo().tracks.map((track: ITrack) => track.id)).toEqual([
+      'track-a', 'track-b', 'track-c', 'track-d',
+    ]);
+    expect(command.undo().tracks[2]?.name).toBe('Renamed C');
   });
 
   it('keeps visible tracks and creates no history when saving fails', async () => {
     mocks.saveProject.mockRejectedValue(new Error('storage unavailable'));
+    mocks.removeTracks.mockRejectedValue(new Error('storage unavailable'));
     await renderEditor();
     fireEvent.click(await screen.findByRole('button', { name: /^Clip B/ }));
     fireEvent.click(await openRemoveMenuItem());
 
     await waitFor(() => expect(mocks.error).toHaveBeenCalledWith('storage unavailable'));
-    expect(mocks.saveProject).toHaveBeenCalledTimes(1);
+    expect(removalCallCount()).toBe(1);
     expect(mocks.push).not.toHaveBeenCalled();
     expect(mocks.deleteBuffer).not.toHaveBeenCalled();
     expect(screen.getByText('Track B')).toBeInTheDocument();
