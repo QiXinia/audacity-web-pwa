@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   revokeObjectURL: vi.fn(),
   anchorClick: vi.fn(),
   navigate: vi.fn(),
+  projectId: 'timer-record-project',
 }));
 let mockProject: IProject;
 
@@ -95,7 +96,7 @@ vi.mock('@/engine/audioEngine', () => ({
 }));
 vi.mock('@/wasm/processor', () => ({ isWasmAvailable: vi.fn(() => false), wasmProcessor: {} }));
 vi.mock('react-router-dom', () => ({
-  useParams: () => ({ projectId: 'timer-record-project' }),
+  useParams: () => ({ projectId: mocks.projectId }),
   useNavigate: () => mocks.navigate,
 }));
 vi.mock('sonner', () => ({ toast: { success: mocks.success, warning: mocks.warning, error: mocks.error, info: mocks.info } }));
@@ -127,6 +128,7 @@ function getRecordButton(label: '开始录音' | '停止录音'): HTMLElement {
 describe('AudioEditorPage Timer Record', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.projectId = 'timer-record-project';
     window.localStorage.removeItem('audacity.timerRecord.advanced.v1');
     mockProject = makeProject();
     mocks.createObjectURL.mockReturnValue('blob:timer-record');
@@ -414,6 +416,93 @@ describe('AudioEditorPage Timer Record', () => {
     expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
     expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
     expect(mocks.success).not.toHaveBeenCalledWith('录音已添加到「Track 1」');
+  }, 10_000);
+
+  it('stops an active recording when projectId changes on the same editor route', async () => {
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+    fireEvent.click(getRecordButton('开始录音'));
+    await waitFor(() => expect(getRecordButton('停止录音')).toBeInTheDocument());
+
+    mocks.projectId = 'next-project';
+    mockProject = { ...makeProject(), id: 'next-project', name: 'Next project' };
+    rerender(<AudioEditorPage />);
+
+    expect(await screen.findByText('Next project')).toBeInTheDocument();
+    expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it('stops and invalidates a pending startup when projectId changes', async () => {
+    let resolveStart!: () => void;
+    mocks.startRecording.mockReturnValue(new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    }));
+    mocks.stopRecording.mockResolvedValue(null);
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+    fireEvent.click(getRecordButton('开始录音'));
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1));
+
+    mocks.projectId = 'next-project';
+    mockProject = { ...makeProject(), id: 'next-project', name: 'Next project' };
+    rerender(<AudioEditorPage />);
+    expect(await screen.findByText('Next project')).toBeInTheDocument();
+    await act(async () => {
+      resolveStart();
+      await Promise.resolve();
+    });
+
+    expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.info.mock.calls.filter(([message]) => String(message).startsWith('正在录音'))).toHaveLength(0);
+    expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it('discards an old project stop continuation when projectId changes', async () => {
+    let resolveStop!: (channels: Float32Array[]) => void;
+    mocks.stopRecording
+      .mockImplementationOnce(() => new Promise<Float32Array[]>((resolve) => {
+        resolveStop = resolve;
+      }))
+      .mockResolvedValue(null);
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+    fireEvent.click(getRecordButton('开始录音'));
+    await waitFor(() => expect(getRecordButton('停止录音')).toBeInTheDocument());
+    fireEvent.click(getRecordButton('停止录音'));
+    await waitFor(() => expect(mocks.stopRecording).toHaveBeenCalledTimes(1));
+
+    mocks.projectId = 'next-project';
+    mockProject = { ...makeProject(), id: 'next-project', name: 'Next project' };
+    rerender(<AudioEditorPage />);
+    expect(await screen.findByText('Next project')).toBeInTheDocument();
+    await act(async () => {
+      resolveStop([Float32Array.from([0.1, 0.2, 0.3, 0.4])]);
+      await Promise.resolve();
+    });
+
+    expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.success).not.toHaveBeenCalledWith('录音已添加到「Track 1」');
+  }, 10_000);
+
+  it('cancels a waiting Timer Record when projectId changes', async () => {
+    const { rerender } = render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    fireEvent.change(screen.getByLabelText('Start Date and Time 开始日期和时间'), {
+      target: { value: toDateTimeLocalValue(Date.now() + 60_000) },
+    });
+    setDuration('0', '0', '1');
+    submitTimerRecord();
+    expect(await screen.findByTestId('timer-record-status')).toBeInTheDocument();
+
+    mocks.projectId = 'next-project';
+    mockProject = { ...makeProject(), id: 'next-project', name: 'Next project' };
+    rerender(<AudioEditorPage />);
+
+    expect(await screen.findByText('Next project')).toBeInTheDocument();
+    expect(screen.queryByTestId('timer-record-status')).not.toBeInTheDocument();
+    expect(mocks.startRecording).not.toHaveBeenCalled();
   }, 10_000);
 
   it('allows a clean retry after microphone startup fails', async () => {

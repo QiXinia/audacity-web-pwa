@@ -644,7 +644,7 @@ type MultiClipContextEditCommand =
   | 'ungroup'
   | { operation: 'cut' | 'delete'; mode: MultiClipRippleMode };
 
-export default function AudioEditorPage() {
+function AudioEditorPageContent() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
 
@@ -13862,6 +13862,14 @@ function LoopRulerInteraction({
       )}
     </div>
   );
+}
+
+// React Router keeps the same route element alive when only projectId changes.
+// A keyed content instance runs the old project's cleanup and keeps its recording
+// refs and async continuations isolated from the next project.
+export default function AudioEditorPage() {
+  const { projectId } = useParams<{ projectId: string }>();
+  return <AudioEditorPageContent key={projectId ?? ''} />;
 }
 
 function TimeRuler({ duration, pxPerSec }: { duration: number; pxPerSec: number }) {
