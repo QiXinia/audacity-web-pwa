@@ -655,6 +655,12 @@ class ProjectService {
     // Capture this invocation before queuing so later mutations cannot rewrite its snapshot.
     const record = this.projectToRecord(project);
     await this.enqueueProjectWrite(async () => {
+      const existing = await audioDb.projects.get(record.id);
+      if (existing?.status === 'deleted') {
+        // Saving an editor snapshot must not implicitly restore a trashed project.
+        record.status = 'deleted';
+        record.deletedAt = existing.deletedAt;
+      }
       await audioDb.projects.put(record);
     });
     this.currentProject = project;
@@ -706,6 +712,14 @@ class ProjectService {
   }
 
   async permanentlyDeleteProject(id: string): Promise<void> {
+    await this.enqueueProjectWrite(() => this.permanentlyDeleteProjectNow(id));
+    if (this.currentProject?.id === id) {
+      this.currentProject = null;
+      this.currentProjectId = null;
+    }
+  }
+
+  private async permanentlyDeleteProjectNow(id: string): Promise<void> {
     await audioDb.projects.delete(id);
     // Also delete all associated audio buffers
     const buffers = await audioDb.audioBuffers.where('projectId').equals(id).toArray();
@@ -716,9 +730,16 @@ class ProjectService {
   }
 
   async clearDeletedProjects(): Promise<void> {
-    const deleted = await audioDb.projects.filter((p) => p.status === 'deleted').toArray();
-    for (const p of deleted) {
-      await this.permanentlyDeleteProject(p.id);
+    const deletedIds = await this.enqueueProjectWrite(async () => {
+      const deleted = await audioDb.projects.filter((p) => p.status === 'deleted').toArray();
+      for (const p of deleted) {
+        await this.permanentlyDeleteProjectNow(p.id);
+      }
+      return deleted.map((project) => project.id);
+    });
+    if (this.currentProject && deletedIds.includes(this.currentProject.id)) {
+      this.currentProject = null;
+      this.currentProjectId = null;
     }
   }
 
