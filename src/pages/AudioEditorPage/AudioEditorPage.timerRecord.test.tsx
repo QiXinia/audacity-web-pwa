@@ -103,6 +103,9 @@ vi.mock('sonner', () => ({ toast: { success: mocks.success, warning: mocks.warni
 vi.mock('@/utils/logger', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), log: vi.fn() } }));
 
 import AudioEditorPage from './AudioEditorPage';
+import { audioEngine } from '@/engine/audioEngine';
+import { projectService } from '@/services/projectService';
+import { historyManager } from '@/services/historyService';
 
 async function openTimerRecordDialog(): Promise<void> {
   expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
@@ -416,6 +419,64 @@ describe('AudioEditorPage Timer Record', () => {
     expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
     expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
     expect(mocks.success).not.toHaveBeenCalledWith('录音已添加到「Track 1」');
+  }, 10_000);
+
+  it('stops playback when the editor unmounts', async () => {
+    const { unmount } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+    const onStateChange = vi.mocked(audioEngine.setStateChangeCallback).mock.calls.at(-1)?.[0];
+    act(() => { onStateChange?.('playing'); });
+
+    unmount();
+
+    expect(vi.mocked(audioEngine.stopPlayback)).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
+  it('stops playback when projectId changes on the same editor route', async () => {
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+    const onStateChange = vi.mocked(audioEngine.setStateChangeCallback).mock.calls.at(-1)?.[0];
+    act(() => { onStateChange?.('playing'); });
+
+    mocks.projectId = 'next-project';
+    mockProject = { ...makeProject(), id: 'next-project', name: 'Next project' };
+    rerender(<AudioEditorPage />);
+
+    expect(await screen.findByText('Next project')).toBeInTheDocument();
+    expect(vi.mocked(audioEngine.stopPlayback)).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
+  it('ignores a stale project load after projectId changes', async () => {
+    const staleProject = {
+      ...makeProject(),
+      name: 'Stale project',
+      cursorPosition: 8,
+    };
+    const nextProject = { ...makeProject(), id: 'next-project', name: 'Next project' };
+    let resolveStale!: (project: IProject) => void;
+    const staleOpen = new Promise<IProject>((resolve) => { resolveStale = resolve; });
+    vi.mocked(projectService.openProject)
+      .mockImplementationOnce(() => staleOpen)
+      .mockImplementationOnce(async () => nextProject);
+    const { rerender } = render(<AudioEditorPage />);
+    await waitFor(() => expect(projectService.openProject).toHaveBeenCalledWith('timer-record-project'));
+
+    mocks.projectId = 'next-project';
+    rerender(<AudioEditorPage />);
+    expect(await screen.findByText('Next project')).toBeInTheDocument();
+    vi.mocked(audioEngine.seek).mockClear();
+    vi.mocked(historyManager.loadForProject).mockClear();
+
+    await act(async () => {
+      resolveStale(staleProject);
+      await staleOpen;
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(audioEngine.seek)).not.toHaveBeenCalled();
+    expect(historyManager.loadForProject).not.toHaveBeenCalledWith('timer-record-project');
+    expect(screen.queryByText('Stale project')).not.toBeInTheDocument();
+    expect(screen.getByText('Next project')).toBeInTheDocument();
   }, 10_000);
 
   it('stops an active recording when projectId changes on the same editor route', async () => {

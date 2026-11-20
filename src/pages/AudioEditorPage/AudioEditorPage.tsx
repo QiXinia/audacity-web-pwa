@@ -905,6 +905,7 @@ function AudioEditorPageContent() {
   const recordingSampleRateRef = useRef(44100);
   const recordingStateRef = useRef<RecordingState>('idle');
   const recordingPageActiveRef = useRef(true);
+  const projectLoadGenerationRef = useRef(0);
   const recordingMonitoringPreferencesRef = useRef(recordingMonitoringPreferences);
   const microphoneSyncGenerationRef = useRef(0);
   const microphoneErrorNotificationRef = useRef(false);
@@ -987,11 +988,19 @@ function AudioEditorPageContent() {
     };
   }, []);
 
-  // Load project
+  // Load project. Async continuations from an old keyed instance must not seek
+  // the shared engine, restore history, navigate, or change notifications after
+  // the user has already opened another project.
   useEffect(() => {
     if (!projectId) return;
-    loadProject(projectId);
-    checkMicPermission();
+    const generation = ++projectLoadGenerationRef.current;
+    void loadProject(projectId, generation);
+    void checkMicPermission();
+    return () => {
+      if (projectLoadGenerationRef.current === generation) {
+        projectLoadGenerationRef.current += 1;
+      }
+    };
   }, [projectId]);
 
   // Audacity 4 starts microphone metering/monitoring only while stopped. The
@@ -1085,6 +1094,13 @@ function AudioEditorPageContent() {
       audioEngine.setStateChangeCallback(() => {});
     };
   }, [horizontalZoom]);
+
+  // Audacity closes the project's active AudioIO stream before switching
+  // projects. Clear this instance's callbacks first (the effect above), then
+  // stop the shared engine so no audio or animation frame survives unmount.
+  useEffect(() => () => {
+    audioEngine.stopPlayback?.();
+  }, []);
 
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
@@ -1198,10 +1214,12 @@ function AudioEditorPageContent() {
     }
   }
 
-  async function loadProject(id: string) {
+  async function loadProject(id: string, generation: number) {
+    const isCurrentLoad = () => projectLoadGenerationRef.current === generation;
     setIsLoading(true);
     try {
       const proj = await projectService.openProject(id);
+      if (!isCurrentLoad()) return;
       if (proj) {
         setProject(proj);
         const workspace = workspaceStore.presets.find((preset) => preset.id === workspaceStore.activeId)
@@ -1233,18 +1251,19 @@ function AudioEditorPageContent() {
         setSelectedTrackId(proj.tracks[0]?.id ?? null);
         // 加载历史快照（IndexedDB 持久化的撤销/重做栈）
         const snapCount = await historyManager.loadForProject(id);
+        if (!isCurrentLoad()) return;
         updateHistoryState();
         if (snapCount > 0) {
           logger.info(`已恢复 ${snapCount} 步历史记录`);
         }
-      } else {
+      } else if (isCurrentLoad()) {
         toast.error('工程不存在');
         navigate('/');
       }
     } catch (e) {
-      toast.error('加载工程失败');
+      if (isCurrentLoad()) toast.error('加载工程失败');
     } finally {
-      setIsLoading(false);
+      if (isCurrentLoad()) setIsLoading(false);
     }
   }
 
