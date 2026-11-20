@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   warning: vi.fn(),
   error: vi.fn(),
   saveProject: vi.fn(),
+  setTracksPan: vi.fn(),
   loadChannels: vi.fn(),
 }));
 let mockProject: IProject;
@@ -54,6 +55,7 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    setTracksPan: mocks.setTracksPan,
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
   },
@@ -112,7 +114,11 @@ async function openPanMenu(): Promise<void> {
 }
 
 function savedTracks(): Pick<IProject, 'tracks'>['tracks'] {
-  return mocks.saveProject.mock.calls[0]![0].tracks;
+  return mockProject.tracks;
+}
+
+function mutationCallCount(): number {
+  return mocks.saveProject.mock.calls.length + mocks.setTracksPan.mock.calls.length;
 }
 
 describe('AudioEditorPage Pan commands', () => {
@@ -121,6 +127,16 @@ describe('AudioEditorPage Pan commands', () => {
     mockProject = makeProject();
     mocks.saveProject.mockImplementation(async (project: IProject) => {
       mockProject = project;
+    });
+    mocks.setTracksPan.mockImplementation(async (_projectId: string, trackIds: string[], pan: -1 | 0 | 1) => {
+      const before = structuredClone(mockProject);
+      const targets = new Set(trackIds);
+      const after: IProject = {
+        ...mockProject,
+        tracks: mockProject.tracks.map((track) => targets.has(track.id) ? { ...track, pan } : track),
+      };
+      mockProject = after;
+      return { before, after };
     });
     mocks.loadChannels.mockResolvedValue([Float32Array.from([0.2, 0.4])]);
   });
@@ -133,7 +149,7 @@ describe('AudioEditorPage Pan commands', () => {
     await openPanMenu();
     fireEvent.click(await screen.findByText('Left 左侧'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mutationCallCount()).toBe(1));
     expect(savedTracks().map((track) => [track.id, track.pan])).toEqual([
       ['track-a', 0.25],
       ['track-b', -1],
@@ -149,7 +165,7 @@ describe('AudioEditorPage Pan commands', () => {
     await openPanMenu();
     fireEvent.click(await screen.findByText('Right 右侧'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mutationCallCount()).toBe(1));
     expect(savedTracks().map((track) => [track.id, track.pan])).toEqual([
       ['track-a', 1],
       ['track-b', -0.25],
@@ -166,7 +182,7 @@ describe('AudioEditorPage Pan commands', () => {
     await openPanMenu();
     fireEvent.click(await screen.findByText('Center 中央'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mutationCallCount()).toBe(1));
     expect(savedTracks().map((track) => track.pan)).toEqual([0, 0]);
     expect(mocks.push).toHaveBeenCalledTimes(1);
     expect(mocks.push.mock.calls[0]![0].label).toBe('Pan Center');
@@ -177,20 +193,65 @@ describe('AudioEditorPage Pan commands', () => {
     await renderEditor();
     fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
     expect(await screen.findByText('Pan 声像')).toHaveAttribute('aria-disabled', 'true');
-    expect(mocks.saveProject).not.toHaveBeenCalled();
+    expect(mutationCallCount()).toBe(0);
     expect(mocks.push).not.toHaveBeenCalled();
   });
 
   it('does not create history or change the visible pan when the single project save fails', async () => {
-    mocks.saveProject.mockRejectedValue(new Error('storage unavailable'));
+    mocks.setTracksPan.mockRejectedValue(new Error('storage unavailable'));
     await renderEditor();
     fireEvent.click(await screen.findByRole('button', { name: /^Clip B/ }));
     await openPanMenu();
     fireEvent.click(await screen.findByText('Center 中央'));
 
     await waitFor(() => expect(mocks.error).toHaveBeenCalledWith('storage unavailable'));
-    expect(mocks.saveProject).toHaveBeenCalledTimes(1);
+    expect(mutationCallCount()).toBe(1);
     expect(mocks.push).not.toHaveBeenCalled();
     expect(screen.getByText('L0.3')).toBeInTheDocument();
+  });
+
+  it('preserves a concurrent track addition and rename while pan is being saved', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.saveProject.mockImplementation(async (project: IProject) => {
+      await gate;
+      mockProject = project;
+    });
+    mocks.setTracksPan.mockImplementation(async (_projectId: string, trackIds: string[], pan: -1 | 0 | 1) => {
+      await gate;
+      const before = structuredClone(mockProject);
+      const targets = new Set(trackIds);
+      const after: IProject = {
+        ...mockProject,
+        tracks: mockProject.tracks.map((track) => targets.has(track.id) ? { ...track, pan } : track),
+      };
+      mockProject = after;
+      return { before, after };
+    });
+    await renderEditor();
+    fireEvent.click(await screen.findByRole('button', { name: /^Clip B/ }));
+    await openPanMenu();
+    fireEvent.click(await screen.findByText('Left 左侧'));
+    await waitFor(() => expect(mocks.saveProject.mock.calls.length + mocks.setTracksPan.mock.calls.length).toBe(1));
+
+    const added = structuredClone(mockProject.tracks[0]!);
+    added.id = 'track-c';
+    added.name = 'Track C';
+    added.clips = added.clips.map((clip) => ({ ...clip, id: 'clip-c', audioBufferId: 'buffer-c' }));
+    mockProject = {
+      ...mockProject,
+      tracks: [
+        ...mockProject.tracks.map((track) => track.id === 'track-a' ? { ...track, name: 'Renamed A' } : track),
+        added,
+      ],
+    };
+    release();
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+    expect(mockProject.tracks[0]?.name).toBe('Renamed A');
+    expect(mockProject.tracks.map((track) => track.pan)).toEqual([0.25, -1, 0.25]);
+    const command = mocks.push.mock.calls[0]![0];
+    expect(command.undo().tracks.map((track: { id: string }) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
   });
 });

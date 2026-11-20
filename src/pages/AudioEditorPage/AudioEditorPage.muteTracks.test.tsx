@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   warning: vi.fn(),
   error: vi.fn(),
   saveProject: vi.fn(),
+  setTracksMute: vi.fn(),
   loadChannels: vi.fn(),
 }));
 let mockProject: IProject;
@@ -54,6 +55,7 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    setTracksMute: mocks.setTracksMute,
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
   },
@@ -116,7 +118,11 @@ async function selectTrackB(): Promise<void> {
 }
 
 function savedTracks(): Pick<IProject, 'tracks'>['tracks'] {
-  return mocks.saveProject.mock.calls[0]![0].tracks;
+  return mockProject.tracks;
+}
+
+function mutationCallCount(): number {
+  return mocks.saveProject.mock.calls.length + mocks.setTracksMute.mock.calls.length;
 }
 
 describe('AudioEditorPage Mute/Unmute commands', () => {
@@ -125,6 +131,18 @@ describe('AudioEditorPage Mute/Unmute commands', () => {
     mockProject = makeProject();
     mocks.saveProject.mockImplementation(async (project: IProject) => {
       mockProject = project;
+    });
+    mocks.setTracksMute.mockImplementation(async (_projectId: string, trackIds: string[], muted: boolean) => {
+      const before = structuredClone(mockProject);
+      const targets = new Set(trackIds);
+      const after: IProject = {
+        ...mockProject,
+        tracks: mockProject.tracks.map((track) => targets.has(track.id)
+          ? { ...track, muted, solo: false }
+          : track),
+      };
+      mockProject = after;
+      return { before, after };
     });
     mocks.loadChannels.mockResolvedValue([Float32Array.from([0.2, 0.4])]);
   });
@@ -136,7 +154,7 @@ describe('AudioEditorPage Mute/Unmute commands', () => {
     await openMuteMenu();
     fireEvent.click(await screen.findByText('Mute All Tracks 静音所有轨道'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mutationCallCount()).toBe(1));
     expect(savedTracks().map((track) => [track.muted, track.solo])).toEqual([[true, false], [true, false]]);
     await waitFor(() => {
       for (const name of ['Track A', 'Track B']) {
@@ -154,7 +172,7 @@ describe('AudioEditorPage Mute/Unmute commands', () => {
     await renderEditor();
     fireEvent.keyDown(window, { key: 'U', ctrlKey: true, shiftKey: true });
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mutationCallCount()).toBe(1));
     expect(savedTracks().map((track) => [track.muted, track.solo])).toEqual([[false, false], [false, false]]);
     expect(mocks.push).toHaveBeenCalledTimes(1);
     expect(mocks.push.mock.calls[0]![0].label).toBe('Unmute All Tracks');
@@ -165,7 +183,7 @@ describe('AudioEditorPage Mute/Unmute commands', () => {
     await selectTrackB();
     fireEvent.keyDown(window, { key: 'U', ctrlKey: true, altKey: true });
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mutationCallCount()).toBe(1));
     expect(savedTracks().map((track) => [track.id, track.muted, track.solo])).toEqual([
       ['track-a', false, true],
       ['track-b', true, false],
@@ -179,7 +197,7 @@ describe('AudioEditorPage Mute/Unmute commands', () => {
     await selectTrackB();
     fireEvent.keyDown(window, { key: 'U', ctrlKey: true, altKey: true, shiftKey: true });
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mutationCallCount()).toBe(1));
     expect(savedTracks().map((track) => [track.id, track.muted, track.solo])).toEqual([
       ['track-a', false, true],
       ['track-b', false, false],
@@ -189,12 +207,57 @@ describe('AudioEditorPage Mute/Unmute commands', () => {
   });
 
   it('does not create history when the single project save fails', async () => {
-    mocks.saveProject.mockRejectedValue(new Error('storage unavailable'));
+    mocks.setTracksMute.mockRejectedValue(new Error('storage unavailable'));
     await renderEditor();
     fireEvent.keyDown(window, { key: 'U', ctrlKey: true });
 
     await waitFor(() => expect(mocks.error).toHaveBeenCalledWith('storage unavailable'));
-    expect(mocks.saveProject).toHaveBeenCalledTimes(1);
+    expect(mutationCallCount()).toBe(1);
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('preserves a concurrent track addition and rename while mute is being saved', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.saveProject.mockImplementation(async (project: IProject) => {
+      await gate;
+      mockProject = project;
+    });
+    mocks.setTracksMute.mockImplementation(async (_projectId: string, trackIds: string[], muted: boolean) => {
+      await gate;
+      const before = structuredClone(mockProject);
+      const targets = new Set(trackIds);
+      const after: IProject = {
+        ...mockProject,
+        tracks: mockProject.tracks.map((track) => targets.has(track.id)
+          ? { ...track, muted, solo: false }
+          : track),
+      };
+      mockProject = after;
+      return { before, after };
+    });
+    await renderEditor();
+    fireEvent.keyDown(window, { key: 'U', ctrlKey: true });
+    await waitFor(() => expect(mocks.saveProject.mock.calls.length + mocks.setTracksMute.mock.calls.length).toBe(1));
+
+    const added = structuredClone(mockProject.tracks[0]!);
+    added.id = 'track-c';
+    added.name = 'Track C';
+    added.clips = added.clips.map((clip) => ({ ...clip, id: 'clip-c', audioBufferId: 'buffer-c' }));
+    mockProject = {
+      ...mockProject,
+      tracks: [
+        ...mockProject.tracks.map((track) => track.id === 'track-a' ? { ...track, name: 'Renamed A' } : track),
+        added,
+      ],
+    };
+    release();
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+    expect(mockProject.tracks[0]?.name).toBe('Renamed A');
+    expect(mockProject.tracks.map((track) => track.muted)).toEqual([true, true, false]);
+    const command = mocks.push.mock.calls[0]![0];
+    expect(command.undo().tracks.map((track: { id: string }) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
   });
 });

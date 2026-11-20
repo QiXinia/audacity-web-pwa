@@ -914,6 +914,56 @@ class ProjectService {
     });
   }
 
+  /** Apply Audacity Simple-solo mute semantics to the latest queued project. */
+  async setTracksMute(
+    projectId: string,
+    trackIds: readonly string[],
+    muted: boolean,
+  ): Promise<{ before: IProject; after: IProject } | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
+      const targets = new Set(trackIds);
+      if (targets.size === 0 || !project.tracks.some((track) => targets.has(track.id))) return null;
+
+      const before = structuredClone(project);
+      const after: IProject = {
+        ...project,
+        tracks: project.tracks.map((track) => targets.has(track.id)
+          ? { ...track, muted, solo: false }
+          : track),
+      };
+      const saved = await this.saveProjectFromQueue(after);
+      return saved ? { before, after } : null;
+    });
+  }
+
+  /** Pan only selected tracks after all earlier project writes have committed. */
+  async setTracksPan(
+    projectId: string,
+    trackIds: readonly string[],
+    pan: -1 | 0 | 1,
+  ): Promise<{ before: IProject; after: IProject } | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
+      const targets = new Set(trackIds);
+      if (targets.size === 0 || !project.tracks.some((track) => targets.has(track.id))) return null;
+
+      const before = structuredClone(project);
+      const after: IProject = {
+        ...project,
+        tracks: project.tracks.map((track) => targets.has(track.id) ? { ...track, pan } : track),
+      };
+      const saved = await this.saveProjectFromQueue(after);
+      return saved ? { before, after } : null;
+    });
+  }
+
   async removeTrack(projectId: string, trackId: string): Promise<void> {
     return this.enqueueProjectWrite(async () => {
       const project = this.currentProject?.id === projectId

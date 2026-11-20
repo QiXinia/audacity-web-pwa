@@ -2210,31 +2210,24 @@ function AudioEditorPageContent() {
     }
 
     const targets = new Set(targetTrackIds);
-    const before = structuredClone(project);
-    const updated: IProject = {
-      ...project,
-      tracks: project.tracks.map((track) => targets.has(track.id)
-        // This editor implements Audacity's Simple solo behavior: either mute
-        // command clears solo on every track it targets, including no-op mute states.
-        ? { ...track, muted, solo: false }
-        : track),
-    };
     const label = muted
       ? (selectedOnly ? 'Mute Tracks' : 'Mute All Tracks')
       : (selectedOnly ? 'Unmute Tracks' : 'Unmute All Tracks');
     setIsMutingTracks(true);
     try {
-      await projectService.saveProject(updated);
+      const result = await projectService.setTracksMute(project.id, targetTrackIds, muted);
+      if (!result) return;
       const persisted = await projectService.getProject(project.id);
       if (!persisted) throw new Error('轨道状态保存后无法重新加载');
       setProject(persisted);
       pushHistoryCmd({
         id: generateId(),
         label,
-        execute: () => persisted,
-        undo: () => before,
+        execute: () => result.after,
+        undo: () => result.before,
       });
-      toast.success(`${muted ? '已静音' : '已取消静音'} ${targetTrackIds.length} 条${selectedOnly ? '选中' : ''}轨道`);
+      const affectedCount = result.before.tracks.filter((track) => targets.has(track.id)).length;
+      toast.success(`${muted ? '已静音' : '已取消静音'} ${affectedCount} 条${selectedOnly ? '选中' : ''}轨道`);
     } catch (error) {
       logger.error('Mute/Unmute tracks failed', error);
       toast.error(error instanceof Error ? error.message : '轨道静音状态保存失败');
@@ -2256,25 +2249,22 @@ function AudioEditorPageContent() {
     }
 
     const targets = new Set(targetTrackIds);
-    const before = structuredClone(project);
-    const updated: IProject = {
-      ...project,
-      tracks: project.tracks.map((track) => targets.has(track.id) ? { ...track, pan } : track),
-    };
     const label = pan < 0 ? 'Pan Left' : pan > 0 ? 'Pan Right' : 'Pan Center';
     setIsPanningTracks(true);
     try {
-      await projectService.saveProject(updated);
+      const result = await projectService.setTracksPan(project.id, targetTrackIds, pan);
+      if (!result) return;
       const persisted = await projectService.getProject(project.id);
       if (!persisted) throw new Error('轨道声像保存后无法重新加载');
       setProject(persisted);
       pushHistoryCmd({
         id: generateId(),
         label,
-        execute: () => persisted,
-        undo: () => before,
+        execute: () => result.after,
+        undo: () => result.before,
       });
-      toast.success(`已将 ${targetTrackIds.length} 条选中轨道的声像设为${pan < 0 ? '左侧' : pan > 0 ? '右侧' : '中央'}`);
+      const affectedCount = result.before.tracks.filter((track) => targets.has(track.id)).length;
+      toast.success(`已将 ${affectedCount} 条选中轨道的声像设为${pan < 0 ? '左侧' : pan > 0 ? '右侧' : '中央'}`);
     } catch (error) {
       logger.error('Pan tracks failed', error);
       toast.error(error instanceof Error ? error.message : '轨道声像保存失败');
