@@ -154,6 +154,71 @@ describe('AudioEngine recording boundaries', () => {
     expect(node!.port.close).toHaveBeenCalledOnce();
   });
 
+  it('coalesces reentrant stops while the worklet tail is pending', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context, source } = makeContext();
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    let node: {
+      port: {
+        onmessage: ((event: { data: Record<string, unknown> }) => void) | null;
+        postMessage: ReturnType<typeof vi.fn>;
+        close: ReturnType<typeof vi.fn>;
+      };
+      connect: ReturnType<typeof vi.fn>;
+      disconnect: ReturnType<typeof vi.fn>;
+    };
+    class MockWorkletNode {
+      port = {
+        onmessage: null as ((event: { data: Record<string, unknown> }) => void) | null,
+        postMessage: vi.fn(),
+        close: vi.fn(),
+      };
+      connect = vi.fn();
+      disconnect = vi.fn();
+      constructor() {
+        node = {
+          port: this.port,
+          connect: this.connect,
+          disconnect: this.disconnect,
+        };
+      }
+    }
+    vi.stubGlobal('AudioWorkletNode', MockWorkletNode);
+    const onRecordingData = vi.fn();
+    engine.setRecordingDataCallback(onRecordingData);
+
+    await engine.startRecording();
+    node!.port.onmessage?.({
+      data: {
+        type: 'recording',
+        audioData: new Float32Array([0.25, 0.75]),
+        numChannels: 1,
+      },
+    });
+    const firstStop = engine.stopRecording();
+    const secondStop = engine.stopRecording();
+    const stopMessageCount = node!.port.postMessage.mock.calls
+      .filter(([message]) => (message as { type?: string }).type === 'stop').length;
+    node!.port.onmessage?.({ data: { type: 'stopped' } });
+    const secondResult = await secondStop;
+    const firstResult = await firstStop;
+
+    expect(stopMessageCount).toBe(1);
+    expect(firstResult).toBe(secondResult);
+    expect(Array.from(firstResult?.[0] ?? [])).toHaveLength(2);
+    expect(onRecordingData).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(source.disconnect).toHaveBeenCalledOnce();
+    expect(node!.disconnect).toHaveBeenCalledOnce();
+    expect(node!.port.close).toHaveBeenCalledOnce();
+  });
+
   it('uses the device channel count for stereo ScriptProcessor fallback', async () => {
     const engine = new AudioEngine();
     const { stream, stop } = makeMediaStream(2);

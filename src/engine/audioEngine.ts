@@ -67,6 +67,7 @@ export class AudioEngine {
   private _recordingSink: GainNode | null = null;
   private recordingStopResolver: (() => void) | null = null;
   private recordingStartPromise: Promise<void> | null = null;
+  private recordingStopPromise: Promise<Float32Array[] | null> | null = null;
   private recordingGeneration = 0;
 
   // Stopped-state microphone monitoring is independent from recording. The
@@ -1055,6 +1056,21 @@ export class AudioEngine {
   }
 
   async stopRecording(): Promise<Float32Array[] | null> {
+    // Audacity ProjectAudioManager::Stop marks the project as stopping before
+    // AudioIO::StopStream performs its one-shot stream cleanup. Coalesce the
+    // asynchronous Worklet tail wait too, so every caller observes the same
+    // result and only one stop message/cleanup path can run.
+    if (this.recordingStopPromise) return this.recordingStopPromise;
+    const pending = this.stopRecordingInternal();
+    this.recordingStopPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.recordingStopPromise === pending) this.recordingStopPromise = null;
+    }
+  }
+
+  private async stopRecordingInternal(): Promise<Float32Array[] | null> {
     if (this.recordingStartPromise) {
       // Invalidate every await boundary in the pending startup. If permission
       // has not resolved yet, the local stream is stopped as soon as it arrives.
