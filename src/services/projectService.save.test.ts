@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Dexie from 'dexie';
-import { audioDb, type AudioBufferRecord, type ProjectRecord } from '@/db/audioDb';
+import {
+  audioDb,
+  type AudioBufferRecord,
+  type HistorySnapshotRecord,
+  type ProjectRecord,
+} from '@/db/audioDb';
 import { audioEngine } from '@/engine/audioEngine';
 import { projectService } from '@/services/projectService';
 import type { IProject } from '@/types/project';
@@ -10,7 +15,7 @@ vi.mock('@/db/audioDb', () => ({
     projects: { get: vi.fn(), put: vi.fn(), delete: vi.fn(), filter: vi.fn() },
     audioBuffers: { where: vi.fn(), delete: vi.fn() },
     clipboard: {},
-    historySnapshots: {},
+    historySnapshots: { where: vi.fn() },
     transaction: vi.fn(),
   },
   serializeTracks: (tracks: unknown) => JSON.stringify(tracks),
@@ -105,12 +110,30 @@ function makeBuffer(id: string, projectId: string): AudioBufferRecord {
   };
 }
 
+function makeHistory(
+  id: number,
+  projectId: string,
+  stackType: HistorySnapshotRecord['stackType'] = 'undo',
+): HistorySnapshotRecord {
+  return {
+    id,
+    projectId,
+    stackType,
+    index: id,
+    label: `history-${id}`,
+    snapshotData: '{}',
+    timestamp: id,
+  };
+}
+
 function mockPermanentDeleteState(
   initialRecords: ProjectRecord[],
   initialBuffers: AudioBufferRecord[],
+  initialSnapshots: HistorySnapshotRecord[] = [],
 ) {
   const records = new Map(initialRecords.map((record) => [record.id, { ...record }]));
   const buffers = new Map(initialBuffers.map((buffer) => [buffer.id, buffer]));
+  const snapshots = new Map(initialSnapshots.map((snapshot) => [snapshot.id, { ...snapshot }]));
   let writeCount = 0;
 
   vi.mocked(audioDb.projects.get).mockImplementation((id) => {
@@ -147,6 +170,20 @@ function mockPermanentDeleteState(
     buffers.delete(id);
     return Dexie.Promise.resolve();
   });
+  vi.mocked(audioDb.historySnapshots.where).mockImplementation(() => ({
+    equals: (projectId: string) => ({
+      delete: () => {
+        let deleted = 0;
+        for (const [id, snapshot] of snapshots) {
+          if (snapshot.projectId === projectId) {
+            snapshots.delete(id);
+            deleted += 1;
+          }
+        }
+        return Dexie.Promise.resolve(deleted);
+      },
+    }),
+  } as never));
   vi.mocked(audioDb.transaction).mockImplementation((async (...args: unknown[]) => {
     const operation = args[args.length - 1];
     if (typeof operation !== 'function') {
@@ -154,6 +191,7 @@ function mockPermanentDeleteState(
     }
     const recordSnapshot = new Map(records);
     const bufferSnapshot = new Map(buffers);
+    const historySnapshot = new Map(snapshots);
     try {
       return await (operation as () => Promise<unknown>)();
     } catch (error) {
@@ -161,11 +199,13 @@ function mockPermanentDeleteState(
       for (const [id, record] of recordSnapshot) records.set(id, record);
       buffers.clear();
       for (const [id, buffer] of bufferSnapshot) buffers.set(id, buffer);
+      snapshots.clear();
+      for (const [id, snapshot] of historySnapshot) snapshots.set(id, snapshot);
       throw error;
     }
   }) as never);
 
-  return { records, buffers };
+  return { records, buffers, snapshots };
 }
 
 afterEach(() => {
@@ -364,6 +404,7 @@ describe('ProjectService ordered project saves', () => {
       'rw',
       audioDb.projects,
       audioDb.audioBuffers,
+      audioDb.historySnapshots,
       expect.any(Function),
     );
   });
@@ -427,5 +468,100 @@ describe('ProjectService ordered project saves', () => {
     expect([...state.buffers.keys()]).toEqual(['buffer-a']);
     expect(audioEngine.evictBuffer).not.toHaveBeenCalled();
     expect(mutableService.currentProject).toBe(laterProject);
+  });
+
+  it('deletes only the permanent project history snapshots after commit', async () => {
+    const state = mockPermanentDeleteState(
+      [makeRecord('before', 'deleted')],
+      [makeBuffer('buffer-a', 'save-race-project')],
+      [
+        makeHistory(1, 'save-race-project'),
+        makeHistory(2, 'other-project'),
+        makeHistory(3, 'save-race-project', 'redo'),
+      ],
+    );
+
+    await projectService.permanentlyDeleteProject('save-race-project');
+
+    expect(state.records.has('save-race-project')).toBe(false);
+    expect(state.buffers.size).toBe(0);
+    expect([...state.snapshots.keys()]).toEqual([2]);
+    expect(audioDb.historySnapshots.where).toHaveBeenCalledWith('projectId');
+    expect(audioDb.transaction).toHaveBeenCalledWith(
+      'rw',
+      audioDb.projects,
+      audioDb.audioBuffers,
+      audioDb.historySnapshots,
+      expect.any(Function),
+    );
+    expect(audioEngine.evictBuffer).toHaveBeenCalledWith('buffer-a');
+  });
+
+  it('rolls back project, buffers and history when history deletion fails', async () => {
+    const originalRecord = makeRecord('before', 'deleted');
+    const originalHistory = [
+      makeHistory(1, 'save-race-project'),
+      makeHistory(2, 'save-race-project', 'redo'),
+      makeHistory(3, 'other-project'),
+    ];
+    const state = mockPermanentDeleteState(
+      [originalRecord],
+      [makeBuffer('buffer-a', 'save-race-project')],
+      originalHistory,
+    );
+    mutableService.currentProject = makeProject('before');
+    mutableService.currentProjectId = 'save-race-project';
+    vi.mocked(audioDb.historySnapshots.where).mockImplementation(() => ({
+      equals: () => ({
+        delete: () => Dexie.Promise.reject(new Error('history delete failed')),
+      }),
+    } as never));
+
+    await expect(projectService.permanentlyDeleteProject('save-race-project'))
+      .rejects.toThrow('history delete failed');
+
+    expect(state.records.get('save-race-project')).toEqual(originalRecord);
+    expect([...state.buffers.keys()]).toEqual(['buffer-a']);
+    expect([...state.snapshots.values()]).toEqual(originalHistory);
+    expect(audioEngine.evictBuffer).not.toHaveBeenCalled();
+    expect(mutableService.currentProject?.id).toBe('save-race-project');
+    expect(mutableService.currentProjectId).toBe('save-race-project');
+    expect(audioDb.transaction).toHaveBeenCalledWith(
+      'rw',
+      audioDb.projects,
+      audioDb.audioBuffers,
+      audioDb.historySnapshots,
+      expect.any(Function),
+    );
+  });
+
+  it('clears deleted project histories without touching active project history', async () => {
+    const state = mockPermanentDeleteState(
+      [
+        makeRecord('first', 'deleted'),
+        { ...makeRecord('second', 'deleted'), id: 'other-project' },
+        { ...makeRecord('active'), id: 'active-project' },
+      ],
+      [
+        makeBuffer('buffer-a', 'save-race-project'),
+        makeBuffer('buffer-b', 'other-project'),
+        makeBuffer('buffer-c', 'active-project'),
+      ],
+      [
+        makeHistory(1, 'save-race-project'),
+        makeHistory(2, 'other-project'),
+        makeHistory(3, 'active-project'),
+        makeHistory(4, 'save-race-project', 'redo'),
+        makeHistory(5, 'other-project', 'redo'),
+        makeHistory(6, 'active-project', 'redo'),
+      ],
+    );
+
+    await projectService.clearDeletedProjects();
+
+    expect([...state.records.keys()]).toEqual(['active-project']);
+    expect([...state.buffers.keys()]).toEqual(['buffer-c']);
+    expect([...state.snapshots.keys()]).toEqual([3, 6]);
+    expect(audioEngine.evictBuffer).toHaveBeenCalledTimes(2);
   });
 });

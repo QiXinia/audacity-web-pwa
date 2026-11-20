@@ -720,12 +720,14 @@ class ProjectService {
       'rw',
       audioDb.projects,
       audioDb.audioBuffers,
+      audioDb.historySnapshots,
       async () => {
         await audioDb.projects.delete(id);
         const projectBuffers = await audioDb.audioBuffers.where('projectId').equals(id).toArray();
         for (const buf of projectBuffers) {
           await audioDb.audioBuffers.delete(buf.id);
         }
+        await audioDb.historySnapshots.where('projectId').equals(id).delete();
         return projectBuffers;
       },
     );
