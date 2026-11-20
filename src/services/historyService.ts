@@ -37,13 +37,21 @@ class HistoryManager {
   private projectId: string | null = null;
   private persistEnabled = true;
   private persistChain: Promise<void> = Promise.resolve();
+  private loadGeneration = 0;
+  private stackRevision = 0;
 
   async loadForProject(projectId: string): Promise<number> {
+    const generation = ++this.loadGeneration;
+
     // Finish writes belonging to the previously open project before switching.
+    // A newer load may supersede this one while those writes are finishing.
     await this.persistChain.catch(() => undefined);
+    if (generation !== this.loadGeneration) return 0;
+
     this.projectId = projectId;
     this.undoStack = [];
     this.redoStack = [];
+    const revision = ++this.stackRevision;
 
     if (!this.persistEnabled) return 0;
 
@@ -53,6 +61,12 @@ class HistoryManager {
         .equals(projectId)
         .sortBy('index');
 
+      // Do not let an obsolete database continuation write another project's
+      // stacks. This mirrors Audacity's project-attached ProjectHistory.
+      if (generation !== this.loadGeneration || this.projectId !== projectId) return 0;
+
+      const loadedUndoStack: HistoryCommand[] = [];
+      const loadedRedoStack: HistoryCommand[] = [];
       for (const snapshot of snapshots) {
         const states = deserializeHistorySnapshot<PersistedCommandSnapshot>(snapshot.snapshotData);
         if (!states?.before || !states?.after) continue;
@@ -64,18 +78,30 @@ class HistoryManager {
           undo: () => states.before,
         };
         if (snapshot.stackType === 'redo') {
-          this.redoStack.push(command);
+          loadedRedoStack.push(command);
         } else {
-          this.undoStack.push(command);
+          loadedUndoStack.push(command);
         }
       }
 
       // redoStack is stored in execution order; its top must be the next redo.
-      this.redoStack.reverse();
+      loadedRedoStack.reverse();
+
+      if (this.stackRevision === revision) {
+        this.undoStack = loadedUndoStack;
+        this.redoStack = loadedRedoStack;
+      } else {
+        // Commands created while the database read was in flight are newer than
+        // every restored snapshot. Keep them on top and preserve their redo
+        // semantics instead of resurrecting a persisted redo branch.
+        this.undoStack = [...loadedUndoStack, ...this.undoStack].slice(-this.maxUndoSteps);
+        this.schedulePersist();
+      }
+
       logger.info(
-        `历史快照加载完成: undo=${this.undoStack.length}, redo=${this.redoStack.length}`,
+        `历史快照加载完成: undo=${loadedUndoStack.length}, redo=${loadedRedoStack.length}`,
       );
-      return this.undoStack.length + this.redoStack.length;
+      return loadedUndoStack.length + loadedRedoStack.length;
     } catch (error) {
       logger.warn('加载历史快照失败:', String(error));
       return 0;
@@ -88,6 +114,7 @@ class HistoryManager {
       this.undoStack.shift();
     }
     this.redoStack = [];
+    this.stackRevision += 1;
 
     // Commands in this application are pure state transitions. Evaluating them
     // here only captures state; it does not rerun audio or database operations.
@@ -103,6 +130,7 @@ class HistoryManager {
 
     const project = command.undo();
     this.redoStack.push(command);
+    this.stackRevision += 1;
     this.schedulePersist();
     return { project, command };
   }
@@ -113,6 +141,7 @@ class HistoryManager {
 
     const project = command.execute();
     this.undoStack.push(command);
+    this.stackRevision += 1;
     this.schedulePersist();
     return { project, command };
   }
@@ -134,6 +163,8 @@ class HistoryManager {
   }
 
   clear(): void {
+    this.loadGeneration += 1;
+    this.stackRevision += 1;
     this.undoStack = [];
     this.redoStack = [];
     this.schedulePersist();
