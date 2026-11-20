@@ -357,6 +357,65 @@ describe('AudioEditorPage Timer Record', () => {
     expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
   }, 10_000);
 
+  it('stops and invalidates a pending manual startup when the editor unmounts', async () => {
+    let resolveStart!: () => void;
+    mocks.startRecording.mockReturnValue(new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    }));
+    mocks.stopRecording.mockResolvedValue(null);
+    const { unmount } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+
+    fireEvent.click(getRecordButton('开始录音'));
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1));
+    unmount();
+    await act(async () => {
+      resolveStart();
+      await Promise.resolve();
+    });
+
+    expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.info.mock.calls.filter(([message]) => String(message).startsWith('正在录音'))).toHaveLength(0);
+    expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it('discards an in-flight stop continuation when the editor unmounts', async () => {
+    let resolveStop!: (channels: Float32Array[]) => void;
+    mocks.stopRecording.mockReturnValue(new Promise<Float32Array[]>((resolve) => {
+      resolveStop = resolve;
+    }));
+    const { unmount } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+
+    fireEvent.click(getRecordButton('开始录音'));
+    await waitFor(() => expect(getRecordButton('停止录音')).toBeInTheDocument());
+    fireEvent.click(getRecordButton('停止录音'));
+    await waitFor(() => expect(mocks.stopRecording).toHaveBeenCalledTimes(1));
+    unmount();
+    await act(async () => {
+      resolveStop([Float32Array.from([0.1, 0.2, 0.3, 0.4])]);
+      await Promise.resolve();
+    });
+
+    expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.success).not.toHaveBeenCalledWith('录音已添加到「Track 1」');
+  }, 10_000);
+
+  it('stops an active recording without persisting it when the editor unmounts', async () => {
+    const { unmount } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Timer Record integration')).toBeInTheDocument();
+
+    fireEvent.click(getRecordButton('开始录音'));
+    await waitFor(() => expect(getRecordButton('停止录音')).toBeInTheDocument());
+    unmount();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.addRecordingToTrack).not.toHaveBeenCalled();
+    expect(mocks.success).not.toHaveBeenCalledWith('录音已添加到「Track 1」');
+  }, 10_000);
+
   it('allows a clean retry after microphone startup fails', async () => {
     let rejectStart!: (reason: Error) => void;
     mocks.startRecording

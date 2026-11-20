@@ -904,6 +904,7 @@ export default function AudioEditorPage() {
   const isPlayingRef = useRef(false);
   const recordingSampleRateRef = useRef(44100);
   const recordingStateRef = useRef<RecordingState>('idle');
+  const recordingPageActiveRef = useRef(true);
   const recordingMonitoringPreferencesRef = useRef(recordingMonitoringPreferences);
   const microphoneSyncGenerationRef = useRef(0);
   const microphoneErrorNotificationRef = useRef(false);
@@ -963,10 +964,27 @@ export default function AudioEditorPage() {
     });
   }, [workspaceLayout]);
 
-  // Timer Record timers must never fire after leaving the editor.
-  useEffect(() => () => {
-    timerRecordControllerRef.current?.cancel();
-    timerRecordControllerRef.current = null;
+  // Leaving the editor must cancel timers and close either an active recorder
+  // or a pending startup. Discard the returned channels: persisting a clip or
+  // showing completion UI after unmount would mutate a project the user left.
+  useEffect(() => {
+    // StrictMode replays mount cleanup/setup; every real setup reopens the gate.
+    recordingPageActiveRef.current = true;
+    return () => {
+      recordingPageActiveRef.current = false;
+      const shouldStopRecording = startRecordingPromiseRef.current !== null
+        || recordingStateRef.current === 'recording';
+      timerRecordControllerRef.current?.cancel();
+      timerRecordControllerRef.current = null;
+      recordingStartGenerationRef.current += 1;
+      startRecordingPromiseRef.current = null;
+      recordingStateRef.current = 'idle';
+      if (shouldStopRecording) {
+        void (async () => { await audioEngine.stopRecording(); })().catch((error) => {
+          logger.warn('离开编辑器时停止录音失败:', String(error));
+        });
+      }
+    };
   }, []);
 
   // Load project
@@ -1358,6 +1376,7 @@ export default function AudioEditorPage() {
   async function stopRecordingInternal(): Promise<IProject | null> {
     try {
       const data = await audioEngine.stopRecording();
+      if (!recordingPageActiveRef.current) return null;
       if (!data || data.length === 0 || data[0].length === 0) {
         toast.warning('未采集到音频，请检查麦克风输入');
         return null;
@@ -1399,18 +1418,21 @@ export default function AudioEditorPage() {
       toast.success(`录音已添加到「${targetTrack.name}」`);
       return updated;
     } catch (error) {
+      if (!recordingPageActiveRef.current) return null;
       logger.error('保存录音失败:', String(error));
       toast.error('录音保存失败');
       return null;
     } finally {
       recordingStateRef.current = 'idle';
-      setRecordingState('idle');
+      if (recordingPageActiveRef.current) setRecordingState('idle');
     }
   }
 
   function startRecording(): Promise<boolean> {
     if (startRecordingPromiseRef.current) return startRecordingPromiseRef.current;
-    if (!project || recordingStateRef.current === 'recording') return Promise.resolve(false);
+    if (!recordingPageActiveRef.current || !project || recordingStateRef.current === 'recording') {
+      return Promise.resolve(false);
+    }
 
     const generation = ++recordingStartGenerationRef.current;
     const startOperation = startRecordingInternal(generation);
