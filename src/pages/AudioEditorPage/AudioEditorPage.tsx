@@ -910,6 +910,8 @@ export default function AudioEditorPage() {
   recordingMonitoringPreferencesRef.current = recordingMonitoringPreferences;
   const startRecordingRef = useRef<() => Promise<boolean>>(async () => false);
   const stopRecordingRef = useRef<() => Promise<IProject | null>>(async () => null);
+  const stopRecordingPromiseRef = useRef<Promise<IProject | null> | null>(null);
+  const manualRecordStopPromiseRef = useRef<Promise<void> | null>(null);
   const timerRecordControllerRef = useRef<TimerRecordController | null>(null);
   recordingStateRef.current = recordingState;
   const workspaceHydratedRef = useRef(false);
@@ -1330,8 +1332,21 @@ export default function AudioEditorPage() {
   }
 
   // Recording
-  async function stopRecording(): Promise<IProject | null> {
-    if (recordingStateRef.current !== 'recording') return null;
+  function stopRecording(): Promise<IProject | null> {
+    if (stopRecordingPromiseRef.current) return stopRecordingPromiseRef.current;
+    if (recordingStateRef.current !== 'recording') return Promise.resolve(null);
+
+    const stopOperation = stopRecordingInternal();
+    const sharedStopOperation = stopOperation.finally(() => {
+      if (stopRecordingPromiseRef.current === sharedStopOperation) {
+        stopRecordingPromiseRef.current = null;
+      }
+    });
+    stopRecordingPromiseRef.current = sharedStopOperation;
+    return sharedStopOperation;
+  }
+
+  async function stopRecordingInternal(): Promise<IProject | null> {
     try {
       const data = await audioEngine.stopRecording();
       if (!data || data.length === 0 || data[0].length === 0) {
@@ -1462,14 +1477,29 @@ export default function AudioEditorPage() {
   }
 
   async function handleRecord() {
+    if (manualRecordStopPromiseRef.current) {
+      await manualRecordStopPromiseRef.current;
+      return;
+    }
+
     if (recordingStateRef.current === 'recording') {
       const activeSession = timerRecordSession;
       timerRecordControllerRef.current?.cancel();
       timerRecordControllerRef.current = null;
       setTimerRecordSession(null);
-      const recordedProject = await stopRecordingRef.current();
-      if (activeSession?.phase === 'recording' && recordedProject) {
-        await finalizeTimerRecord(activeSession.options, recordedProject, true);
+      const manualStopOperation = (async () => {
+        const recordedProject = await stopRecordingRef.current();
+        if (activeSession?.phase === 'recording' && recordedProject) {
+          await finalizeTimerRecord(activeSession.options, recordedProject, true);
+        }
+      })();
+      manualRecordStopPromiseRef.current = manualStopOperation;
+      try {
+        await manualStopOperation;
+      } finally {
+        if (manualRecordStopPromiseRef.current === manualStopOperation) {
+          manualRecordStopPromiseRef.current = null;
+        }
       }
       return;
     }

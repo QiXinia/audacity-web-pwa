@@ -224,6 +224,79 @@ describe('AudioEditorPage Timer Record', () => {
     expect(mocks.addRecordingToTrack).toHaveBeenCalledTimes(1);
   }, 10_000);
 
+  it('coalesces repeated manual stops into one saved clip and history step', async () => {
+    let resolveStop!: (channels: Float32Array[]) => void;
+    mocks.stopRecording.mockReturnValue(new Promise<Float32Array[]>((resolve) => {
+      resolveStop = resolve;
+    }));
+    render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    setDuration('0', '1', '0');
+    submitTimerRecord();
+
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    const stopButton = screen.getByRole('button', { name: '停止录音' });
+    fireEvent.click(stopButton);
+    fireEvent.click(stopButton);
+    resolveStop([Float32Array.from([0.1, 0.2, 0.3, 0.4])]);
+
+    await waitFor(() => expect(mocks.addRecordingToTrack).toHaveBeenCalledTimes(1));
+    expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mockProject.tracks[0].clips).toHaveLength(1);
+  }, 10_000);
+
+  it('runs Timer Record automatic actions once when manual stop is repeated', async () => {
+    let resolveStop!: (channels: Float32Array[]) => void;
+    mocks.stopRecording.mockReturnValue(new Promise<Float32Array[]>((resolve) => {
+      resolveStop = resolve;
+    }));
+    render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Save/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Export/ }));
+    setDuration('0', '1', '0');
+    submitTimerRecord();
+
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    const stopButton = screen.getByRole('button', { name: '停止录音' });
+    fireEvent.click(stopButton);
+    fireEvent.click(stopButton);
+    resolveStop([Float32Array.from([0.1, 0.2, 0.3, 0.4])]);
+
+    await waitFor(() => expect(mocks.exportWav).toHaveBeenCalled());
+    expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.addRecordingToTrack).toHaveBeenCalledTimes(1);
+    expect(mocks.saveProject).toHaveBeenCalledTimes(1);
+    expect(mocks.exportWav).toHaveBeenCalledTimes(1);
+    expect(mocks.createObjectURL).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
+  it('does not restart recording while manual Timer Record finalization is pending', async () => {
+    let resolveSave!: () => void;
+    mocks.saveProject.mockImplementation(async (project: IProject) => {
+      await new Promise<void>((resolve) => { resolveSave = resolve; });
+      mockProject = project;
+    });
+    render(<AudioEditorPage />);
+    await openTimerRecordDialog();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable Automatic Save/ }));
+    setDuration('0', '1', '0');
+    submitTimerRecord();
+
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    fireEvent.click(screen.getByRole('button', { name: '停止录音' }));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: '开始录音' }));
+    resolveSave();
+
+    await waitFor(() => expect(mocks.success).toHaveBeenCalledWith('定时录音完成：工程已自动保存'));
+    expect(mocks.startRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.stopRecording).toHaveBeenCalledTimes(1);
+    expect(mocks.addRecordingToTrack).toHaveBeenCalledTimes(1);
+    expect(mocks.saveProject).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
   it('links advanced controls and rejects an invalid automatic export filename', async () => {
     render(<AudioEditorPage />);
     await openTimerRecordDialog();
