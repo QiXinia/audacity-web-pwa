@@ -909,6 +909,7 @@ export default function AudioEditorPage() {
   const microphoneErrorNotificationRef = useRef(false);
   recordingMonitoringPreferencesRef.current = recordingMonitoringPreferences;
   const startRecordingRef = useRef<() => Promise<boolean>>(async () => false);
+  const startRecordingPromiseRef = useRef<Promise<boolean> | null>(null);
   const stopRecordingRef = useRef<() => Promise<IProject | null>>(async () => null);
   const stopRecordingPromiseRef = useRef<Promise<IProject | null> | null>(null);
   const manualRecordStopPromiseRef = useRef<Promise<void> | null>(null);
@@ -1399,8 +1400,21 @@ export default function AudioEditorPage() {
     }
   }
 
-  async function startRecording(): Promise<boolean> {
-    if (!project || recordingStateRef.current === 'recording') return false;
+  function startRecording(): Promise<boolean> {
+    if (startRecordingPromiseRef.current) return startRecordingPromiseRef.current;
+    if (!project || recordingStateRef.current === 'recording') return Promise.resolve(false);
+
+    const startOperation = startRecordingInternal();
+    const sharedStartOperation = startOperation.finally(() => {
+      if (startRecordingPromiseRef.current === sharedStartOperation) {
+        startRecordingPromiseRef.current = null;
+      }
+    });
+    startRecordingPromiseRef.current = sharedStartOperation;
+    return sharedStartOperation;
+  }
+
+  async function startRecordingInternal(): Promise<boolean> {
     try {
       audioEngine.setMonitoringEnabled?.(recordingMonitoringPreferencesRef.current.inputMonitoring);
       await audioEngine.ensureContext();
@@ -1513,7 +1527,7 @@ export default function AudioEditorPage() {
   }
 
   function scheduleTimerRecord(schedule: TimerRecordSchedule, options: TimerRecordAdvancedOptions) {
-    if (recordingStateRef.current === 'recording' || timerRecordSession) {
+    if (startRecordingPromiseRef.current || recordingStateRef.current === 'recording' || timerRecordSession) {
       toast.warning('请先停止当前录音或取消已有定时录音');
       return;
     }
