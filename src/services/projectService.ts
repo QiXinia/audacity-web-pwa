@@ -672,7 +672,9 @@ class ProjectService {
         return true;
       },
     ));
-    this.currentProject = project;
+    if (saved !== false) {
+      this.currentProject = project;
+    }
     return saved;
   }
 
@@ -826,18 +828,16 @@ class ProjectService {
       ? this.currentProject
       : await this.getProject(projectId);
     if (!project || project.tracks.length <= 1) return;
+    if (!project.tracks.some((track) => track.id === trackId)) return;
 
-    // Delete associated audio buffers for clips on this track
-    const track = project.tracks.find((t) => t.id === trackId);
-    if (track) {
-      for (const clip of track.clips) {
-        await audioDb.audioBuffers.delete(clip.audioBufferId);
-        audioEngine.evictBuffer(clip.audioBufferId);
-      }
-    }
-
-    project.tracks = project.tracks.filter((t) => t.id !== trackId);
-    await this.saveProject(project);
+    // Audacity keeps removed tracks alive through undo history. Remaining clips
+    // can also share a buffer with the removed track, so PCM cleanup belongs to
+    // permanent project deletion rather than this reversible track operation.
+    const updatedProject: IProject = {
+      ...project,
+      tracks: project.tracks.filter((track) => track.id !== trackId),
+    };
+    await this.saveProject(updatedProject);
   }
 
   async updateTrack(projectId: string, trackId: string, updates: Partial<ITrack>): Promise<void> {
