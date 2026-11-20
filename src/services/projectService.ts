@@ -423,6 +423,7 @@ const DEFAULT_PREFS: IPreferences = {
 class ProjectService {
   private currentProject: IProject | null = null;
   private currentProjectId: string | null = null;
+  private saveQueue: Promise<void> = Promise.resolve();
 
   constructor() {
     // Load from localStorage on init if needed
@@ -644,8 +645,14 @@ class ProjectService {
 
   async saveProject(project: IProject): Promise<void> {
     project.updatedAt = Date.now();
+    // Capture this invocation before queuing so later mutations cannot rewrite its snapshot.
     const record = this.projectToRecord(project);
-    await audioDb.projects.put(record);
+    const write = this.saveQueue.then(async () => {
+      await audioDb.projects.put(record);
+    });
+    // A failed save must reject its own caller without blocking later saves.
+    this.saveQueue = write.catch(() => undefined);
+    await write;
     this.currentProject = project;
   }
 
