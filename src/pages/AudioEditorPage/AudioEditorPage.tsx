@@ -2504,12 +2504,10 @@ function AudioEditorPageContent() {
 
   async function updateTrack(trackId: string, updates: Partial<ITrack>) {
     if (!project) return;
-    await projectService.updateTrack(project.id, trackId, updates);
-    const updated = {
-      ...project,
-      tracks: project.tracks.map((t) => (t.id === trackId ? { ...t, ...updates } : t)),
-    };
-    setProject(updated);
+    const updated = await projectService.updateTrack(project.id, trackId, updates);
+    // Render only the committed snapshot. A null result means the project was
+    // permanently deleted or the track disappeared before the write.
+    if (updated) setProject(updated);
   }
 
   function toggleMute(trackId: string) {

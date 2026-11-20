@@ -650,12 +650,8 @@ class ProjectService {
     return pendingBuffers.length;
   }
 
-  /** Return false when permanent deletion won the race and no project was written. */
-  async saveProject(project: IProject): Promise<boolean | void> {
-    project.updatedAt = Date.now();
-    // Capture this invocation before queuing so later mutations cannot rewrite its snapshot.
-    const record = this.projectToRecord(project);
-    const saved = await this.enqueueProjectWrite(() => audioDb.transaction(
+  private async writeProjectRecord(project: IProject, record: ProjectRecord): Promise<boolean> {
+    const saved = await audioDb.transaction(
       'rw',
       audioDb.projects,
       async () => {
@@ -671,11 +667,25 @@ class ProjectService {
         await audioDb.projects.put(record);
         return true;
       },
-    ));
-    if (saved !== false) {
+    );
+    if (saved) {
       this.currentProject = project;
     }
     return saved;
+  }
+
+  /** Capture a track mutation only after earlier queued mutations have committed. */
+  private saveProjectFromQueue(project: IProject): Promise<boolean> {
+    project.updatedAt = Date.now();
+    return this.writeProjectRecord(project, this.projectToRecord(project));
+  }
+
+  /** Return false when permanent deletion won the race and no project was written. */
+  async saveProject(project: IProject): Promise<boolean | void> {
+    project.updatedAt = Date.now();
+    // Capture this invocation before queuing so later mutations cannot rewrite its snapshot.
+    const record = this.projectToRecord(project);
+    return this.enqueueProjectWrite(() => this.writeProjectRecord(project, record));
   }
 
   async openProject(id: string): Promise<IProject | null> {
@@ -776,16 +786,21 @@ class ProjectService {
 
   // Track operations
   async addTrack(projectId: string): Promise<ITrack | null> {
-    const project = this.currentProject?.id === projectId
-      ? this.currentProject
-      : await this.getProject(projectId);
-    if (!project) return null;
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
 
-    const newTrack = this.createDefaultTrack(project.tracks.length);
-    newTrack.sampleRate = project.sampleRate;
-    project.tracks.push(newTrack);
-    await this.saveProject(project);
-    return newTrack;
+      const newTrack = this.createDefaultTrack(project.tracks.length);
+      newTrack.sampleRate = project.sampleRate;
+      const updatedProject: IProject = {
+        ...project,
+        tracks: [...project.tracks, newTrack],
+      };
+      const saved = await this.saveProjectFromQueue(updatedProject);
+      return saved ? newTrack : null;
+    });
   }
 
   /** Duplicate a complete Audacity track with independent clips and PCM buffers. */
@@ -840,17 +855,26 @@ class ProjectService {
     await this.saveProject(updatedProject);
   }
 
-  async updateTrack(projectId: string, trackId: string, updates: Partial<ITrack>): Promise<void> {
-    const project = this.currentProject?.id === projectId
-      ? this.currentProject
-      : await this.getProject(projectId);
-    if (!project) return;
+  async updateTrack(
+    projectId: string,
+    trackId: string,
+    updates: Partial<ITrack>,
+  ): Promise<IProject | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project || !project.tracks.some((track) => track.id === trackId)) return null;
 
-    const track = project.tracks.find((t) => t.id === trackId);
-    if (!track) return;
-
-    Object.assign(track, updates);
-    await this.saveProject(project);
+      const updatedProject: IProject = {
+        ...project,
+        tracks: project.tracks.map((track) => (
+          track.id === trackId ? { ...track, ...updates } : track
+        )),
+      };
+      const saved = await this.saveProjectFromQueue(updatedProject);
+      return saved ? updatedProject : null;
+    });
   }
 
   // Clip operations - import audio to a track
