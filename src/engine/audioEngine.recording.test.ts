@@ -763,4 +763,42 @@ describe('AudioEngine recording boundaries', () => {
     await engine.stopRecording();
     expect(engine.isMicrophoneMonitoringActive()).toBe(false);
   });
+
+  it('finishes primary PCM cleanup when the optional MediaRecorder backup fails to stop', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context, source, processor } = makeContext({ worklet: false });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+    vi.stubGlobal('MediaRecorder', class {
+      state = 'inactive';
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      constructor(_stream: unknown) {}
+      start() { this.state = 'recording'; }
+      stop() { throw new Error('backup recorder stop failed'); }
+    });
+    const onRecordingData = vi.fn();
+    engine.setRecordingDataCallback(onRecordingData);
+
+    await engine.startRecording();
+    processor.onaudioprocess?.({
+      inputBuffer: {
+        numberOfChannels: 1,
+        length: 2,
+        getChannelData: () => new Float32Array([0.125, -0.25]),
+      },
+    });
+    const result = await engine.stopRecording();
+
+    expect(Array.from(result?.[0] ?? [])).toEqual([0.125, -0.25]);
+    expect(onRecordingData).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(source.disconnect).toHaveBeenCalledOnce();
+    expect(processor.disconnect).toHaveBeenCalledOnce();
+    expect(processor.onaudioprocess).toBeNull();
+    expect(engine.recordingState).toBe('idle');
+  });
 });

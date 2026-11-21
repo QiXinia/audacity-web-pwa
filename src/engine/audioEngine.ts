@@ -1112,7 +1112,13 @@ export class AudioEngine {
     }
 
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-      this.mediaRecorder.stop();
+      try {
+        this.mediaRecorder.stop();
+      } catch (error) {
+        // MediaRecorder is only an optional encoded backup. Its failure must
+        // not abort primary PCM finalization or leave the microphone graph alive.
+        logger.warn('MediaRecorder 备份停止失败，继续保存 PCM 录音:', String(error));
+      }
     }
 
     // 合并录音块（左声道一定有，右声道只有立体声模式才有）
