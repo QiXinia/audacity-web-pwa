@@ -47,9 +47,18 @@ class RecordingProcessor extends AudioWorkletProcessor {
     if (!this.channelCountConfigured) this.numChannels = input.length;
     const length = input[0].length;
     const chunk = new Float32Array(length * this.numChannels);
-    for (let i = 0; i < length; i++) {
-      for (let channel = 0; channel < this.numChannels; channel++) {
-        chunk[i * this.numChannels + channel] = input[channel]?.[i] ?? input[0][i];
+    if (this.numChannels === 1 && input.length === 2) {
+      // Match Audacity AudioIO's stereo-input -> mono-track mixdown. Some
+      // fallback implementations can still expose a stereo block despite the
+      // mono node configuration; selecting only the left channel loses audio.
+      for (let i = 0; i < length; i++) {
+        chunk[i] = (input[0][i] + input[1][i]) * 0.5;
+      }
+    } else {
+      for (let i = 0; i < length; i++) {
+        for (let channel = 0; channel < this.numChannels; channel++) {
+          chunk[i * this.numChannels + channel] = input[channel]?.[i] ?? input[0][i];
+        }
       }
     }
     this.pending.push(chunk);

@@ -479,7 +479,7 @@ describe('AudioEngine recording boundaries', () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
-  it('keeps mono recording mono during ScriptProcessor fallback on a stereo device', async () => {
+  it('mixes stereo input to mono during ScriptProcessor fallback on a stereo device', async () => {
     const engine = new AudioEngine();
     const { stream, stop } = makeMediaStream(2);
     const { context, processor, createScriptProcessor } = makeContext({ worklet: false });
@@ -503,10 +503,9 @@ describe('AudioEngine recording boundaries', () => {
     const result = await engine.stopRecording();
 
     expect(result).toHaveLength(1);
-    expect(Array.from(result?.[0] ?? [])).toEqual([
-      0.10000000149011612,
-      0.20000000298023224,
-    ]);
+    expect(result?.[0]).toHaveLength(2);
+    expect(result?.[0]?.[0]).toBeCloseTo(0.45, 6);
+    expect(result?.[0]?.[1]).toBeCloseTo(0.55, 6);
     expect(stop).toHaveBeenCalledOnce();
   });
 

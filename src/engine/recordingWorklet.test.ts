@@ -103,4 +103,19 @@ describe('recording AudioWorklet', () => {
       0.4000000059604645,
     ]);
   });
+
+  it('mixes stereo blocks to mono when mono recording is configured', () => {
+    const { processor, messages, port } = loadRecordingProcessor();
+    port.onmessage?.({ data: { type: 'init', stereo: false } });
+
+    expect(processor.process([[
+      new Float32Array([1, 0.25]),
+      new Float32Array([0.5, 0.75]),
+    ]], [], {})).toBe(true);
+    port.onmessage?.({ data: { type: 'stop' } });
+
+    expect(messages.map((message) => message.type)).toEqual(['recording', 'stopped']);
+    expect(messages[0].numChannels).toBe(1);
+    expect(Array.from(messages[0].audioData ?? [])).toEqual([0.75, 0.5]);
+  });
 });

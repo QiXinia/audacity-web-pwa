@@ -1042,6 +1042,15 @@ export class AudioEngine {
         const channels = Math.min(inputChannels, e.inputBuffer.numberOfChannels);
         const left = new Float32Array(e.inputBuffer.length);
         left.set(e.inputBuffer.getChannelData(0));
+        if (!isStereo && e.inputBuffer.numberOfChannels === 2) {
+          // Audacity AudioIO mixes stereo input to a mono track by averaging
+          // both sources. Do not silently discard the right channel if a
+          // fallback browser still supplies a stereo AudioBuffer here.
+          const rightInput = e.inputBuffer.getChannelData(1);
+          for (let i = 0; i < left.length; i++) {
+            left[i] = (left[i] + rightInput[i]) * 0.5;
+          }
+        }
         this._recordedChunksL?.push(left);
         if (isStereo) {
           // Audacity ConfigureCaptureRouting duplicates mono input into both
