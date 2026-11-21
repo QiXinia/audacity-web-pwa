@@ -1,9 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject, ITrack } from '@/types/project';
+import { setTrackColor } from '@/lib/clipColor';
 
 const mocks = vi.hoisted(() => ({
-  success: vi.fn(), warning: vi.fn(), error: vi.fn(), saveProject: vi.fn(), loadChannels: vi.fn(),
+  success: vi.fn(), warning: vi.fn(), error: vi.fn(), saveProject: vi.fn(),
+  updateTrackAppearance: vi.fn(), loadChannels: vi.fn(),
 }));
 let mockProject: IProject;
 
@@ -42,6 +44,7 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    updateTrackAppearance: mocks.updateTrackAppearance,
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
   },
@@ -101,6 +104,17 @@ describe('AudioEditorPage Track context Track color', () => {
     vi.clearAllMocks();
     mockProject = makeProject();
     mocks.saveProject.mockImplementation(async (project: IProject) => { mockProject = project; });
+    mocks.updateTrackAppearance.mockImplementation(async (
+      _projectId: string,
+      trackId: string,
+      change: { type: 'color'; colorIndex: number },
+    ) => {
+      const updated = setTrackColor(mockProject, trackId, change.colorIndex);
+      if (updated === mockProject) return null;
+      await mocks.saveProject(updated);
+      mockProject = updated;
+      return updated;
+    });
     mocks.loadChannels.mockResolvedValue([Float32Array.from([0.2, 0.4])]);
   });
 
@@ -161,5 +175,52 @@ describe('AudioEditorPage Track context Track color', () => {
     expect(screen.getByTestId('track-color-swatch-b')).toHaveAttribute('data-track-color', '#F08080');
     expect(clipColor('buffer-auto-b')).toBe('#F08080');
     expect(clipColor('buffer-explicit-b')).toBe('#F08080');
+  });
+
+  it('preserves a concurrent track addition and rename while color is being saved', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.saveProject.mockImplementation(async (project: IProject) => {
+      await gate;
+      mockProject = project;
+    });
+    mocks.updateTrackAppearance.mockImplementation(async (
+      _projectId: string,
+      trackId: string,
+      change: { type: 'color'; colorIndex: number },
+    ) => {
+      await gate;
+      const updated = setTrackColor(mockProject, trackId, change.colorIndex);
+      mockProject = updated;
+      return updated;
+    });
+    await renderEditor();
+    await openTrackColorMenu('b');
+    fireEvent.click(await screen.findByTestId('track-color-9'));
+    await waitFor(() => expect(
+      mocks.saveProject.mock.calls.length + mocks.updateTrackAppearance.mock.calls.length,
+    ).toBe(1));
+
+    const added = structuredClone(mockProject.tracks[0]!);
+    added.id = 'track-c';
+    added.name = 'Track C';
+    added.clips = added.clips.map((clip) => ({
+      ...clip,
+      id: `${clip.id}-c`,
+      audioBufferId: `${clip.audioBufferId}-c`,
+    }));
+    mockProject = {
+      ...mockProject,
+      tracks: [
+        ...mockProject.tracks.map((track) => track.id === 'a' ? { ...track, name: 'Renamed Alpha' } : track),
+        added,
+      ],
+    };
+    release();
+
+    await waitFor(() => expect(screen.getByTestId('track-color-swatch-b')).toHaveAttribute('data-track-color', '#48BECF'));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['a', 'b', 'track-c']);
+    expect(mockProject.tracks[0]?.name).toBe('Renamed Alpha');
+    expect(mockProject.tracks[1]?.color).toBe('#48BECF');
   });
 });

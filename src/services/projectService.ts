@@ -16,13 +16,15 @@ import {
   parseFrequencySelection,
   type FrequencySelection,
 } from '@/lib/spectralSelection';
-import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect, TrackSampleFormat } from '@/types/project';
+import type { IProject, IProjectSummary, ITrack, IClip, IPreferences, IEffect, TrackSampleFormat, ViewMode } from '@/types/project';
 import { deserializeAnalysisLabels, serializeAnalysisLabels } from '@/lib/analysisLabels';
 import { deserializeLabelTracks, serializeLabelTracks } from '@/lib/labelTracks';
 import { duplicateTrackInProject } from '@/lib/trackDuplicate';
 import { moveTrackInOrder, type TrackMoveDirection } from '@/lib/trackMove';
 import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
 import { alignProjectTracks, type TrackAlignMode } from '@/lib/trackAlignment';
+import { setTrackColor } from '@/lib/clipColor';
+import { setTrackHalfWave, setTrackViewMode } from '@/lib/trackVisualization';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
@@ -422,6 +424,11 @@ const DEFAULT_PREFS: IPreferences = {
   moveSelectionWithTracks: false,
   syncLockTracks: false,
 };
+
+export type TrackAppearanceChange =
+  | { type: 'color'; colorIndex: number }
+  | { type: 'viewMode'; viewMode: ViewMode }
+  | { type: 'halfWave'; halfWave: boolean };
 
 class ProjectService {
   private currentProject: IProject | null = null;
@@ -1000,6 +1007,30 @@ class ProjectService {
       const after = alignProjectTracks(current, trackIds, mode, activeSelection, options);
       const saved = await this.saveProjectFromQueue(after);
       return saved ? { before, after } : null;
+    });
+  }
+
+  /** Change per-track appearance only after every earlier project write has committed. */
+  async updateTrackAppearance(
+    projectId: string,
+    trackId: string,
+    change: TrackAppearanceChange,
+  ): Promise<IProject | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
+
+      const updated = change.type === 'color'
+        ? setTrackColor(project, trackId, change.colorIndex)
+        : change.type === 'viewMode'
+          ? setTrackViewMode(project, trackId, change.viewMode)
+          : setTrackHalfWave(project, trackId, change.halfWave);
+      if (updated === project) return null;
+
+      const saved = await this.saveProjectFromQueue(updated);
+      return saved ? updated : null;
     });
   }
 

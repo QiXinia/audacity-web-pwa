@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject, ViewMode } from '@/types/project';
+import { setTrackHalfWave, setTrackViewMode } from '@/lib/trackVisualization';
 import { loadWorkspaceStore, saveWorkspaceStore, WORKSPACE_STORAGE_KEY } from '@/services/workspaceService';
 import { METER_PREFERENCES_STORAGE_KEY } from '@/lib/meterPreferences';
 import {
@@ -73,6 +74,20 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: vi.fn(async (project: IProject) => { mockProject = project; }),
+    updateTrackAppearance: vi.fn(async (
+      _projectId: string,
+      trackId: string,
+      change:
+        | { type: 'viewMode'; viewMode: ViewMode }
+        | { type: 'halfWave'; halfWave: boolean },
+    ) => {
+      const updated = change.type === 'viewMode'
+        ? setTrackViewMode(mockProject, trackId, change.viewMode)
+        : setTrackHalfWave(mockProject, trackId, change.halfWave);
+      if (updated === mockProject) return null;
+      mockProject = updated;
+      return updated;
+    }),
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => null),
   },

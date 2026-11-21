@@ -569,14 +569,11 @@ import {
   getClipColorIndex,
   getTrackColorIndex,
   setClipColor,
-  setTrackColor,
 } from '@/lib/clipColor';
 import {
   getTrackHalfWave,
   getTrackViewMode,
   getTrackVisualizationMode,
-  setTrackHalfWave,
-  setTrackViewMode,
   type TrackVisualizationMode,
 } from '@/lib/trackVisualization';
 import { renameClipTitle } from '@/lib/clipTitle';
@@ -2768,11 +2765,11 @@ function AudioEditorPageContent() {
 
   async function changeTrackColor(trackId: string, colorIndex: number): Promise<void> {
     if (!project) return;
-    const updated = setTrackColor(project, trackId, colorIndex);
-    if (updated === project) return;
     try {
-      await projectService.saveProject(updated);
-      setProject(updated);
+      const updated = await projectService.updateTrackAppearance(project.id, trackId, {
+        type: 'color', colorIndex,
+      });
+      if (updated) setProject(updated);
     } catch (error) {
       logger.error('Change track color failed', error);
       toast.error(error instanceof Error ? error.message : '轨道颜色保存失败');
@@ -2781,11 +2778,11 @@ function AudioEditorPageContent() {
 
   async function changeTrackViewMode(trackId: string, mode: ViewMode): Promise<void> {
     if (!project) return;
-    const updated = setTrackViewMode(project, trackId, mode);
-    if (updated === project) return;
     try {
-      await projectService.saveProject(updated);
-      setProject(updated);
+      const updated = await projectService.updateTrackAppearance(project.id, trackId, {
+        type: 'viewMode', viewMode: mode,
+      });
+      if (updated) setProject(updated);
     } catch (error) {
       logger.error('Change track visualization failed', error);
       toast.error(error instanceof Error ? error.message : '轨道视图保存失败');
@@ -2794,11 +2791,11 @@ function AudioEditorPageContent() {
 
   async function changeTrackHalfWave(trackId: string, value: boolean): Promise<void> {
     if (!project) return;
-    const updated = setTrackHalfWave(project, trackId, value);
-    if (updated === project) return;
     try {
-      await projectService.saveProject(updated);
-      setProject(updated);
+      const updated = await projectService.updateTrackAppearance(project.id, trackId, {
+        type: 'halfWave', halfWave: value,
+      });
+      if (updated) setProject(updated);
     } catch (error) {
       logger.error('Change track Half-wave failed', error);
       toast.error(error instanceof Error ? error.message : 'Half-wave 保存失败');

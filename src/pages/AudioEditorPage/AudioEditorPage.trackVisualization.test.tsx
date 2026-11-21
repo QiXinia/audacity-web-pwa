@@ -1,9 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { IProject, ITrack } from '@/types/project';
+import type { IProject, ITrack, ViewMode } from '@/types/project';
+import { setTrackHalfWave, setTrackViewMode } from '@/lib/trackVisualization';
+
+type AppearanceChange =
+  | { type: 'viewMode'; viewMode: ViewMode }
+  | { type: 'halfWave'; halfWave: boolean };
 
 const mocks = vi.hoisted(() => ({
-  success: vi.fn(), warning: vi.fn(), error: vi.fn(), saveProject: vi.fn(), loadChannels: vi.fn(),
+  success: vi.fn(), warning: vi.fn(), error: vi.fn(), saveProject: vi.fn(),
+  updateTrackAppearance: vi.fn(), loadChannels: vi.fn(),
 }));
 let mockProject: IProject;
 
@@ -35,6 +41,7 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    updateTrackAppearance: mocks.updateTrackAppearance,
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
   },
@@ -98,6 +105,19 @@ describe('AudioEditorPage Track context Track visualization', () => {
     vi.clearAllMocks();
     mockProject = makeProject();
     mocks.saveProject.mockImplementation(async (project: IProject) => { mockProject = project; });
+    mocks.updateTrackAppearance.mockImplementation(async (
+      _projectId: string,
+      trackId: string,
+      change: AppearanceChange,
+    ) => {
+      const updated = change.type === 'viewMode'
+        ? setTrackViewMode(mockProject, trackId, change.viewMode)
+        : setTrackHalfWave(mockProject, trackId, change.halfWave);
+      if (updated === mockProject) return null;
+      await mocks.saveProject(updated);
+      mockProject = updated;
+      return updated;
+    });
     mocks.loadChannels.mockResolvedValue([Float32Array.from([0.2, 0.4])]);
   });
 
