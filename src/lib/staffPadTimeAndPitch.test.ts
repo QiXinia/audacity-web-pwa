@@ -214,6 +214,27 @@ describe('Audacity StaffPad boundary contracts', () => {
     }
   });
 
+  it('keeps the lowest-rate slowest-speed highest-pitch combination finite and non-silent', () => {
+    const source = Array.from({ length: 2 }, (_, channel) => (
+      Float32Array.from({ length: 17 }, (_, index) => (
+        0.3 * Math.sin(index * 0.41 + channel * 0.7) + 0.1 * Math.cos(index * 0.13)
+      ))
+    ));
+    const output = processStaffPadTimeAndPitchChannels(source, {
+      sampleRate: 8000,
+      timeRatio: 100,
+      pitchRatio: 2,
+      preserveFormants: true,
+      fftSize: 512,
+    });
+    expect(output).toHaveLength(2);
+    for (const channel of output) {
+      expect(channel).toHaveLength(1700);
+      expect(channel.every((sample) => Number.isFinite(sample))).toBe(true);
+      expect(channel.some((sample) => sample !== 0)).toBe(true);
+    }
+  }, 30_000);
+
   it('condenses one minute to one sample without hanging, like the official regression', () => {
     const originalDuration = 60;
     const sampleRate = 44100;

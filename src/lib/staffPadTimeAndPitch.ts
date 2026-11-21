@@ -455,7 +455,12 @@ class StaffPadProcessor {
     let overlapS = 4;
     if (this.combinedTimeStretch > 1) this.overlapA *= this.combinedTimeStretch;
     else overlapS /= this.combinedTimeStretch;
-    this.exactHopA = this.fftSize / this.overlapA;
+    // At low sample rates, the largest combined stretch can request less than
+    // one analysis sample per hop. Truncating that to zero makes IllState
+    // return an entirely silent result and invalidates phase integration.
+    // Clamp the exact value before the official integer error accumulator so
+    // ordinary ratios stay unchanged and the sub-sample case remains stable.
+    this.exactHopA = Math.max(1, this.fftSize / this.overlapA);
     this.nextExactHopS = this.fftSize / overlapS;
     if (this.exactHopS === 0) this.exactHopS = this.nextExactHopS;
   }
