@@ -113,11 +113,11 @@ function mockBlockedProjectWrite(gate: Promise<void>): void {
   });
   mocks.editLatestProject.mockImplementation(async (
     _projectId: string,
-    edit: (project: IProject) => IProject,
+    edit: (project: IProject) => IProject | Promise<IProject>,
   ) => {
     await gate;
     const before = structuredClone(mockProject);
-    const after = edit(mockProject);
+    const after = await edit(mockProject);
     if (after === mockProject) return null;
     mockProject = after;
     return { before, after };
@@ -322,6 +322,59 @@ describe('AudioEditorPage queued clip writes', () => {
     expect(mockProject.tracks.map((track) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
     expect(mockProject.tracks[0]?.name).toBe('Renamed Alpha');
     expect(mockProject.tracks[0]?.clips.some((clip) => clip.name === 'Pasted segment')).toBe(true);
+    const command = mocks.push.mock.calls[0]?.[0];
+    expect(command.execute().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+    expect(command.undo().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+  });
+
+  it.each([
+    { operation: 'trim' },
+    { operation: 'gain' },
+    { operation: 'fade-in' },
+    { operation: 'fade-out' },
+  ] as const)('preserves concurrent additions and renames during selection $operation', async ({ operation }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mockBlockedProjectWrite(gate);
+    mockProject = { ...mockProject, selection: { start: 1.25, end: 1.75 } };
+    mocks.loadChannels.mockResolvedValue([new Float32Array(2000).fill(0.5)]);
+
+    await renderEditor();
+    if (operation === 'trim') {
+      fireEvent.pointerDown(screen.getAllByRole('button', { name: '编辑' })[0]!);
+      fireEvent.click(await screen.findByRole('menuitem', { name: '裁剪到选区' }));
+    } else {
+      fireEvent.pointerDown(screen.getByRole('button', { name: '效果' }));
+      const label = operation === 'gain' ? '增益 +3 dB' : operation === 'fade-in' ? '淡入' : '淡出';
+      fireEvent.click(await screen.findByRole('menuitem', { name: label }));
+    }
+    await waitFor(() => expect(
+      mocks.saveProject.mock.calls.length + mocks.editLatestProject.mock.calls.length,
+    ).toBe(1));
+
+    addConcurrentTrackAndRename();
+    release();
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+    expect(mockProject.tracks[0]?.name).toBe('Renamed Alpha');
+    const editedClip = mockProject.tracks[0]?.clips.find((item) => item.id === 'clip-a')
+      ?? mockProject.tracks[0]?.clips[0];
+    if (operation === 'trim') {
+      expect(editedClip).toMatchObject({ startTime: 0, duration: 0.5, offset: 0.25 });
+    } else {
+      const record = mocks.audioBufferPut.mock.calls[0]?.[0];
+      const samples = new Float32Array(record.channelData[0]);
+      expect(samples[0]).toBe(0.5);
+      expect(samples[750]).toBe(0.5);
+      if (operation === 'gain') {
+        expect(samples[250]).toBeCloseTo(0.5 * 10 ** (3 / 20), 6);
+        expect(samples[500]).toBeCloseTo(0.5 * 10 ** (3 / 20), 6);
+      } else {
+        expect(samples[250]).toBe(operation === 'fade-in' ? 0 : 0.5);
+        expect(samples[500]).toBeCloseTo(0.25, 6);
+      }
+    }
     const command = mocks.push.mock.calls[0]?.[0];
     expect(command.execute().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
     expect(command.undo().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);

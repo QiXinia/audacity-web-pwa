@@ -4194,17 +4194,12 @@ function AudioEditorPageContent() {
 
   async function handleTrim() {
     if (!project || !selection) return;
-    const before = JSON.parse(JSON.stringify(project)) as IProject;
-    const result = await trimToSelection(project, selection.start, selection.end);
-    if (result) {
-      setProject(result);
-      projectService.saveProject(result);
-      pushHistoryCmd({
-        id: generateId(),
-        label: '裁剪',
-        execute: () => result,
-        undo: () => before,
-      });
+    const activeSelection = { ...selection };
+    const committed = await commitClipEdit(async (latest) => (
+      await trimToSelection(latest, activeSelection.start, activeSelection.end) ?? latest
+    ), '裁剪');
+    if (committed) {
+      if (activeSelection.start > 0) setCursorPosition(0);
       updateHistoryState();
       toast.success('已裁剪');
     }
@@ -7439,19 +7434,19 @@ function AudioEditorPageContent() {
     start: number,
     end: number,
   ): Promise<IProject | null> {
-    // Delete everything before start and after end
+    // Delete everything before start and after end. Resolve duration from the
+    // queued project itself, not from the React snapshot that started the edit.
     let result = proj;
+    const projectDuration = getProjectDuration(proj);
     // Delete after end first (doesn't affect start position)
-    if (end < getProjectDuration()) {
-      const after = await deleteRegion(result, end, getProjectDuration());
+    if (end < projectDuration) {
+      const after = await deleteRegion(result, end, projectDuration);
       if (after) result = after;
     }
     // Delete before start
     if (start > 0) {
       const before = await deleteRegion(result, 0, start);
       if (before) result = before;
-      // Adjust cursor to start of trimmed project
-      setCursorPosition(0);
     }
     return result;
   }
@@ -7459,120 +7454,97 @@ function AudioEditorPageContent() {
   // Apply gain effect to selection
   async function applyGainToSelection(gainDb: number) {
     if (!project || !selection) return;
-    const before = JSON.parse(JSON.stringify(project)) as IProject;
+    const activeSelection = { ...selection };
+    const label = `增益 ${gainDb > 0 ? '+' : ''}${gainDb.toFixed(1)} dB`;
+    const committed = await commitClipEdit(async (latest) => {
+      const updated = JSON.parse(JSON.stringify(latest)) as IProject;
+      const gainLin = dbToGain(gainDb);
 
-    const updated = JSON.parse(JSON.stringify(project)) as IProject;
-    const gainLin = dbToGain(gainDb);
+      for (const track of updated.tracks) {
+        for (const clip of track.clips) {
+          const clipEnd = clip.startTime + clip.duration;
+          if (clipEnd <= activeSelection.start || clip.startTime >= activeSelection.end) continue;
 
-    for (const track of updated.tracks) {
-      for (const clip of track.clips) {
-        const clipEnd = clip.startTime + clip.duration;
-        if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
+          const effective = await loadEffectiveClipChannels(clip, latest.sampleRate);
+          if (!effective) continue;
+          const dataCopies = effective.channels.map((channel) => new Float32Array(channel));
+          const overlapStart = Math.max(clip.startTime, activeSelection.start);
+          const overlapEnd = Math.min(clipEnd, activeSelection.end);
+          const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
+          const startSample = Math.floor(offsetInClip * latest.sampleRate);
+          const endSample = Math.floor(
+            (offsetInClip + (overlapEnd - overlapStart)) * latest.sampleRate,
+          );
 
-        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
-        if (!effective) continue;
-        const clipChannels = effective.channels;
-
-        // Make a mutable copy of every channel.
-        const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
-
-        const overlapStart = Math.max(clip.startTime, selection.start);
-        const overlapEnd = Math.min(clipEnd, selection.end);
-
-        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
-        const startSample = Math.floor(offsetInClip * project.sampleRate);
-        const endSample = Math.floor((offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate);
-
-        // Apply one linear gain to every channel.
-        for (const dataCopy of dataCopies) {
-          for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
-            dataCopy[i] *= gainLin;
+          for (const dataCopy of dataCopies) {
+            for (let i = startSample; i < endSample && i < dataCopy.length; i++) {
+              dataCopy[i] *= gainLin;
+            }
           }
+
+          clip.audioBufferId = await storeProjectBuffer(latest.id, dataCopies, latest.sampleRate);
+          clip.offset = effective.sourceOffset;
+          clip.originalDuration = dataCopies[0].length / latest.sampleRate;
+          clip.stretchRatio = 1;
         }
-
-        // Store modified buffer
-        const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
-
-        clip.audioBufferId = newBufferId;
-        clip.offset = effective.sourceOffset;
-        clip.originalDuration = dataCopies[0].length / project.sampleRate;
-        clip.stretchRatio = 1;
       }
+      return updated;
+    }, label);
+    if (committed) {
+      updateHistoryState();
+      toast.success(`已应用${label}`);
     }
-
-    setProject(updated);
-    projectService.saveProject(updated);
-    historyManager.push({
-      id: generateId(),
-      label: `增益 ${gainDb > 0 ? '+' : ''}${gainDb.toFixed(1)} dB`,
-      execute: () => updated,
-      undo: () => before,
-    }, before);
-    updateHistoryState();
-    toast.success(`已应用增益 ${gainDb > 0 ? '+' : ''}${gainDb.toFixed(1)} dB`);
   }
 
   async function applyFadeToSelection(type: 'in' | 'out') {
     if (!project || !selection) return;
-    const before = JSON.parse(JSON.stringify(project)) as IProject;
+    const activeSelection = { ...selection };
+    const committed = await commitClipEdit(async (latest) => {
+      const updated = JSON.parse(JSON.stringify(latest)) as IProject;
 
-    const updated = JSON.parse(JSON.stringify(project)) as IProject;
-    const fadeDuration = selection.end - selection.start;
+      for (const track of updated.tracks) {
+        for (const clip of track.clips) {
+          const clipEnd = clip.startTime + clip.duration;
+          if (clipEnd <= activeSelection.start || clip.startTime >= activeSelection.end) continue;
 
-    for (const track of updated.tracks) {
-      for (const clip of track.clips) {
-        const clipEnd = clip.startTime + clip.duration;
-        if (clipEnd <= selection.start || clip.startTime >= selection.end) continue;
+          const effective = await loadEffectiveClipChannels(clip, latest.sampleRate);
+          if (!effective) continue;
+          const dataCopies = effective.channels.map((channel) => new Float32Array(channel));
+          const overlapStart = Math.max(clip.startTime, activeSelection.start);
+          const overlapEnd = Math.min(clipEnd, activeSelection.end);
+          const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
+          const startSample = Math.floor(offsetInClip * latest.sampleRate);
+          const endSample = Math.floor(
+            (offsetInClip + (overlapEnd - overlapStart)) * latest.sampleRate,
+          );
 
-        const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
-        if (!effective) continue;
-        const clipChannels = effective.channels;
-
-        const dataCopies = clipChannels.map((channel) => new Float32Array(channel));
-
-        const overlapStart = Math.max(clip.startTime, selection.start);
-        const overlapEnd = Math.min(clipEnd, selection.end);
-
-        const offsetInClip = overlapStart - clip.startTime + effective.sourceOffset;
-        const startSample = Math.floor(offsetInClip * project.sampleRate);
-        const endSample = Math.floor(
-          (offsetInClip + (overlapEnd - overlapStart)) * project.sampleRate,
-        );
-
-        const selectionSamples = endSample - startSample;
-        for (const dataCopy of dataCopies) {
-          if (type === 'in') {
-            for (let i = 0; i < selectionSamples && startSample + i < dataCopy.length; i++) {
-              const factor = selectionSamples > 0 ? i / selectionSamples : 1;
-              dataCopy[startSample + i] *= factor;
-            }
-          } else {
-            for (let i = 0; i < selectionSamples && startSample + i < dataCopy.length; i++) {
-              const factor = selectionSamples > 0 ? 1 - i / selectionSamples : 0;
-              dataCopy[startSample + i] *= factor;
+          const selectionSamples = endSample - startSample;
+          for (const dataCopy of dataCopies) {
+            if (type === 'in') {
+              for (let i = 0; i < selectionSamples && startSample + i < dataCopy.length; i++) {
+                const factor = selectionSamples > 0 ? i / selectionSamples : 1;
+                dataCopy[startSample + i] *= factor;
+              }
+            } else {
+              for (let i = 0; i < selectionSamples && startSample + i < dataCopy.length; i++) {
+                const factor = selectionSamples > 0 ? 1 - i / selectionSamples : 0;
+                dataCopy[startSample + i] *= factor;
+              }
             }
           }
+
+          clip.audioBufferId = await storeProjectBuffer(latest.id, dataCopies, latest.sampleRate);
+          clip.offset = effective.sourceOffset;
+          clip.originalDuration = dataCopies[0].length / latest.sampleRate;
+          clip.stretchRatio = 1;
         }
-
-        const newBufferId = await storeProjectBuffer(project.id, dataCopies, project.sampleRate);
-
-        clip.audioBufferId = newBufferId;
-        clip.offset = effective.sourceOffset;
-        clip.originalDuration = dataCopies[0].length / project.sampleRate;
-        clip.stretchRatio = 1;
       }
+      return updated;
+    }, type === 'in' ? '淡入' : '淡出');
+    if (committed) {
+      updateHistoryState();
+      toast.success(type === 'in' ? '已应用淡入' : '已应用淡出');
     }
-
-    setProject(updated);
-    projectService.saveProject(updated);
-    historyManager.push({
-      id: generateId(),
-      label: type === 'in' ? '淡入' : '淡出',
-      execute: () => updated,
-      undo: () => before,
-    }, before);
-    updateHistoryState();
-    toast.success(type === 'in' ? '已应用淡入' : '已应用淡出');
   }
 
   function prepareAmplifyTargets(
