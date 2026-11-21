@@ -2565,6 +2565,24 @@ function AudioEditorPageContent() {
     });
   }
 
+  async function commitLatestClipEdit(edit: (latest: IProject) => IProject, label: string) {
+    if (!project) return;
+    try {
+      const result = await projectService.editLatestProject(project.id, edit);
+      if (!result) return;
+      setProject(result.after);
+      pushHistoryCmd({
+        id: generateId(),
+        label,
+        execute: () => result.after,
+        undo: () => result.before,
+      }, result.before);
+    } catch (error) {
+      logger.error('Clip edit failed', error);
+      toast.error(error instanceof Error ? error.message : 'Clip edit failed');
+    }
+  }
+
   async function handleTempoChange(value: number) {
     if (!project || playbackState !== 'stopped' || recordingState === 'recording') return;
     await commitClipEdit(updateProjectTempo(project, value), '调整 BPM');
@@ -2624,8 +2642,8 @@ function AudioEditorPageContent() {
     const keys = keysForClip(trackId, clipId);
     const delta = resolveClipSnapDelta(trackId, clipId, `trim-${edge}`, deltaSeconds, bypassSnap);
     if (Math.abs(delta) < 0.001) return;
-    await commitClipEdit(
-      trimClipSelection(project, keys, edge, delta),
+    await commitLatestClipEdit(
+      (latest) => trimClipSelection(latest, keys, edge, delta),
       keys.length > 1 ? '成组修剪片段' : '修剪片段',
     );
   }
@@ -2641,8 +2659,8 @@ function AudioEditorPageContent() {
     const keys = keysForClip(trackId, clipId);
     const delta = resolveClipSnapDelta(trackId, clipId, `stretch-${edge}`, deltaSeconds, bypassSnap);
     if (Math.abs(delta) < 0.001) return;
-    await commitClipEdit(
-      stretchClipSelection(project, keys, edge, delta),
+    await commitLatestClipEdit(
+      (latest) => stretchClipSelection(latest, keys, edge, delta),
       keys.length > 1 ? '成组拉伸片段' : '时间拉伸片段',
     );
   }
@@ -2652,8 +2670,8 @@ function AudioEditorPageContent() {
     const keys = keysForClip(trackId, clipId);
     const delta = resolveClipSnapDelta(trackId, clipId, 'move', deltaSeconds, bypassSnap);
     if (Math.abs(delta) < 0.001) return;
-    await commitClipEdit(
-      moveClipSelection(project, keys, delta),
+    await commitLatestClipEdit(
+      (latest) => moveClipSelection(latest, keys, delta),
       keys.length > 1 ? '成组移动片段' : '移动片段',
     );
   }

@@ -1010,6 +1010,25 @@ class ProjectService {
     });
   }
 
+  /** Apply a pure clip edit to the latest project only after earlier writes commit. */
+  async editLatestProject(
+    projectId: string,
+    edit: (project: IProject) => IProject,
+  ): Promise<{ before: IProject; after: IProject } | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
+
+      const before = structuredClone(project);
+      const after = edit(project);
+      if (after === project) return null;
+      const saved = await this.saveProjectFromQueue(after);
+      return saved ? { before, after } : null;
+    });
+  }
+
   /** Change per-track appearance only after every earlier project write has committed. */
   async updateTrackAppearance(
     projectId: string,
