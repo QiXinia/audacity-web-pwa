@@ -801,4 +801,86 @@ describe('AudioEngine recording boundaries', () => {
     expect(processor.onaudioprocess).toBeNull();
     expect(engine.recordingState).toBe('idle');
   });
+
+  it('continues PCM and microphone cleanup when ScriptProcessor disconnect fails', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context, source, sink, processor } = makeContext({ worklet: false });
+    processor.disconnect.mockImplementation(() => { throw new Error('processor disconnect failed'); });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+    const onRecordingData = vi.fn();
+    engine.setRecordingDataCallback(onRecordingData);
+
+    await engine.startRecording();
+    processor.onaudioprocess?.({
+      inputBuffer: {
+        numberOfChannels: 1,
+        length: 2,
+        getChannelData: () => new Float32Array([0.375, -0.5]),
+      },
+    });
+    const result = await engine.stopRecording();
+
+    expect(Array.from(result?.[0] ?? [])).toEqual([0.375, -0.5]);
+    expect(onRecordingData).toHaveBeenCalledOnce();
+    expect(processor.onaudioprocess).toBeNull();
+    expect(sink.disconnect).toHaveBeenCalledOnce();
+    expect(source.disconnect).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(engine.recordingState).toBe('idle');
+  });
+
+  it('closes the worklet port and remaining graph when worklet disconnect fails', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context, source, sink } = makeContext();
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const nodes: MockWorkletNode[] = [];
+    class MockWorkletNode {
+      port = {
+        onmessage: null as ((event: { data: Record<string, unknown> }) => void) | null,
+        postMessage: vi.fn(),
+        close: vi.fn(),
+      };
+      connect = vi.fn();
+      disconnect = vi.fn(() => { throw new Error('worklet disconnect failed'); });
+      constructor() {
+        nodes.push(this);
+        this.port.postMessage.mockImplementation((message: { type: string }) => {
+          if (message.type === 'stop') {
+            queueMicrotask(() => this.port.onmessage?.({ data: { type: 'stopped' } }));
+          }
+        });
+      }
+    }
+    vi.stubGlobal('AudioWorkletNode', MockWorkletNode);
+
+    await engine.startRecording();
+    nodes[0]!.port.onmessage?.({
+      data: {
+        type: 'recording',
+        audioData: new Float32Array([0.625]),
+        numChannels: 1,
+      },
+    });
+    const result = await engine.stopRecording();
+
+    expect(Array.from(result?.[0] ?? [])).toEqual([0.625]);
+    expect(nodes[0]!.disconnect).toHaveBeenCalledOnce();
+    expect(nodes[0]!.port.close).toHaveBeenCalledOnce();
+    expect(nodes[0]!.port.onmessage).toBeNull();
+    expect(sink.disconnect).toHaveBeenCalledOnce();
+    expect(source.disconnect).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(engine.recordingState).toBe('idle');
+  });
 });

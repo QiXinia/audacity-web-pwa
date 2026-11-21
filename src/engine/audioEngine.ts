@@ -1171,35 +1171,55 @@ export class AudioEngine {
   }
 
   private _cleanupRecording(): void {
+    // Match Audacity's guarded stop semantics: one broken graph node must not
+    // prevent the remaining nodes, microphone tracks and PCM state from being
+    // released. Clearing each reference before its operation also makes a
+    // repeated stop idempotent after a partial browser failure.
+    const cleanupStep = (label: string, operation: () => void): void => {
+      try {
+        operation();
+      } catch (error) {
+        logger.warn(`录音清理 ${label} 失败，继续释放剩余资源:`, String(error));
+      }
+    };
+
     this.recordingStopResolver = null;
     this.disposeStereoMeter(this.recordingMeter);
     this.recordingMeter = null;
-    if (this._workletNode) {
-      try {
-        this._workletNode.port.onmessage = null;
-        this._workletNode.disconnect();
-        this._workletNode.port.close();
-      } catch {
-        // ignore
+
+    const workletNode = this._workletNode;
+    this._workletNode = null;
+    if (workletNode) {
+      cleanupStep('清除 AudioWorklet 回调', () => { workletNode.port.onmessage = null; });
+      cleanupStep('断开 AudioWorklet', () => { workletNode.disconnect(); });
+      cleanupStep('关闭 AudioWorklet 端口', () => { workletNode.port.close(); });
+    }
+
+    const processor = this._scriptProcessor;
+    this._scriptProcessor = null;
+    if (processor) {
+      cleanupStep('清除 ScriptProcessor 回调', () => { processor.onaudioprocess = null; });
+      cleanupStep('断开 ScriptProcessor', () => { processor.disconnect(); });
+    }
+
+    const recordingSink = this._recordingSink;
+    this._recordingSink = null;
+    if (recordingSink) {
+      cleanupStep('断开录音输出', () => { recordingSink.disconnect(); });
+    }
+
+    const recordSource = this._recordSource;
+    this._recordSource = null;
+    if (recordSource) {
+      cleanupStep('断开录音输入', () => { recordSource.disconnect(); });
+    }
+
+    const mediaStream = this.mediaStream;
+    this.mediaStream = null;
+    if (mediaStream) {
+      for (const track of mediaStream.getTracks()) {
+        cleanupStep('停止麦克风轨道', () => { track.stop(); });
       }
-      this._workletNode = null;
-    }
-    if (this._scriptProcessor) {
-      this._scriptProcessor.onaudioprocess = null;
-      this._scriptProcessor.disconnect();
-      this._scriptProcessor = null;
-    }
-    if (this._recordingSink) {
-      this._recordingSink.disconnect();
-      this._recordingSink = null;
-    }
-    if (this._recordSource) {
-      this._recordSource.disconnect();
-      this._recordSource = null;
-    }
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach((t) => t.stop());
-      this.mediaStream = null;
     }
     this.mediaRecorder = null;
     this._recordedChunksL = null;
