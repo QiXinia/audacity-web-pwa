@@ -28,6 +28,7 @@ export interface WorkspaceStore {
 
 export const WORKSPACE_STORAGE_KEY = 'audacity-web:workspaces:v1';
 export const MAX_WORKSPACE_PRESETS = 50;
+export const MAX_WORKSPACE_NAME_LENGTH = 60;
 
 function truncateWorkspaceValue(value: string, maxLength: number): string {
   let result = '';
@@ -44,8 +45,12 @@ function normalizeWorkspaceId(id: string): string {
   return truncateWorkspaceValue(id.trim(), 80);
 }
 
+export function truncateWorkspaceNameInput(name: string): string {
+  return truncateWorkspaceValue(name, MAX_WORKSPACE_NAME_LENGTH);
+}
+
 function normalizeWorkspaceName(name: string): string {
-  return truncateWorkspaceValue(name.trim(), 60);
+  return truncateWorkspaceNameInput(name.trim());
 }
 
 function workspaceNameKey(name: string): string {

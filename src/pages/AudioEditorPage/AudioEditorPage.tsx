@@ -438,9 +438,11 @@ import {
 import {
   createWorkspace,
   loadWorkspaceStore,
+  MAX_WORKSPACE_NAME_LENGTH,
   removeWorkspace,
   resetWorkspace,
   saveWorkspaceStore,
+  truncateWorkspaceNameInput,
   updateWorkspaceLayout,
   type WorkspaceLayout,
   type WorkspaceStore,
@@ -10325,11 +10327,14 @@ function AudioEditorPageContent() {
                 <Input
                   id="workspace-name"
                   value={workspaceName}
-                  onChange={(event) => setWorkspaceName(event.target.value)}
-                  maxLength={40}
+                  onChange={(event) => setWorkspaceName(truncateWorkspaceNameInput(event.target.value))}
+                  aria-describedby="workspace-name-length"
                   placeholder="例如：播客剪辑"
                   autoFocus
                 />
+                <p id="workspace-name-length" className="text-right text-xs text-muted-foreground" aria-live="polite">
+                  {Array.from(workspaceName).length} / {MAX_WORKSPACE_NAME_LENGTH} 码点
+                </p>
               </div>
               <DialogFooter>
                 <Button type="button" variant="secondary" onClick={() => setWorkspaceDialogOpen(false)}>取消</Button>

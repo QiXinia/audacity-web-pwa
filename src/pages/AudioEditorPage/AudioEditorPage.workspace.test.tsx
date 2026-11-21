@@ -257,6 +257,48 @@ describe('AudioEditorPage Workspace storage integration', () => {
     expect(window.localStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(storageBeforeSave);
   });
 
+  it('uses the same 60-code-point input boundary as workspace persistence', async () => {
+    window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+    renderEditor();
+    await screen.findByText(project.name);
+
+    fireEvent.click(await openWorkspaceMenu());
+    const input = screen.getByLabelText('Workspace 名称') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'a'.repeat(61) } });
+
+    expect(input.value).toBe('a'.repeat(60));
+    expect(input.hasAttribute('maxlength')).toBe(false);
+    expect(screen.getByText('60 / 60 码点')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '保存 Workspace' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const persisted = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+    expect(persisted.presets.find((preset: { id: string }) => preset.id === persisted.activeId)?.name)
+      .toBe('a'.repeat(60));
+  });
+
+  it('truncates non-BMP workspace names by code point without splitting surrogates', async () => {
+    window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+    renderEditor();
+    await screen.findByText(project.name);
+
+    fireEvent.click(await openWorkspaceMenu());
+    const input = screen.getByLabelText('Workspace 名称') as HTMLInputElement;
+    const expected = '😀'.repeat(60);
+    fireEvent.change(input, { target: { value: `${expected}🎧` } });
+
+    expect(input.value).toBe(expected);
+    expect(Array.from(input.value)).toHaveLength(60);
+    expect(input.value).toHaveLength(120);
+    expect(() => encodeURIComponent(input.value)).not.toThrow();
+    fireEvent.click(screen.getByRole('button', { name: '保存 Workspace' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const persisted = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+    expect(persisted.presets.find((preset: { id: string }) => preset.id === persisted.activeId)?.name)
+      .toBe(expected);
+  });
+
   it('opens the official Edit workspaces dialog and applies the selected preset', async () => {
     const custom = createWorkspace(defaultWorkspaceStore(), 'manager-custom', 'Manager custom', {
       ...defaultWorkspaceStore().presets[2].layout,
