@@ -292,6 +292,66 @@ describe('AudioEngine recording boundaries', () => {
     expect(engine.recordingState).toBe('idle');
   });
 
+  it('cancels a restart waiting for stop when recording is stopped again', async () => {
+    const engine = new AudioEngine();
+    const first = makeMediaStream(1);
+    const second = makeMediaStream(1);
+    const { context } = makeContext({ meterPairs: 2 });
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(first.stream)
+      .mockResolvedValueOnce(second.stream);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const nodes: MockWorkletNode[] = [];
+    class MockWorkletNode {
+      port = {
+        onmessage: null as ((event: { data: Record<string, unknown> }) => void) | null,
+        postMessage: vi.fn(),
+        close: vi.fn(),
+      };
+      connect = vi.fn();
+      disconnect = vi.fn();
+      constructor() {
+        nodes.push(this);
+      }
+    }
+    vi.stubGlobal('AudioWorkletNode', MockWorkletNode);
+
+    await engine.startRecording();
+    nodes[0]!.port.onmessage?.({
+      data: {
+        type: 'recording',
+        audioData: new Float32Array([0.25]),
+        numChannels: 1,
+      },
+    });
+    const firstStop = engine.stopRecording();
+    const pendingRestart = engine.startRecording();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+
+    // A second Stop must cancel the deferred restart too. Otherwise leaving the
+    // editor while the old Worklet tail drains can open a brand-new microphone.
+    const repeatedStop = engine.stopRecording();
+    nodes[0]!.port.onmessage?.({ data: { type: 'stopped' } });
+    const [firstResult, repeatedResult] = await Promise.all([
+      firstStop,
+      repeatedStop,
+      pendingRestart,
+    ]);
+
+    expect(repeatedResult).toBe(firstResult);
+    expect(Array.from(firstResult?.[0] ?? [])).toHaveLength(1);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(second.stop).not.toHaveBeenCalled();
+    expect(nodes).toHaveLength(1);
+    expect(engine.recordingState).toBe('idle');
+  });
+
   it('uses the device channel count for stereo ScriptProcessor fallback', async () => {
     const engine = new AudioEngine();
     const { stream, stop } = makeMediaStream(2);

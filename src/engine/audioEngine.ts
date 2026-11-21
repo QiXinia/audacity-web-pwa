@@ -68,6 +68,7 @@ export class AudioEngine {
   private recordingStopResolver: (() => void) | null = null;
   private recordingStartPromise: Promise<void> | null = null;
   private recordingStopPromise: Promise<Float32Array[] | null> | null = null;
+  private recordingStartWaiters = 0;
   private recordingGeneration = 0;
 
   // Stopped-state microphone monitoring is independent from recording. The
@@ -876,7 +877,19 @@ export class AudioEngine {
     // rapid restart as an already-active session. Concurrent callers then
     // coalesce through recordingStartPromise below.
     const pendingStop = this.recordingStopPromise;
-    if (pendingStop) await pendingStop;
+    if (pendingStop) {
+      // The start is already requested while it waits for the old Worklet tail.
+      // Track that waiter before awaiting so a repeated Stop or editor teardown
+      // can invalidate it instead of opening a new microphone after the wait.
+      const waitingGeneration = this.recordingGeneration;
+      this.recordingStartWaiters += 1;
+      try {
+        await pendingStop;
+      } finally {
+        this.recordingStartWaiters -= 1;
+      }
+      if (waitingGeneration !== this.recordingGeneration) return;
+    }
     if (this._recordingState === 'recording') return;
     if (this.recordingStartPromise) {
       const pending = this.recordingStartPromise;
@@ -1064,7 +1077,10 @@ export class AudioEngine {
     // AudioIO::StopStream performs its one-shot stream cleanup. Coalesce the
     // asynchronous Worklet tail wait too, so every caller observes the same
     // result and only one stop message/cleanup path can run.
-    if (this.recordingStopPromise) return this.recordingStopPromise;
+    if (this.recordingStopPromise) {
+      if (this.recordingStartWaiters > 0) this.recordingGeneration += 1;
+      return this.recordingStopPromise;
+    }
     const pending = this.stopRecordingInternal();
     this.recordingStopPromise = pending;
     try {
@@ -1075,9 +1091,10 @@ export class AudioEngine {
   }
 
   private async stopRecordingInternal(): Promise<Float32Array[] | null> {
-    if (this.recordingStartPromise) {
-      // Invalidate every await boundary in the pending startup. If permission
-      // has not resolved yet, the local stream is stopped as soon as it arrives.
+    if (this.recordingStartPromise || this.recordingStartWaiters > 0) {
+      // Invalidate every await boundary in pending startups, including restarts
+      // still waiting for an earlier stop. If permission has not resolved yet,
+      // the local stream is stopped as soon as it arrives.
       this.recordingGeneration += 1;
     }
     if (this._recordingState !== 'recording') {
