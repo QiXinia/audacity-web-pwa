@@ -4,8 +4,16 @@ class RecordingProcessor extends AudioWorkletProcessor {
     this.pending = [];
     this.pendingLength = 0;
     this.stopping = false;
+    this.numChannels = 1;
+    this.channelCountConfigured = false;
     this.port.onmessage = (event) => {
-      if (event.data?.type === 'stop') {
+      if (event.data?.type === 'init') {
+        // Keep the interleaving width fixed for the whole recording. Audacity
+        // duplicates mono input into a stereo track instead of changing the
+        // channel layout midway through a capture session.
+        this.numChannels = event.data.stereo ? 2 : 1;
+        this.channelCountConfigured = true;
+      } else if (event.data?.type === 'stop') {
         this.stopping = true;
         this.flush();
         this.port.postMessage({ type: 'stopped' });
@@ -36,7 +44,7 @@ class RecordingProcessor extends AudioWorkletProcessor {
     const input = inputs[0];
     if (!input || input.length === 0 || !input[0] || input[0].length === 0) return true;
 
-    this.numChannels = input.length;
+    if (!this.channelCountConfigured) this.numChannels = input.length;
     const length = input[0].length;
     const chunk = new Float32Array(length * this.numChannels);
     for (let i = 0; i < length; i++) {

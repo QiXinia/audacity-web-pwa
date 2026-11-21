@@ -1043,9 +1043,12 @@ export class AudioEngine {
         const left = new Float32Array(e.inputBuffer.length);
         left.set(e.inputBuffer.getChannelData(0));
         this._recordedChunksL?.push(left);
-        if (channels > 1) {
+        if (isStereo) {
+          // Audacity ConfigureCaptureRouting duplicates mono input into both
+          // channels of a stereo track. Do the same for a temporarily missing
+          // right block so later stereo frames cannot shift left in the output.
           const right = new Float32Array(e.inputBuffer.length);
-          right.set(e.inputBuffer.getChannelData(1));
+          right.set(channels > 1 ? e.inputBuffer.getChannelData(1) : left);
           this._recordedChunksR?.push(right);
         }
       };

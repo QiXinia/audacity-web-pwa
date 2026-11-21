@@ -383,6 +383,49 @@ describe('AudioEngine recording boundaries', () => {
     expect(processor.onaudioprocess).toBeNull();
   });
 
+  it('keeps ScriptProcessor stereo blocks aligned when a right channel is temporarily missing', async () => {
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(2);
+    const { context, processor } = makeContext({ worklet: false });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    await engine.startRecording({ stereo: true });
+    processor.onaudioprocess?.({
+      inputBuffer: {
+        numberOfChannels: 1,
+        length: 2,
+        getChannelData: () => new Float32Array([0.1, 0.2]),
+      },
+    });
+    processor.onaudioprocess?.({
+      inputBuffer: {
+        numberOfChannels: 2,
+        length: 1,
+        getChannelData: (channel: number) => channel === 0
+          ? new Float32Array([0.3])
+          : new Float32Array([0.7]),
+      },
+    });
+    const result = await engine.stopRecording();
+
+    expect(result).toHaveLength(2);
+    expect(Array.from(result?.[0] ?? [])).toEqual([
+      0.10000000149011612,
+      0.20000000298023224,
+      0.30000001192092896,
+    ]);
+    expect(Array.from(result?.[1] ?? [])).toEqual([
+      0.10000000149011612,
+      0.20000000298023224,
+      0.699999988079071,
+    ]);
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it('forces mono worklet input on a stereo device', async () => {
     const engine = new AudioEngine();
     const { stream, stop } = makeMediaStream(2);
