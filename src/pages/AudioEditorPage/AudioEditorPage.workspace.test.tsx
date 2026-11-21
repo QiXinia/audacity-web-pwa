@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { toast } from 'sonner';
 import AudioEditorPage from '@/pages/AudioEditorPage/AudioEditorPage';
@@ -255,6 +255,91 @@ describe('AudioEditorPage Workspace storage integration', () => {
       .toBe(' Ｃｌａｓｓｉｃ ');
     expect(toast.success).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(storageBeforeSave);
+  });
+
+  it('opens the official Edit workspaces dialog and applies the selected preset', async () => {
+    const custom = createWorkspace(defaultWorkspaceStore(), 'manager-custom', 'Manager custom', {
+      ...defaultWorkspaceStore().presets[2].layout,
+      verticalZoom: 2,
+    });
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify({
+      ...custom,
+      activeId: 'classic',
+    }));
+    renderEditor();
+    await screen.findByText(project.name);
+
+    await openWorkspaceMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑 Workspaces…' }));
+    const dialog = await screen.findByRole('dialog', { name: '编辑 Workspaces' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '选择 Manager custom' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^选择$/ }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '编辑 Workspaces' })).toBeNull());
+    expect(screen.getByRole('button', { name: 'Workspace 工作区' }).textContent)
+      .toContain('Manager custom');
+    await waitFor(() => {
+      const persisted = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+      expect(persisted.activeId).toBe('manager-custom');
+      expect(persisted.presets.find((preset: { id: string }) => preset.id === 'manager-custom')
+        ?.layout.verticalZoom).toBe(2);
+    });
+  });
+
+  it('deletes a selected custom preset in the manager while protecting built-ins', async () => {
+    const custom = createWorkspace(defaultWorkspaceStore(), 'manager-delete', 'Manager delete', {
+      ...defaultWorkspaceStore().presets[0].layout,
+      horizontalZoom: 200,
+    });
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify({
+      ...custom,
+      activeId: 'classic',
+    }));
+    renderEditor();
+    await screen.findByText(project.name);
+
+    await openWorkspaceMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑 Workspaces…' }));
+    const dialog = await screen.findByRole('dialog', { name: '编辑 Workspaces' });
+    const removeButton = within(dialog).getByRole('button', { name: '删除所选 Workspace' });
+    expect(removeButton).toHaveProperty('disabled', true);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '选择 Manager delete' }));
+    expect(removeButton).toHaveProperty('disabled', false);
+    fireEvent.click(removeButton);
+
+    await waitFor(() => {
+      expect(within(dialog).queryByRole('button', { name: '选择 Manager delete' })).toBeNull();
+    });
+    expect(removeButton).toHaveProperty('disabled', true);
+    const persisted = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+    expect(persisted.activeId).toBe('classic');
+    expect(persisted.presets.some((preset: { id: string }) => preset.id === 'manager-delete')).toBe(false);
+    expect(persisted.presets.filter((preset: { builtIn: boolean }) => preset.builtIn)).toHaveLength(3);
+  });
+
+  it('opens the create workflow from the manager and persists the new workspace', async () => {
+    window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+    renderEditor();
+    await screen.findByText(project.name);
+
+    await openWorkspaceMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑 Workspaces…' }));
+    const manager = await screen.findByRole('dialog', { name: '编辑 Workspaces' });
+    fireEvent.click(within(manager).getByRole('button', { name: '新建 Workspace' }));
+
+    const createDialog = await screen.findByRole('dialog', { name: '保存 Workspace' });
+    expect(screen.queryByRole('dialog', { name: '编辑 Workspaces' })).toBeNull();
+    fireEvent.change(within(createDialog).getByLabelText('Workspace 名称'), {
+      target: { value: 'Created from manager' },
+    });
+    fireEvent.click(within(createDialog).getByRole('button', { name: '保存 Workspace' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '保存 Workspace' })).toBeNull());
+    const persisted = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+    const created = persisted.presets.find((preset: { name: string }) => preset.name === 'Created from manager');
+    expect(created).toBeTruthy();
+    expect(persisted.activeId).toBe(created.id);
   });
 });
 

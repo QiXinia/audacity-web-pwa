@@ -740,6 +740,10 @@ function AudioEditorPageContent() {
   const [showRMS, setShowRMS] = useState(activeWorkspace.layout.showRMS);
   const [showVerticalRulers, setShowVerticalRulers] = useState(activeWorkspace.layout.showVerticalRulers);
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [workspaceManagerSelectionId, setWorkspaceManagerSelectionId] = useState(workspaceStore.activeId);
+  const managedWorkspace = workspaceStore.presets.find((preset) => preset.id === workspaceManagerSelectionId)
+    ?? activeWorkspace;
   const [workspaceName, setWorkspaceName] = useState('');
   const [stereoHeightsPreferences, setStereoHeightsPreferences] = useState(() => (
     loadStereoHeightsPreferences(undefined, workspaceStore.presets.map((preset) => preset.name))
@@ -2948,6 +2952,21 @@ function AudioEditorPageContent() {
     applyWorkspaceLayout(preset.layout);
   }
 
+  function openWorkspaceManager() {
+    setWorkspaceManagerSelectionId(workspaceStore.activeId);
+    setWorkspaceManagerOpen(true);
+  }
+
+  function openWorkspaceCreator() {
+    setWorkspaceManagerOpen(false);
+    setWorkspaceDialogOpen(true);
+  }
+
+  function applyManagedWorkspace() {
+    applyWorkspace(managedWorkspace.id);
+    setWorkspaceManagerOpen(false);
+  }
+
   function saveCurrentWorkspace() {
     try {
       const updated = createWorkspace(
@@ -2975,8 +2994,9 @@ function AudioEditorPageContent() {
     toast.info('已恢复内置 Workspace');
   }
 
-  function deleteActiveWorkspace() {
-    const updated = removeWorkspace(workspaceStore, workspaceStore.activeId);
+  function deleteWorkspace(id: string) {
+    const updated = removeWorkspace(workspaceStore, id);
+    if (updated === workspaceStore) return;
     setWorkspaceStore(updated);
     persistWorkspaceStore(updated);
     const validNames = new Set(updated.presets.map((candidate) => candidate.name));
@@ -2986,9 +3006,24 @@ function AudioEditorPageContent() {
     };
     setStereoHeightsPreferences(updatedStereoPreferences);
     saveStereoHeightsPreferences(updatedStereoPreferences);
-    const preset = updated.presets.find((candidate) => candidate.id === updated.activeId);
-    if (preset) applyWorkspaceLayout(preset.layout);
+    if (updated.activeId !== workspaceStore.activeId) {
+      const preset = updated.presets.find((candidate) => candidate.id === updated.activeId);
+      if (preset) applyWorkspaceLayout(preset.layout);
+    }
     toast.info('已删除自定义 Workspace');
+  }
+
+  function deleteActiveWorkspace() {
+    deleteWorkspace(workspaceStore.activeId);
+  }
+
+  function deleteManagedWorkspace() {
+    if (managedWorkspace.builtIn) return;
+    const nextActiveId = workspaceStore.activeId === managedWorkspace.id
+      ? 'classic'
+      : workspaceStore.activeId;
+    deleteWorkspace(managedWorkspace.id);
+    setWorkspaceManagerSelectionId(nextActiveId);
   }
 
   function rememberLastGeneratorDuration(kind: GeneratorKind, duration: number) {
@@ -9078,6 +9113,7 @@ function AudioEditorPageContent() {
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={openWorkspaceManager}>编辑 Workspaces…</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setWorkspaceDialogOpen(true)}>将当前布局另存为…</DropdownMenuItem>
                 {!!activeWorkspace.builtIn && (
                   <DropdownMenuItem onClick={resetActiveWorkspace}>恢复 {activeWorkspace.name} 预设</DropdownMenuItem>
@@ -10222,6 +10258,54 @@ function AudioEditorPageContent() {
             <span>缩放 {Math.round(pxPerSec)} px/s</span>
           </div>
         </div>
+
+        <Dialog open={workspaceManagerOpen} onOpenChange={setWorkspaceManagerOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>编辑 Workspaces</DialogTitle>
+              <DialogDescription>选择要应用的布局，创建新的 Workspace，或删除不再需要的自定义项。</DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Button type="button" variant="secondary" onClick={openWorkspaceCreator}>
+                <Plus className="mr-1 size-4" />
+                新建 Workspace
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={managedWorkspace.builtIn}
+                onClick={deleteManagedWorkspace}
+              >
+                <Trash2 className="mr-1 size-4" />
+                删除所选 Workspace
+              </Button>
+            </div>
+            <div className="max-h-80 overflow-y-auto rounded-md border" role="group" aria-label="Workspace 列表">
+              {workspaceStore.presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  aria-label={`选择 ${preset.name}`}
+                  aria-pressed={preset.id === managedWorkspace.id}
+                  onClick={() => setWorkspaceManagerSelectionId(preset.id)}
+                  className="flex w-full items-center gap-3 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-accent aria-pressed:bg-accent"
+                >
+                  <span className="min-w-0 flex-1 truncate">{preset.name}</span>
+                  {preset.id === workspaceStore.activeId && (
+                    <span className="text-xs text-muted-foreground">当前</span>
+                  )}
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {preset.builtIn ? '内置' : '自定义'}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="secondary" onClick={() => setWorkspaceManagerOpen(false)}>取消</Button>
+              <Button type="button" onClick={applyManagedWorkspace}>选择</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={workspaceDialogOpen} onOpenChange={setWorkspaceDialogOpen}>
           <DialogContent>
