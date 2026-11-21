@@ -680,6 +680,65 @@ describe('AudioEngine recording boundaries', () => {
     expect(engine.isMicrophoneMonitoringActive()).toBe(false);
   });
 
+  it('does not revive duplicate monitoring callers cancelled by a stop', async () => {
+    const engine = new AudioEngine();
+    const first = makeMediaStream(1);
+    const unexpected = makeMediaStream(1);
+    const { context } = makeContext({ worklet: false });
+    let resolveFirstStream: ((value: unknown) => void) | undefined;
+    const getUserMedia = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstStream = resolve; }))
+      .mockResolvedValue(unexpected.stream);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const initialStart = engine.startMicrophoneMonitoring();
+    const cancelledDuplicate = engine.startMicrophoneMonitoring();
+    engine.stopMicrophoneMonitoring();
+    resolveFirstStream?.(first.stream);
+    await Promise.all([initialStart, cancelledDuplicate]);
+
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(unexpected.stop).not.toHaveBeenCalled();
+    expect(engine.isMicrophoneMonitoringActive()).toBe(false);
+  });
+
+  it('allows a new post-stop monitoring request without reviving cancelled callers', async () => {
+    const engine = new AudioEngine();
+    const first = makeMediaStream(1);
+    const second = makeMediaStream(1);
+    const { context } = makeContext({ worklet: false });
+    let resolveFirstStream: ((value: unknown) => void) | undefined;
+    const getUserMedia = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstStream = resolve; }))
+      .mockResolvedValue(second.stream);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const initialStart = engine.startMicrophoneMonitoring();
+    const cancelledDuplicate = engine.startMicrophoneMonitoring();
+    engine.stopMicrophoneMonitoring();
+    const restart = engine.startMicrophoneMonitoring();
+    resolveFirstStream?.(first.stream);
+    await Promise.all([initialStart, cancelledDuplicate]);
+    await restart;
+
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(second.stop).not.toHaveBeenCalled();
+    expect(engine.isMicrophoneMonitoringActive()).toBe(true);
+
+    engine.stopMicrophoneMonitoring();
+    expect(second.stop).toHaveBeenCalledOnce();
+  });
+
   it('cancels a pending recording start instead of activating the stream after stop', async () => {
     const engine = new AudioEngine();
     const { stream, stop } = makeMediaStream(1);

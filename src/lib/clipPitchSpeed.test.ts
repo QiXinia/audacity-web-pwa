@@ -189,6 +189,29 @@ describe('Audacity 4 non-destructive clip PCM rendering', () => {
       expect(channel.some((sample) => sample !== 0)).toBe(true);
     }
   });
+
+  it('keeps the sub-sample synthesis hop productive at the lowest analysis window', () => {
+    const sampleRate = 1000;
+    const source = Array.from({ length: 2 }, (_, channel) => (
+      Float32Array.from({ length: 1025 }, (_, index) => (
+        0.3 * Math.sin(index * 0.41 + channel * 0.7) + 0.1 * Math.cos(index * 0.13)
+      ))
+    ));
+    const adjusted = applyClipPitchAndSpeed(
+      project(clip({ stretchRatio: 1 })),
+      { trackId: 'track-a', clipId: 'clip-a' },
+      { pitchCents: -1200, speedPercentage: 1000, optimizeForVoice: true },
+    ).tracks[0].clips[0];
+    expect(adjusted.stretchRatio).toBe(10);
+    expect(getAudacityTimeAndPitchFftSize(sampleRate, true)).toBe(64);
+    const output = processClipPitchAndSpeedChannels(adjusted, source, sampleRate);
+    expect(output).toHaveLength(2);
+    for (const channel of output) {
+      expect(channel).toHaveLength(103);
+      expect(channel.every((sample) => Number.isFinite(sample))).toBe(true);
+      expect(channel.some((sample) => sample !== 0)).toBe(true);
+    }
+  }, 30_000);
 });
 
 describe('Audacity 4 Render pitch and speed', () => {

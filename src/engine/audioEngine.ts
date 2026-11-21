@@ -188,7 +188,12 @@ export class AudioEngine {
       return;
     }
     if (this.monitoringStartPromise) {
-      await this.monitoringStartPromise;
+      const pending = this.monitoringStartPromise;
+      const joinedGeneration = this.monitoringGeneration;
+      await pending;
+      // Callers that joined before Stop must stay cancelled. A genuinely new
+      // caller may still restart monitoring after the stale request settles.
+      if (joinedGeneration !== this.monitoringGeneration) return;
       if (this.monitoringStream || this._recordingState !== 'idle' || this._playbackState !== 'stopped') {
         this.setMonitoringEnabled(this.inputMonitoringEnabled);
         return;
