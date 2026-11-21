@@ -47,6 +47,7 @@ export class AudioEngine {
   private startTime = 0;
   private pausePosition = 0;
   private playbackLoop: LoopRegion | null = null;
+  private playbackGeneration = 0;
   private _cursorPosition = 0;
   private sampleRate = 44100;
   private animationFrameId: number | null = null;
@@ -462,8 +463,20 @@ export class AudioEngine {
     // Stop and dispose the previous context before creating a fresh one.
     // Calling stopPlayback after ensureContext would close the context we are about to use.
     this.stopPlayback();
+    const generation = this.playbackGeneration;
     this.playbackLoop = loop;
-    const ctx = await this.ensureContext();
+    let ctx: AudioContext;
+    try {
+      ctx = await this.ensureContext();
+    } catch (error) {
+      // A stop or a newer play owns the engine now; do not surface a stale
+      // startup failure through the old project's continuation.
+      if (generation !== this.playbackGeneration) return;
+      throw error;
+    }
+    // Match AudioIO's stream-token ownership: an async start that lost its
+    // token must not revive old tracks after StopStream or a newer StartStream.
+    if (generation !== this.playbackGeneration) return;
 
     this._playbackState = 'playing';
     this._cursorPosition = playbackStart;
@@ -820,6 +833,7 @@ export class AudioEngine {
   }
 
   stopPlayback(): void {
+    this.playbackGeneration += 1;
     this.stopMicrophoneMonitoring();
     const ctx = this.audioContext;
     this.playbackLoop = null;

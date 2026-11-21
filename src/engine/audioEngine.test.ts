@@ -111,6 +111,72 @@ describe('loop playback scheduling', () => {
     }
   });
 
+  it('does not restart a cancelled play after its AudioContext wait resolves', async () => {
+    const engine = new AudioEngine();
+    engine.cacheBuffer('stereo', [new Float32Array([1, 2])], 2);
+    const { context, sources } = makePlaybackContext();
+    let resolveContext!: (value: AudioContext) => void;
+    const pendingContext = new Promise<AudioContext>((resolve) => { resolveContext = resolve; });
+    vi.spyOn(engine, 'ensureContext').mockReturnValue(pendingContext);
+    const animationFrame = vi.fn(() => 1);
+    vi.stubGlobal('requestAnimationFrame', animationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const stateChange = vi.fn();
+    engine.setStateChangeCallback(stateChange);
+
+    try {
+      const pendingPlay = engine.play([makeTrack()], 0, false);
+      expect(engine.ensureContext).toHaveBeenCalledTimes(1);
+      engine.stopPlayback();
+
+      resolveContext(context);
+      await pendingPlay;
+
+      expect(engine.playbackState).toBe('stopped');
+      expect(sources).toHaveLength(0);
+      expect(animationFrame).not.toHaveBeenCalled();
+      expect(stateChange).not.toHaveBeenCalledWith('playing');
+    } finally {
+      engine.stopPlayback();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('keeps only the newest play when an older AudioContext wait resolves last', async () => {
+    const engine = new AudioEngine();
+    engine.cacheBuffer('stereo', [new Float32Array([1, 2])], 2);
+    const oldContext = makePlaybackContext();
+    const newContext = makePlaybackContext(20);
+    let resolveOld!: (value: AudioContext) => void;
+    let resolveNew!: (value: AudioContext) => void;
+    vi.spyOn(engine, 'ensureContext')
+      .mockImplementationOnce(() => new Promise<AudioContext>((resolve) => { resolveOld = resolve; }))
+      .mockImplementationOnce(() => new Promise<AudioContext>((resolve) => { resolveNew = resolve; }));
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+
+    try {
+      const oldPlay = engine.play([makeTrack()], 0, false);
+      const newPlay = engine.play([makeTrack()], 0.5, false);
+      resolveNew(newContext.context);
+      await newPlay;
+      expect(newContext.sources).toHaveLength(1);
+
+      resolveOld(oldContext.context);
+      await oldPlay;
+
+      expect(oldContext.sources).toHaveLength(0);
+      expect(newContext.sources).toHaveLength(1);
+      expect(engine.playbackState).toBe('playing');
+      expect(engine.cursorPosition).toBe(0.5);
+    } finally {
+      engine.stopPlayback();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
+
   it('rejects an invalid loop before opening an AudioContext', async () => {
     const engine = new AudioEngine();
     const ensure = vi.spyOn(engine, 'ensureContext');
