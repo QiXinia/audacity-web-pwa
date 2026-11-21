@@ -1,11 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IClip, IProject, ITrack } from '@/types/project';
+import { serializeAudioClipboard } from '@/services/clipboardService';
 
 const mocks = vi.hoisted(() => ({
   success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn(),
   saveProject: vi.fn(), editLatestProject: vi.fn(), loadChannels: vi.fn(),
-  push: vi.fn(),
+  clipboardGet: vi.fn(), audioBufferPut: vi.fn(), push: vi.fn(),
 }));
 let mockProject: IProject;
 
@@ -62,7 +63,11 @@ vi.mock('@/services/historyService', () => ({
   },
 }));
 vi.mock('@/db/audioDb', () => ({
-  audioDb: { audioBuffers: { get: vi.fn(), put: vi.fn(), delete: vi.fn() }, clipboard: {}, historySnapshots: {} },
+  audioDb: {
+    audioBuffers: { get: vi.fn(), put: mocks.audioBufferPut, delete: vi.fn() },
+    clipboard: { get: mocks.clipboardGet },
+    historySnapshots: {},
+  },
   serializeTracks: (tracks: unknown) => JSON.stringify(tracks),
   deserializeTracks: (data: string) => JSON.parse(data),
   serializeSelection: vi.fn(), deserializeSelection: vi.fn(),
@@ -136,6 +141,8 @@ describe('AudioEditorPage queued clip writes', () => {
     vi.clearAllMocks();
     mockProject = makeProject();
     mocks.loadChannels.mockResolvedValue([Float32Array.from([0.2, 0.4])]);
+    mocks.clipboardGet.mockResolvedValue(undefined);
+    mocks.audioBufferPut.mockResolvedValue('buffer-id');
     Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
   });
 
@@ -259,6 +266,62 @@ describe('AudioEditorPage queued clip writes', () => {
       expect(mockProject.labelTracks).toHaveLength(2);
       expect(mockProject.analysisLabels).toHaveLength(2);
     }
+    const command = mocks.push.mock.calls[0]?.[0];
+    expect(command.execute().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+    expect(command.undo().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+  });
+
+  it('preserves concurrent additions and renames during multi Clip paste', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.clipboardGet.mockResolvedValue({
+      id: 'current',
+      createdAt: 123,
+      data: serializeAudioClipboard({
+        sampleRate: 1000,
+        duration: 1,
+        tracks: [{
+          trackId: 'track-a', startTime: 0, channels: [],
+          segments: [{
+            startTime: 0, duration: 1, name: 'Pasted segment',
+            channels: [Float32Array.from([0.1, 0.2])],
+          }],
+        }],
+      }),
+    });
+    mocks.audioBufferPut.mockImplementation(async () => {
+      await gate;
+      return 'buffer-id';
+    });
+    mocks.saveProject.mockImplementation(async (project: IProject) => {
+      mockProject = project;
+      return true;
+    });
+    mocks.editLatestProject.mockImplementation(async (
+      _projectId: string,
+      edit: (project: IProject) => IProject | Promise<IProject>,
+    ) => {
+      await gate;
+      const before = structuredClone(mockProject);
+      const after = await edit(mockProject);
+      if (after === mockProject) return null;
+      mockProject = after;
+      return { before, after };
+    });
+
+    await renderEditor();
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true });
+    await waitFor(() => expect(
+      mocks.audioBufferPut.mock.calls.length + mocks.editLatestProject.mock.calls.length,
+    ).toBe(1));
+
+    addConcurrentTrackAndRename();
+    release();
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+    expect(mockProject.tracks[0]?.name).toBe('Renamed Alpha');
+    expect(mockProject.tracks[0]?.clips.some((clip) => clip.name === 'Pasted segment')).toBe(true);
     const command = mocks.push.mock.calls[0]?.[0];
     expect(command.execute().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
     expect(command.undo().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);

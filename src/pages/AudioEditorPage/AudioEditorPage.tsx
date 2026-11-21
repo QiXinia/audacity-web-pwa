@@ -2553,7 +2553,7 @@ function AudioEditorPageContent() {
   }
 
   async function commitClipEdit(
-    edit: (latest: IProject) => IProject,
+    edit: (latest: IProject) => IProject | Promise<IProject>,
     label: string,
   ): Promise<boolean> {
     if (!project) return false;
@@ -4169,23 +4169,19 @@ function AudioEditorPageContent() {
         toast.info('剪贴板为空');
         return;
       }
-      const before = JSON.parse(JSON.stringify(project)) as IProject;
       const clipboardData = parseAudioClipboard(entry.data);
-      const result = await pasteAtCursor(project, clipboardData, cursorPosition, resolvedMode);
-      if (result) {
-        const labels: Record<SelectionPasteMode, string> = {
-          overlap: 'Paste and overlap',
-          'per-track': 'Paste and make room on this track',
-          'all-tracks': 'Paste and make room on all tracks',
-        };
-        setProject(result);
-        await projectService.saveProject(result);
-        pushHistoryCmd({
-          id: generateId(),
-          label: labels[resolvedMode],
-          execute: () => result,
-          undo: () => before,
-        });
+      const labels: Record<SelectionPasteMode, string> = {
+        overlap: 'Paste and overlap',
+        'per-track': 'Paste and make room on this track',
+        'all-tracks': 'Paste and make room on all tracks',
+      };
+      const committed = await commitClipEdit(async (latest) => {
+        // Audacity resolves Paste destinations against the current track list.
+        // Keep PCM preparation and destination mutation inside the project write
+        // queue so an older editor snapshot cannot overwrite concurrent tracks.
+        return await pasteAtCursor(latest, clipboardData, cursorPosition, resolvedMode) ?? latest;
+      }, labels[resolvedMode]);
+      if (committed) {
         await historyManager.flush();
         updateHistoryState();
         toast.success(labels[resolvedMode]);

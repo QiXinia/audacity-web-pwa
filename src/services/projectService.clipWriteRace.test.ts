@@ -195,6 +195,26 @@ describe('ProjectService latest-project clip edits', () => {
     expect(persistedTracks()[0]?.clips[0]?.duration).toBe(2);
   });
 
+  it('awaits asynchronous latest-project edits before saving and starting later writes', async () => {
+    const before = installProject();
+    const editing = projectService.editLatestProject(before.id, async (latest) => {
+      await Promise.resolve();
+      return {
+        ...latest,
+        tracks: latest.tracks.map((track) => track.id === 'track-a'
+          ? { ...track, name: 'Renamed by asynchronous paste preparation' }
+          : track),
+      };
+    });
+    const adding = projectService.addTrack(before.id);
+
+    const edited = await editing;
+    await adding;
+    expect(edited?.after.tracks[0]?.name).toBe('Renamed by asynchronous paste preparation');
+    expect(persistedTracks()).toHaveLength(3);
+    expect(persistedTracks()[0]?.name).toBe('Renamed by asynchronous paste preparation');
+  });
+
   it('does not recreate a project when permanent deletion wins before a queued clip edit', async () => {
     const before = installProject();
     const release = delayNextProjectPut();

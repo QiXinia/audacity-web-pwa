@@ -42,14 +42,14 @@ beforeEach(async () => {
       __testLatestProjectAdapter: true,
       editLatestProject: vi.fn(async (
         projectId: string,
-        edit: (latest: IProject) => IProject,
+        edit: (latest: IProject) => IProject | Promise<IProject>,
       ) => {
         const getProject = service.getProject as (id: string) => Promise<IProject | null>;
         const openProject = service.openProject as (id: string) => Promise<IProject | null>;
         const latest = queuedLatest ?? await getProject(projectId) ?? await openProject(projectId);
         if (!latest) return null;
         const before = structuredClone(latest);
-        const after = edit(latest);
+        const after = await edit(latest);
         if (after === latest) return null;
         const saveProject = service.saveProject as (project: IProject) => Promise<unknown>;
         await saveProject(after);

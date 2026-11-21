@@ -1010,10 +1010,10 @@ class ProjectService {
     });
   }
 
-  /** Apply a pure clip edit to the latest project only after earlier writes commit. */
+  /** Apply an edit to the latest project only after earlier writes commit. */
   async editLatestProject(
     projectId: string,
-    edit: (project: IProject) => IProject,
+    edit: (project: IProject) => IProject | Promise<IProject>,
   ): Promise<{ before: IProject; after: IProject } | null> {
     return this.enqueueProjectWrite(async () => {
       const project = this.currentProject?.id === projectId
@@ -1022,7 +1022,7 @@ class ProjectService {
       if (!project) return null;
 
       const before = structuredClone(project);
-      const after = edit(project);
+      const after = await edit(project);
       if (after === project) return null;
       const saved = await this.saveProjectFromQueue(after);
       return saved ? { before, after } : null;
