@@ -234,6 +234,44 @@ describe('Workspace persistence', () => {
     expect(restored.activeId).toBe('custom-49');
   });
 
+  it('recovers a valid active workspace stored after duplicate damaged records', () => {
+    const stored = JSON.stringify({
+      activeId: 'late-active',
+      presets: [
+        ...Array.from({ length: 50 }, () => ({
+          id: ' duplicate ',
+          name: 'Duplicate',
+          layout,
+        })),
+        { id: 'late-active', name: 'Late active', layout: { ...layout, horizontalZoom: 333 } },
+      ],
+    });
+    const restored = loadWorkspaceStore({ getItem: () => stored });
+    expect(restored.activeId).toBe('late-active');
+    expect(restored.presets.find((preset) => preset.id === 'late-active')?.layout.horizontalZoom).toBe(333);
+    expect(restored.presets.filter((preset) => preset.id === 'duplicate')).toHaveLength(1);
+  });
+
+  it('keeps built-ins and the active workspace when normalizing legacy overflow storage', () => {
+    const customPresets = Array.from({ length: 50 }, (_, index) => ({
+      id: `legacy-${index}`,
+      name: `Legacy ${index}`,
+      layout: { ...layout, horizontalZoom: 200 + index },
+    }));
+    const stored = JSON.stringify({
+      activeId: 'legacy-49',
+      presets: [...defaultWorkspaceStore().presets, ...customPresets],
+    });
+    const restored = loadWorkspaceStore({ getItem: () => stored });
+    expect(restored.presets).toHaveLength(50);
+    expect(restored.activeId).toBe('legacy-49');
+    expect(restored.presets.find((preset) => preset.id === 'legacy-49')?.layout.horizontalZoom).toBe(249);
+    expect(restored.presets.filter((preset) => preset.builtIn).map((preset) => preset.id))
+      .toEqual(['classic', 'modern', 'music']);
+    expect(new Set(restored.presets.map((preset) => preset.id)).size).toBe(restored.presets.length);
+    expect(loadWorkspaceStore({ getItem: () => JSON.stringify(restored) })).toEqual(restored);
+  });
+
   it('reports browser storage write failures without throwing', () => {
     const storage = {
       setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },

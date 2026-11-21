@@ -133,7 +133,7 @@ export function loadWorkspaceStore(storage?: Pick<Storage, 'getItem'>): Workspac
     if (!Array.isArray(parsed.presets)) return fallback;
     const seenIds = new Set<string>();
     const seenNames = new Set<string>();
-    const presets = parsed.presets.slice(0, MAX_WORKSPACE_PRESETS).flatMap((candidate, index) => {
+    const presets = parsed.presets.flatMap((candidate, index) => {
       if (!candidate || typeof candidate.id !== 'string' || typeof candidate.name !== 'string') return [];
       const id = normalizeWorkspaceId(candidate.id);
       if (!id || seenIds.has(id)) return [];
@@ -155,10 +155,24 @@ export function loadWorkspaceStore(storage?: Pick<Storage, 'getItem'>): Workspac
       if (!presets.some((candidate) => candidate.id === preset.id)) presets.push(preset);
     }
     const normalizedActiveId = typeof parsed.activeId === 'string' ? normalizeWorkspaceId(parsed.activeId) : '';
-    const activeId = presets.some((preset) => preset.id === normalizedActiveId)
+    // Normalize every record before enforcing the limit so damaged duplicates cannot
+    // hide later valid entries. Legacy overflow must not evict built-ins or the active preset.
+    const retainedIds = new Set(
+      presets
+        .filter((preset) => preset.builtIn || preset.id === normalizedActiveId)
+        .map((preset) => preset.id),
+    );
+    for (const preset of presets) {
+      if (retainedIds.size >= MAX_WORKSPACE_PRESETS) break;
+      retainedIds.add(preset.id);
+    }
+    const limitedPresets = presets.length > MAX_WORKSPACE_PRESETS
+      ? presets.filter((preset) => retainedIds.has(preset.id))
+      : presets;
+    const activeId = limitedPresets.some((preset) => preset.id === normalizedActiveId)
       ? normalizedActiveId
       : fallback.activeId;
-    return { activeId, presets };
+    return { activeId, presets: limitedPresets };
   } catch {
     return fallback;
   }
