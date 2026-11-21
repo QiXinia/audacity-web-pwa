@@ -1002,4 +1002,77 @@ describe('AudioEngine recording boundaries', () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(engine.recordingState).toBe('idle');
   });
+
+  it('releases encoded backup chunks and detaches the recorder callback on stop', async () => {
+    class ControllableMediaRecorder {
+      static instances: ControllableMediaRecorder[] = [];
+      state = 'inactive';
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      constructor(_stream: unknown) { ControllableMediaRecorder.instances.push(this); }
+      start() { this.state = 'recording'; }
+      stop() { this.state = 'inactive'; }
+    }
+    vi.stubGlobal('MediaRecorder', ControllableMediaRecorder);
+    const engine = new AudioEngine();
+    const { stream, stop } = makeMediaStream(1);
+    const { context } = makeContext({ worklet: false });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    await engine.startRecording();
+    const recorder = ControllableMediaRecorder.instances[0]!;
+    recorder.ondataavailable?.({ data: new Blob(['encoded-audio']) });
+    await engine.stopRecording();
+
+    expect((engine as unknown as { recordingChunks: Blob[] }).recordingChunks).toEqual([]);
+    expect(recorder.ondataavailable).toBeNull();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(engine.recordingState).toBe('idle');
+  });
+
+  it('keeps a previous recorder final event out of a restarted session', async () => {
+    class ControllableMediaRecorder {
+      static instances: ControllableMediaRecorder[] = [];
+      state = 'inactive';
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      constructor(_stream: unknown) { ControllableMediaRecorder.instances.push(this); }
+      start() { this.state = 'recording'; }
+      stop() { this.state = 'inactive'; }
+    }
+    vi.stubGlobal('MediaRecorder', ControllableMediaRecorder);
+    const engine = new AudioEngine();
+    const first = makeMediaStream(1);
+    const second = makeMediaStream(1);
+    const { context } = makeContext({ worklet: false, meterPairs: 2 });
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(first.stream)
+      .mockResolvedValueOnce(second.stream);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    await engine.startRecording();
+    const firstRecorder = ControllableMediaRecorder.instances[0]!;
+    await engine.stopRecording();
+    await engine.startRecording();
+    const secondRecorder = ControllableMediaRecorder.instances[1]!;
+    const oldBlob = new Blob(['old-session']);
+    const newBlob = new Blob(['new-session']);
+
+    // MediaRecorder dispatches its final dataavailable event asynchronously
+    // after stop(). It must not append to the replacement session's backup.
+    firstRecorder.ondataavailable?.({ data: oldBlob });
+    secondRecorder.ondataavailable?.({ data: newBlob });
+
+    expect((engine as unknown as { recordingChunks: Blob[] }).recordingChunks).toEqual([newBlob]);
+    expect(ControllableMediaRecorder.instances).toHaveLength(2);
+    await engine.stopRecording();
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(second.stop).toHaveBeenCalledOnce();
+  });
 });

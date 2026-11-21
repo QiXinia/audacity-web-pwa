@@ -1206,6 +1206,15 @@ export class AudioEngine {
     };
 
     this.recordingStopResolver = null;
+    const mediaRecorder = this.mediaRecorder;
+    this.mediaRecorder = null;
+    if (mediaRecorder) {
+      // The final dataavailable event is asynchronous and can arrive after a
+      // new session has started. Detach it before releasing the input graph so
+      // an old encoded blob cannot contaminate the replacement recording.
+      cleanupStep('清除 MediaRecorder 回调', () => { mediaRecorder.ondataavailable = null; });
+    }
+    this.recordingChunks = [];
     this.disposeStereoMeter(this.recordingMeter);
     this.recordingMeter = null;
 
@@ -1243,7 +1252,6 @@ export class AudioEngine {
         cleanupStep('停止麦克风轨道', () => { track.stop(); });
       }
     }
-    this.mediaRecorder = null;
     this._recordedChunksL = null;
     this._recordedChunksR = null;
   }
