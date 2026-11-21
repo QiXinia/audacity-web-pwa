@@ -343,15 +343,19 @@ describe('AudioEditorPage tone command integration', () => {
     vi.mocked(projectService.openProject).mockResolvedValue(project);
     vi.mocked(projectService.getProject).mockResolvedValue(updatedProject);
     vi.mocked(historyManager.canUndo).mockReturnValue(true);
-    vi.mocked(historyManager.undo).mockReturnValue({
-      project,
-      command: {
-        id: 'multi-track-tone',
-        label: '生成音调',
-        execute: () => updatedProject,
-        undo: () => project,
-      },
-    });
+    vi.mocked(historyManager.undo).mockImplementation(((_currentProject: IProject, commit?: (project: IProject) => Promise<boolean | void>) => {
+      const result = {
+        project,
+        command: {
+          id: 'multi-track-tone',
+          label: '生成音调',
+          execute: () => updatedProject,
+          undo: () => project,
+        },
+      };
+      if (!commit) return result;
+      return Promise.resolve(commit(project)).then(() => result);
+    }) as never);
     renderEditor();
     await selectBothClips();
     await openToneDialog();
@@ -767,10 +771,11 @@ describe('AudioEditorPage official clip selection integration', () => {
     await waitFor(() => expect(document.querySelectorAll('.au-clip')).toHaveLength(1));
     expect(screen.getByRole('button', { name: /^Later A/ })).toBeInTheDocument();
 
-    vi.mocked(historyManager.undo).mockReturnValue({
-      project,
-      command: { label: '删除 3 个片段' },
-    } as never);
+    vi.mocked(historyManager.undo).mockImplementation(((_currentProject: IProject, commit?: (project: IProject) => Promise<boolean | void>) => {
+      const result = { project, command: { label: '删除 3 个片段' } };
+      if (!commit) return result;
+      return Promise.resolve(commit(project)).then(() => result);
+    }) as never);
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
     await waitFor(() => expect(document.querySelectorAll('.au-clip')).toHaveLength(4));
     expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(0);

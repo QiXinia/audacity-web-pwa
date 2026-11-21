@@ -3683,24 +3683,38 @@ function AudioEditorPageContent() {
 
   async function handleUndo() {
     if (!project) return;
-    const result = historyManager.undo(project);
-    if (result) {
-      applyHistoryProject(result.project);
-      await projectService.saveProject(result.project);
-      await historyManager.flush();
-      toast.info(`撤销：${result.command.label}`);
+    try {
+      const result = await historyManager.undo(
+        project,
+        (restoredProject) => projectService.saveProject(restoredProject),
+      );
+      if (result) {
+        await historyManager.flush();
+        applyHistoryProject(result.project);
+        toast.info(`撤销：${result.command.label}`);
+        updateHistoryState();
+      }
+    } catch {
+      toast.error('撤销失败，工程和历史未更改');
       updateHistoryState();
     }
   }
 
   async function handleRedo() {
     if (!project) return;
-    const result = historyManager.redo(project);
-    if (result) {
-      applyHistoryProject(result.project);
-      await projectService.saveProject(result.project);
-      await historyManager.flush();
-      toast.info(`重做：${result.command.label}`);
+    try {
+      const result = await historyManager.redo(
+        project,
+        (restoredProject) => projectService.saveProject(restoredProject),
+      );
+      if (result) {
+        await historyManager.flush();
+        applyHistoryProject(result.project);
+        toast.info(`重做：${result.command.label}`);
+        updateHistoryState();
+      }
+    } catch {
+      toast.error('重做失败，工程和历史未更改');
       updateHistoryState();
     }
   }

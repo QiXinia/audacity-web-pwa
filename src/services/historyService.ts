@@ -15,6 +15,13 @@ export interface HistoryCommand {
   undo: () => IProject;
 }
 
+export interface HistoryTransition {
+  project: IProject;
+  command: HistoryCommand;
+}
+
+type HistoryProjectCommit = (project: IProject) => Promise<boolean | void>;
+
 interface PersistedCommandSnapshot {
   before: IProject;
   after: IProject;
@@ -37,14 +44,16 @@ class HistoryManager {
   private projectId: string | null = null;
   private persistEnabled = true;
   private persistChain: Promise<void> = Promise.resolve();
+  private transitionChain: Promise<void> = Promise.resolve();
   private loadGeneration = 0;
   private stackRevision = 0;
 
   async loadForProject(projectId: string): Promise<number> {
     const generation = ++this.loadGeneration;
 
-    // Finish writes belonging to the previously open project before switching.
-    // A newer load may supersede this one while those writes are finishing.
+    // Finish history restoration and writes belonging to the previously open
+    // project before switching. A newer load may supersede this one meanwhile.
+    await this.transitionChain.catch(() => undefined);
     await this.persistChain.catch(() => undefined);
     if (generation !== this.loadGeneration) return 0;
 
@@ -124,7 +133,13 @@ class HistoryManager {
     this.schedulePersist();
   }
 
-  undo(_project: IProject): { project: IProject; command: HistoryCommand } | null {
+  undo(_project: IProject, commit: HistoryProjectCommit): Promise<HistoryTransition | null>;
+  undo(_project: IProject): HistoryTransition | null;
+  undo(
+    _project: IProject,
+    commit?: HistoryProjectCommit,
+  ): HistoryTransition | null | Promise<HistoryTransition | null> {
+    if (commit) return this.enqueueTransition('undo', commit);
     const command = this.undoStack.pop();
     if (!command) return null;
 
@@ -135,7 +150,13 @@ class HistoryManager {
     return { project, command };
   }
 
-  redo(_project: IProject): { project: IProject; command: HistoryCommand } | null {
+  redo(_project: IProject, commit: HistoryProjectCommit): Promise<HistoryTransition | null>;
+  redo(_project: IProject): HistoryTransition | null;
+  redo(
+    _project: IProject,
+    commit?: HistoryProjectCommit,
+  ): HistoryTransition | null | Promise<HistoryTransition | null> {
+    if (commit) return this.enqueueTransition('redo', commit);
     const command = this.redoStack.pop();
     if (!command) return null;
 
@@ -144,6 +165,39 @@ class HistoryManager {
     this.stackRevision += 1;
     this.schedulePersist();
     return { project, command };
+  }
+
+  /**
+   * Serialize project-backed history transitions. The command remains on its
+   * original stack and no snapshot persistence is scheduled until the exact
+   * whole-project snapshot has been saved successfully.
+   */
+  private enqueueTransition(
+    direction: 'undo' | 'redo',
+    commit: HistoryProjectCommit,
+  ): Promise<HistoryTransition | null> {
+    const operation = async (): Promise<HistoryTransition | null> => {
+      const source = direction === 'undo' ? this.undoStack : this.redoStack;
+      const command = source[source.length - 1];
+      if (!command) return null;
+
+      const project = direction === 'undo' ? command.undo() : command.execute();
+      const saved = await commit(project);
+      if (saved === false) throw new Error('历史恢复保存失败');
+
+      source.pop();
+      if (direction === 'undo') this.redoStack.push(command);
+      else this.undoStack.push(command);
+      this.stackRevision += 1;
+      this.schedulePersist();
+      return { project, command };
+    };
+
+    const result = this.transitionChain.then(operation);
+    // A rejected save is reported to its caller but must not poison later,
+    // explicitly requested undo/redo operations.
+    this.transitionChain = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   canUndo(): boolean {

@@ -142,7 +142,11 @@ describe('AudioEditorPage Repeat command integration', () => {
     vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(Float32Array.from({ length: 10 }, (_, i) => i / 10));
     vi.mocked(projectService.repeatSelectionOnTracks).mockResolvedValue(updated.tracks.flatMap((track) => track.clips.slice(1)));
     vi.mocked(historyManager.canUndo).mockReturnValue(true);
-    vi.mocked(historyManager.undo).mockReturnValue({ project, command: { label: '重复选区 ×2' } } as never);
+    vi.mocked(historyManager.undo).mockImplementation(((_currentProject: IProject, commit?: (project: IProject) => Promise<boolean | void>) => {
+      const result = { project, command: { label: '重复选区 ×2' } };
+      if (!commit) return result;
+      return Promise.resolve(commit(project)).then(() => result);
+    }) as never);
     renderEditor();
     await waitFor(() => expect(screen.getByText('主音轨')).toBeInTheDocument());
 
@@ -168,7 +172,7 @@ describe('AudioEditorPage Repeat command integration', () => {
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: /^Repeat / })).not.toBeInTheDocument());
     expect(screen.getAllByRole('button', { name: /^Clip source-track-/ })).toHaveLength(2);
-    expect(historyManager.undo).toHaveBeenCalledWith(updated);
+    expect(historyManager.undo).toHaveBeenCalledWith(updated, expect.any(Function));
     expect(projectService.saveProject).toHaveBeenCalledWith(project);
   });
 
