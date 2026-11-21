@@ -22,6 +22,7 @@ import { deserializeLabelTracks, serializeLabelTracks } from '@/lib/labelTracks'
 import { duplicateTrackInProject } from '@/lib/trackDuplicate';
 import { moveTrackInOrder, type TrackMoveDirection } from '@/lib/trackMove';
 import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSorting';
+import { alignProjectTracks, type TrackAlignMode } from '@/lib/trackAlignment';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
@@ -959,6 +960,44 @@ class ProjectService {
         ...project,
         tracks: project.tracks.map((track) => targets.has(track.id) ? { ...track, pan } : track),
       };
+      const saved = await this.saveProjectFromQueue(after);
+      return saved ? { before, after } : null;
+    });
+  }
+
+  /** Apply DoAlign to the latest queued project without overwriting concurrent edits. */
+  async alignTracks(
+    projectId: string,
+    trackIds: readonly string[],
+    mode: TrackAlignMode,
+    options: {
+      cursorPosition: number;
+      selection: IProject['selection'];
+      moveSelectionWithTracks?: boolean;
+      syncLockTracks?: boolean;
+    },
+  ): Promise<{ before: IProject; after: IProject } | null> {
+    return this.enqueueProjectWrite(async () => {
+      const project = this.currentProject?.id === projectId
+        ? this.currentProject
+        : await this.getProject(projectId);
+      if (!project) return null;
+      const targets = new Set(trackIds);
+      if (targets.size === 0 || !project.tracks.some((track) => targets.has(track.id))) return null;
+
+      // The editor owns the visible playhead and selection, while the queued
+      // project owns every track, label, and property committed before DoAlign.
+      const current: IProject = {
+        ...project,
+        cursorPosition: options.cursorPosition,
+        selection: options.selection,
+      };
+      const before = structuredClone(current);
+      const activeSelection = options.selection ?? {
+        start: options.cursorPosition,
+        end: options.cursorPosition,
+      };
+      const after = alignProjectTracks(current, trackIds, mode, activeSelection, options);
       const saved = await this.saveProjectFromQueue(after);
       return saved ? { before, after } : null;
     });

@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject, ITrack } from '@/types/project';
+import { alignProjectTracks, type TrackAlignMode } from '@/lib/trackAlignment';
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -8,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   warning: vi.fn(),
   error: vi.fn(),
   saveProject: vi.fn(),
+  alignTracks: vi.fn(),
   getPreferences: vi.fn(() => ({ moveSelectionWithTracks: false })),
   savePreferences: vi.fn(),
   loadChannels: vi.fn(),
@@ -16,6 +18,33 @@ const mocks = vi.hoisted(() => ({
   seek: vi.fn(),
 }));
 let mockProject: IProject;
+
+type AlignmentOptions = {
+  cursorPosition: number;
+  selection: IProject['selection'];
+  moveSelectionWithTracks?: boolean;
+  syncLockTracks?: boolean;
+};
+
+function alignLatestProject(
+  trackIds: string[],
+  mode: TrackAlignMode,
+  options: AlignmentOptions,
+): { before: IProject; after: IProject } {
+  const current: IProject = {
+    ...mockProject,
+    cursorPosition: options.cursorPosition,
+    selection: options.selection,
+  };
+  const before = structuredClone(current);
+  const activeSelection = options.selection ?? {
+    start: options.cursorPosition,
+    end: options.cursorPosition,
+  };
+  const after = alignProjectTracks(current, trackIds, mode, activeSelection, options);
+  mockProject = after;
+  return { before, after };
+}
 
 function makeTrack(id: string, name: string, startTime: number): ITrack {
   return {
@@ -70,6 +99,7 @@ vi.mock('@/services/projectService', () => ({
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
     saveProject: mocks.saveProject,
+    alignTracks: mocks.alignTracks,
     getPreferences: mocks.getPreferences,
     savePreferences: mocks.savePreferences,
     loadAudioChannels: mocks.loadChannels,
@@ -134,7 +164,7 @@ async function openAlignMenu(): Promise<void> {
 }
 
 function savedProject(): IProject {
-  return mocks.saveProject.mock.calls[0]![0] as IProject;
+  return mockProject;
 }
 
 function start(id: string): number {
@@ -154,6 +184,12 @@ describe('AudioEditorPage Align Tracks', () => {
     mocks.saveProject.mockImplementation(async (project: IProject) => {
       mockProject = project;
     });
+    mocks.alignTracks.mockImplementation(async (
+      _projectId: string,
+      trackIds: string[],
+      mode: TrackAlignMode,
+      options: AlignmentOptions,
+    ) => alignLatestProject(trackIds, mode, options));
     mocks.loadChannels.mockResolvedValue([Float32Array.from([0.2, 0.4])]);
   });
 
@@ -164,7 +200,7 @@ describe('AudioEditorPage Align Tracks', () => {
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Start to Zero 起点到零'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
     expect(start('late')).toBe(0);
     expect(start('early')).toBe(1);
     expect(start('early-2')).toBe(1);
@@ -179,7 +215,7 @@ describe('AudioEditorPage Align Tracks', () => {
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Start to Cursor/Selection Start 起点到光标/选区起点'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
     expect(start('late')).toBe(2.5);
     expect(mocks.push.mock.calls[0]![0].label).toBe('Align Start');
   });
@@ -190,7 +226,7 @@ describe('AudioEditorPage Align Tracks', () => {
     await openAlignMenu();
     fireEvent.click(await screen.findByText('End to Selection End 终点到选区终点'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
     expect(start('late')).toBeCloseTo(3.99, 10);
     expect(mocks.push.mock.calls[0]![0].label).toBe('Align End');
   });
@@ -201,7 +237,7 @@ describe('AudioEditorPage Align Tracks', () => {
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Align Together 对齐到一起'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
     expect(start('late')).toBe(3);
     expect(start('early')).toBe(3);
     expect(start('early-2')).toBe(1);
@@ -218,7 +254,7 @@ describe('AudioEditorPage Align Tracks', () => {
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Align Together 对齐到一起'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
     expect(start('late')).toBe(3);
     expect(start('early')).toBe(3);
     expect(savedProject().selection).toEqual({ start: 6, end: 8 });
@@ -237,7 +273,7 @@ describe('AudioEditorPage Align Tracks', () => {
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Align End to End 首尾相接'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
     expect(start('late')).toBe(5);
     expect(start('early')).toBe(6);
     expect(start('early-2')).toBe(1);
@@ -264,7 +300,7 @@ describe('AudioEditorPage Align Tracks', () => {
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Start to Zero 起点到零'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
     expect(start('late')).toBe(0);
     expect(start('early')).toBe(1);
     expect(savedProject().selection).toEqual({ start: 1, end: 3 });
@@ -291,7 +327,7 @@ describe('AudioEditorPage Align Tracks', () => {
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Start to Zero 起点到零'));
 
-    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
     expect(start('late')).toBe(0);
     expect(start('early')).toBe(-4);
     expect(start('early-2')).toBe(-4);
@@ -312,17 +348,56 @@ describe('AudioEditorPage Align Tracks', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
     expect(await screen.findByText('Align Tracks 对齐轨道')).toHaveAttribute('aria-disabled', 'true');
     expect(mocks.saveProject).not.toHaveBeenCalled();
+    expect(mocks.alignTracks).not.toHaveBeenCalled();
   });
 
   it('keeps visible clip positions and creates no history when saving fails', async () => {
-    mocks.saveProject.mockRejectedValue(new Error('storage unavailable'));
+    mocks.alignTracks.mockRejectedValue(new Error('storage unavailable'));
     await renderEditor();
     await openAlignMenu();
     fireEvent.click(await screen.findByText('Start to Zero 起点到零'));
 
     await waitFor(() => expect(mocks.error).toHaveBeenCalledWith('storage unavailable'));
-    expect(mocks.saveProject).toHaveBeenCalledTimes(1);
+    expect(mocks.alignTracks).toHaveBeenCalledTimes(1);
     expect(mocks.push).not.toHaveBeenCalled();
     expect(mockProject.tracks[0]!.clips[0]!.startTime).toBe(5);
+  });
+
+  it('preserves a concurrent track addition and rename while alignment is being saved', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.alignTracks.mockImplementation(async (
+      _projectId: string,
+      trackIds: string[],
+      mode: TrackAlignMode,
+      options: AlignmentOptions,
+    ) => {
+      await gate;
+      return alignLatestProject(trackIds, mode, options);
+    });
+    await renderEditor();
+    await openAlignMenu();
+    fireEvent.click(await screen.findByText('Start to Zero 起点到零'));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledTimes(1));
+
+    const added = structuredClone(mockProject.tracks[2]!);
+    added.id = 'track-c';
+    added.name = 'Track C';
+    added.clips = added.clips.map((clip) => ({ ...clip, id: 'clip-c', audioBufferId: 'buffer-c' }));
+    mockProject = {
+      ...mockProject,
+      tracks: [
+        ...mockProject.tracks.map((track) => track.id === 'late' ? { ...track, name: 'Renamed late' } : track),
+        added,
+      ],
+    };
+    release();
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['late', 'early', 'early-2', 'track-c']);
+    expect(mockProject.tracks[0]?.name).toBe('Renamed late');
+    expect(mockProject.tracks[0]?.clips[0]?.startTime).toBe(0);
+    expect(mocks.push.mock.calls[0]![1].tracks.map((track: ITrack) => track.id))
+      .toEqual(['late', 'early', 'early-2', 'track-c']);
   });
 });

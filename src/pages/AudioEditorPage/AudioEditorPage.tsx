@@ -191,7 +191,6 @@ import { getTrackSampleFormatLabel, TRACK_SAMPLE_FORMATS } from '@/lib/trackMedi
 import { RESAMPLE_RATE_CHOICES } from '@/lib/resampleEffect';
 import type { TrackSortMode } from '@/lib/trackSorting';
 import {
-  alignProjectTracks,
   getTrackAlignLabel,
   type TrackAlignMode,
 } from '@/lib/trackAlignment';
@@ -2445,20 +2444,16 @@ function AudioEditorPageContent() {
       return;
     }
 
-    const currentProject = { ...project, cursorPosition, selection };
-    const before = structuredClone(currentProject);
-    const activeSelection = selection ?? { start: cursorPosition, end: cursorPosition };
-    const updated = alignProjectTracks(
-      currentProject,
-      targetTrackIds,
-      mode,
-      activeSelection,
-      { moveSelectionWithTracks, syncLockTracks },
-    );
     const label = getTrackAlignLabel(mode, moveSelectionWithTracks);
     setIsAligningTracks(true);
     try {
-      await projectService.saveProject(updated);
+      const result = await projectService.alignTracks(project.id, targetTrackIds, mode, {
+        cursorPosition,
+        selection,
+        moveSelectionWithTracks,
+        syncLockTracks,
+      });
+      if (!result) return;
       const persisted = await projectService.getProject(project.id);
       if (!persisted) throw new Error('轨道对齐后无法重新加载工程');
       setProject(persisted);
@@ -2473,10 +2468,12 @@ function AudioEditorPageContent() {
       pushHistoryCmd({
         id: generateId(),
         label,
-        execute: () => persisted,
-        undo: () => before,
-      }, before);
-      toast.success(`已对齐 ${targetTrackIds.length} 条选中轨道`);
+        execute: () => result.after,
+        undo: () => result.before,
+      }, result.before);
+      const targets = new Set(targetTrackIds);
+      const affectedCount = result.before.tracks.filter((track) => targets.has(track.id)).length;
+      toast.success(`已对齐 ${affectedCount} 条选中轨道`);
     } catch (error) {
       logger.error('Align Tracks failed', error);
       toast.error(error instanceof Error ? error.message : '轨道对齐保存失败');
