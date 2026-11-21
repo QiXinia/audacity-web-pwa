@@ -250,4 +250,34 @@ describe('Audacity StaffPad boundary contracts', () => {
     expect(output[0]).toHaveLength(1);
     expect(Number.isFinite(output[0][0])).toBe(true);
   }, 180_000);
+
+  it('processes one million non-silent input frames without ring-buffer or source-position loss', () => {
+    const sampleRate = 1000;
+    const inputFrames = 1_000_000;
+    const source = new Float32Array(inputFrames);
+    for (let index = 0; index < source.length; index += 1) {
+      source[index] = 0.2 * Math.sin(index * 0.037) + 0.1 * Math.cos(index * 0.011);
+    }
+    const untouched = source.slice();
+    const startedAt = performance.now();
+    const output = processStaffPadTimeAndPitchChannels([source], {
+      sampleRate,
+      timeRatio: 0.1,
+      pitchRatio: 1,
+      preserveFormants: true,
+      fftSize: 64,
+    });
+    const nonSilentSamples = output[0].reduce((count, sample) => count + (sample !== 0 ? 1 : 0), 0);
+    console.log('StaffPad million-frame stress', {
+      inputFrames,
+      outputFrames: output[0].length,
+      nonSilentSamples,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+    expect(source).toEqual(untouched);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toHaveLength(100_000);
+    expect(output[0].every((sample) => Number.isFinite(sample))).toBe(true);
+    expect(nonSilentSamples).toBeGreaterThan(90_000);
+  }, 180_000);
 });
