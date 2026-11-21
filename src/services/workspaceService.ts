@@ -29,16 +29,27 @@ export interface WorkspaceStore {
 export const WORKSPACE_STORAGE_KEY = 'audacity-web:workspaces:v1';
 export const MAX_WORKSPACE_PRESETS = 50;
 
+function truncateWorkspaceValue(value: string, maxLength: number): string {
+  let result = '';
+  let length = 0;
+  for (const character of value) {
+    if (length >= maxLength) break;
+    result += character;
+    length += 1;
+  }
+  return result;
+}
+
 function normalizeWorkspaceId(id: string): string {
-  return id.trim().slice(0, 80);
+  return truncateWorkspaceValue(id.trim(), 80);
 }
 
 function normalizeWorkspaceName(name: string): string {
-  return name.trim().slice(0, 60);
+  return truncateWorkspaceValue(name.trim(), 60);
 }
 
 function workspaceNameKey(name: string): string {
-  return normalizeWorkspaceName(name).toLowerCase();
+  return normalizeWorkspaceName(name).normalize('NFKC').toLowerCase();
 }
 
 const DEFAULT_PRESETS: WorkspacePreset[] = [

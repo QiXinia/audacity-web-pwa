@@ -235,6 +235,27 @@ describe('AudioEditorPage Workspace storage integration', () => {
       .toBe('Overflow workspace');
     expect(toast.success).not.toHaveBeenCalled();
   });
+
+  it('rejects a compatibility-equivalent built-in name without closing or persisting', async () => {
+    window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+    renderEditor();
+    await screen.findByText(project.name);
+    await waitFor(() => expect(window.localStorage.getItem(WORKSPACE_STORAGE_KEY)).not.toBeNull());
+    const storageBeforeSave = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
+
+    fireEvent.click(await openWorkspaceMenu());
+    fireEvent.change(screen.getByLabelText('Workspace 名称'), {
+      target: { value: ' Ｃｌａｓｓｉｃ ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存 Workspace' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Workspace name already exists'));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect((screen.getByLabelText('Workspace 名称') as HTMLInputElement).value)
+      .toBe(' Ｃｌａｓｓｉｃ ');
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(storageBeforeSave);
+  });
 });
 
 describe('AudioEditorPage vertical zoom controls', () => {

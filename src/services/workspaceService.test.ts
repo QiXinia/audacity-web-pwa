@@ -272,6 +272,57 @@ describe('Workspace persistence', () => {
     expect(loadWorkspaceStore({ getItem: () => JSON.stringify(restored) })).toEqual(restored);
   });
 
+  it('truncates Unicode names and active ids without splitting surrogate pairs', () => {
+    const idPrefix = 'i'.repeat(79);
+    const namePrefix = 'n'.repeat(59);
+    const custom = createWorkspace(
+      defaultWorkspaceStore(),
+      `${idPrefix}😀ignored`,
+      `${namePrefix}😀ignored`,
+      layout,
+    );
+    expect(custom.activeId).toBe(`${idPrefix}😀`);
+    expect(custom.presets.at(-1)?.name).toBe(`${namePrefix}😀`);
+    expect(Array.from(custom.activeId)).toHaveLength(80);
+    expect(Array.from(custom.presets.at(-1)?.name ?? '')).toHaveLength(60);
+    expect(() => encodeURIComponent(custom.activeId)).not.toThrow();
+    expect(() => encodeURIComponent(custom.presets.at(-1)?.name ?? '')).not.toThrow();
+
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    expect(saveWorkspaceStore(custom, storage)).toBe(true);
+    const restored = loadWorkspaceStore(storage);
+    expect(restored.activeId).toBe(`${idPrefix}😀`);
+    expect(restored.presets.find((preset) => preset.id === restored.activeId)?.name)
+      .toBe(`${namePrefix}😀`);
+  });
+
+  it('rejects Unicode compatibility-equivalent duplicate and built-in names', () => {
+    expect(() => createWorkspace(defaultWorkspaceStore(), 'fullwidth-classic', ' Ｃｌａｓｓｉｃ ', layout))
+      .toThrow('Workspace name already exists');
+
+    const custom = createWorkspace(defaultWorkspaceStore(), 'composed', 'Café', layout);
+    expect(() => createWorkspace(custom, 'decomposed', 'Cafe\u0301', layout))
+      .toThrow('Workspace name already exists');
+  });
+
+  it('rejects compatibility-equivalent built-in name spoofing when restoring storage', () => {
+    const stored = JSON.stringify({
+      activeId: 'spoofed-modern',
+      presets: [
+        ...defaultWorkspaceStore().presets,
+        { id: 'spoofed-modern', name: ' Ｍｏｄｅｒｎ ', layout },
+      ],
+    });
+    const restored = loadWorkspaceStore({ getItem: () => stored });
+    expect(restored.presets.some((preset) => preset.id === 'spoofed-modern')).toBe(false);
+    expect(restored.activeId).toBe('classic');
+    expect(restored.presets.filter((preset) => preset.id === 'modern')).toHaveLength(1);
+  });
+
   it('reports browser storage write failures without throwing', () => {
     const storage = {
       setItem: () => { throw new DOMException('Storage is full', 'QuotaExceededError'); },
