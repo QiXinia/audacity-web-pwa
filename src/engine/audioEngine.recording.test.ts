@@ -865,6 +865,48 @@ describe('AudioEngine recording boundaries', () => {
     expect(second.stop).toHaveBeenCalledOnce();
   });
 
+  it('continues stale stream cleanup and post-stop restart when one track stop fails', async () => {
+    const engine = new AudioEngine();
+    const second = makeMediaStream(1);
+    const { context, createScriptProcessor } = makeContext({ worklet: false });
+    const failingStop = vi.fn(() => { throw new Error('stale track stop failed'); });
+    const remainingStop = vi.fn();
+    const failingTrack = { stop: failingStop, getSettings: () => ({ channelCount: 1 }) };
+    const remainingTrack = { stop: remainingStop, getSettings: () => ({ channelCount: 1 }) };
+    const staleStream = {
+      getAudioTracks: () => [failingTrack, remainingTrack],
+      getTracks: () => [failingTrack, remainingTrack],
+    };
+    let resolveFirstStream: ((value: unknown) => void) | undefined;
+    const getUserMedia = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstStream = resolve; }))
+      .mockResolvedValue(second.stream);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    vi.spyOn(engine as any, 'ensureContext' as any).mockResolvedValue(context as never);
+
+    const initialStart = engine.startRecording();
+    const initialOutcome = initialStart.catch((error: unknown) => error);
+    expect(await engine.stopRecording()).toBeNull();
+    const restart = engine.startRecording();
+    const restartOutcome = restart.catch((error: unknown) => error);
+    resolveFirstStream?.(staleStream);
+    const [initialError, restartError] = await Promise.all([initialOutcome, restartOutcome]);
+
+    expect(restartError).toBeUndefined();
+    expect(initialError).toBeUndefined();
+    expect(failingStop).toHaveBeenCalledOnce();
+    expect(remainingStop).toHaveBeenCalledOnce();
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(createScriptProcessor).toHaveBeenCalledOnce();
+    expect(engine.recordingState).toBe('recording');
+
+    await engine.stopRecording();
+    expect(second.stop).toHaveBeenCalledOnce();
+  });
+
   it('coalesces concurrent starts and ignores reentry without replacing the active fallback session', async () => {
     const engine = new AudioEngine();
     const first = makeMediaStream(1);

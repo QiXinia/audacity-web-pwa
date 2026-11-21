@@ -938,7 +938,16 @@ export class AudioEngine {
         audio: audioConstraints,
       });
       if (generation !== this.recordingGeneration) {
-        stream.getTracks().forEach((track) => track.stop());
+        // A stale stream can contain multiple tracks. Match the guarded cleanup
+        // below: one browser track failure must not leave the remaining tracks
+        // live, and cancellation must still settle so a clean restart can join.
+        for (const track of stream.getTracks()) {
+          try {
+            track.stop();
+          } catch (error) {
+            logger.warn('停止迟到麦克风轨道失败，继续释放剩余轨道:', String(error));
+          }
+        }
         return;
       }
       this.mediaStream = stream;
