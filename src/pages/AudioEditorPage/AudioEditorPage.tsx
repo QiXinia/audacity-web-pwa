@@ -10333,7 +10333,7 @@ function AudioEditorPageContent() {
                   autoFocus
                 />
                 <p id="workspace-name-length" className="text-right text-xs text-muted-foreground" aria-live="polite">
-                  {Array.from(workspaceName).length} / {MAX_WORKSPACE_NAME_LENGTH} 码点
+                  {Array.from(workspaceName.trim()).length} / {MAX_WORKSPACE_NAME_LENGTH} 码点
                 </p>
               </div>
               <DialogFooter>

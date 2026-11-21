@@ -45,8 +45,13 @@ function normalizeWorkspaceId(id: string): string {
   return truncateWorkspaceValue(id.trim(), 80);
 }
 
+/** Limit the persisted (trimmed) name while preserving whitespace during editing. */
 export function truncateWorkspaceNameInput(name: string): string {
-  return truncateWorkspaceValue(name, MAX_WORKSPACE_NAME_LENGTH);
+  const core = name.trim();
+  if (!core) return truncateWorkspaceValue(name, MAX_WORKSPACE_NAME_LENGTH);
+  const leading = name.slice(0, name.length - name.trimStart().length);
+  const trailing = name.slice(name.trimEnd().length);
+  return `${leading}${truncateWorkspaceValue(core, MAX_WORKSPACE_NAME_LENGTH)}${trailing}`;
 }
 
 function normalizeWorkspaceName(name: string): string {

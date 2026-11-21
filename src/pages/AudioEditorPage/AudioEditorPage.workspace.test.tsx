@@ -299,6 +299,26 @@ describe('AudioEditorPage Workspace storage integration', () => {
       .toBe(expected);
   });
 
+  it('does not let surrounding whitespace consume the 60-code-point name quota', async () => {
+    window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+    renderEditor();
+    await screen.findByText(project.name);
+
+    fireEvent.click(await openWorkspaceMenu());
+    const input = screen.getByLabelText('Workspace 名称') as HTMLInputElement;
+    const expected = '😀'.repeat(60);
+    fireEvent.change(input, { target: { value: `  ${expected}🎧  ` } });
+
+    expect(input.value).toBe(`  ${expected}  `);
+    expect(screen.getByText('60 / 60 码点')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '保存 Workspace' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const persisted = JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}');
+    expect(persisted.presets.find((preset: { id: string }) => preset.id === persisted.activeId)?.name)
+      .toBe(expected);
+  });
+
   it('opens the official Edit workspaces dialog and applies the selected preset', async () => {
     const custom = createWorkspace(defaultWorkspaceStore(), 'manager-custom', 'Manager custom', {
       ...defaultWorkspaceStore().presets[2].layout,
