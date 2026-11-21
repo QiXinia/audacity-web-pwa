@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import type { IProject } from '@/types/project';
 
 const mocks = vi.hoisted(() => ({
   saveProject: vi.fn(),
   undo: vi.fn(),
   redo: vi.fn(),
+  flush: vi.fn(),
   error: vi.fn(),
   info: vi.fn(),
 }));
@@ -46,7 +47,7 @@ vi.mock('@/services/projectService', () => ({
 vi.mock('@/services/historyService', () => ({
   historyManager: {
     push: vi.fn(), pushCommand: vi.fn(), canUndo: vi.fn(() => true), canRedo: vi.fn(() => true),
-    loadForProject: vi.fn(async () => 0), flush: vi.fn(async () => undefined),
+    loadForProject: vi.fn(async () => 0), flush: mocks.flush,
     undo: mocks.undo, redo: mocks.redo,
     getUndoLabel: vi.fn(() => 'Edit'), getRedoLabel: vi.fn(() => 'Edit'),
     getHistoryState: vi.fn(() => ({ canUndo: true, canRedo: true, undoLabel: 'Edit', redoLabel: 'Edit' })),
@@ -80,9 +81,21 @@ vi.mock('@/utils/logger', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info
 
 import AudioEditorPage from './AudioEditorPage';
 
+function ProjectNavigation() {
+  const navigate = useNavigate();
+  return <button type="button" onClick={() => navigate('/editor/other-project')}>Open other project</button>;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 function renderEditor() {
   return render(
     <MemoryRouter initialEntries={['/editor/history-atomicity-page']}>
+      <ProjectNavigation />
       <Routes>
         <Route path="/editor/:projectId" element={<AudioEditorPage />} />
       </Routes>
@@ -106,6 +119,7 @@ describe('AudioEditorPage undo/redo save atomicity', () => {
     vi.clearAllMocks();
     mockProject = makeProject('After edit');
     mocks.saveProject.mockRejectedValue(new Error('IndexedDB write failed'));
+    mocks.flush.mockResolvedValue(undefined);
   });
 
   afterEach(() => cleanup());
@@ -137,5 +151,35 @@ describe('AudioEditorPage undo/redo save atomicity', () => {
     expect(screen.getByText('Before edit')).toBeInTheDocument();
     expect(screen.queryByText('After edit')).not.toBeInTheDocument();
     expect(mocks.info).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['undo', '撤销'] as const,
+    ['redo', '重做'] as const,
+  ])('does not apply a late %s result after switching projects during history flush', async (operation, label) => {
+    const before = makeProject('Old history result');
+    mockTransition(mocks[operation], before, 'Rename track');
+    mocks.saveProject.mockResolvedValue(true);
+    const flushing = deferred<void>();
+    mocks.flush.mockReturnValue(flushing.promise);
+    renderEditor();
+    expect(await screen.findByText('After edit')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    await waitFor(() => expect(mocks.saveProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.flush).toHaveBeenCalledTimes(1));
+
+    mockProject = { ...makeProject('Other project'), id: 'other-project' };
+    fireEvent.click(screen.getByRole('button', { name: 'Open other project' }));
+    expect(await screen.findByText('Other project')).toBeInTheDocument();
+
+    await act(async () => {
+      flushing.resolve();
+      await flushing.promise;
+    });
+
+    expect(screen.getByText('Other project')).toBeInTheDocument();
+    expect(screen.queryByText('Old history result')).not.toBeInTheDocument();
+    expect(mocks.info).not.toHaveBeenCalledWith(`${label}：Rename track`);
   });
 });

@@ -3720,18 +3720,22 @@ function AudioEditorPageContent() {
 
   async function handleUndo() {
     if (!project) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
       const result = await historyManager.undo(
         project,
         (restoredProject) => projectService.saveProject(restoredProject),
       );
-      if (result) {
+      if (result && isCurrentAction()) {
         await historyManager.flush();
+        if (!isCurrentAction()) return;
         applyHistoryProject(result.project);
         toast.info(`撤销：${result.command.label}`);
         updateHistoryState();
       }
     } catch {
+      if (!isCurrentAction()) return;
       toast.error('撤销失败，工程和历史未更改');
       updateHistoryState();
     }
@@ -3739,18 +3743,22 @@ function AudioEditorPageContent() {
 
   async function handleRedo() {
     if (!project) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
       const result = await historyManager.redo(
         project,
         (restoredProject) => projectService.saveProject(restoredProject),
       );
-      if (result) {
+      if (result && isCurrentAction()) {
         await historyManager.flush();
+        if (!isCurrentAction()) return;
         applyHistoryProject(result.project);
         toast.info(`重做：${result.command.label}`);
         updateHistoryState();
       }
     } catch {
+      if (!isCurrentAction()) return;
       toast.error('重做失败，工程和历史未更改');
       updateHistoryState();
     }

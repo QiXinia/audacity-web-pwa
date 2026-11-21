@@ -181,11 +181,30 @@ class HistoryManager {
       const command = source[source.length - 1];
       if (!command) return null;
 
+      const revision = this.stackRevision;
+      const projectId = this.projectId;
+      const isStale = () => revision !== this.stackRevision
+        || projectId !== this.projectId;
       const project = direction === 'undo' ? command.undo() : command.execute();
-      const saved = await commit(project);
+
+      let saved: boolean | void;
+      try {
+        saved = await commit(project);
+      } catch (error) {
+        // A failed save from an obsolete editor must not surface in, or mutate,
+        // the project that has since become active.
+        if (isStale()) return null;
+        throw error;
+      }
+      if (isStale()) return null;
       if (saved === false) throw new Error('历史恢复保存失败');
 
-      source.pop();
+      // A newer stack edit or clear supersedes this pending transition. Project
+      // loads instead wait for it before replacing the old project's stacks.
+      // Only the exact command captured above may move stacks.
+      const currentSource = direction === 'undo' ? this.undoStack : this.redoStack;
+      if (currentSource[currentSource.length - 1] !== command) return null;
+      currentSource.pop();
       if (direction === 'undo') this.redoStack.push(command);
       else this.undoStack.push(command);
       this.stackRevision += 1;

@@ -145,4 +145,64 @@ describe('historyManager transactional undo/redo', () => {
     expect(historyManager.getRedoCount()).toBe(0);
     expect(historyManager.getUndoLabel()).toBe('edit-2');
   });
+
+  it('does not pop a newer edit or resurrect redo when an older undo save finishes', async () => {
+    const zero = makeProject('zero');
+    const one = makeProject('one');
+    const two = makeProject('two');
+    const three = makeProject('three');
+    historyManager.push(makeCommand('edit-1', zero, one), zero);
+    const save = deferred<boolean>();
+    const commit = vi.fn((_project: IProject) => save.promise);
+
+    const pendingUndo = historyManager.undo(one, commit);
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledWith(zero));
+    historyManager.push(makeCommand('newer-edit', two, three), two);
+
+    save.resolve(true);
+    await expect(pendingUndo).resolves.toBeNull();
+
+    expect(historyManager.getUndoCount()).toBe(2);
+    expect(historyManager.getUndoLabel()).toBe('newer-edit');
+    expect(historyManager.getRedoCount()).toBe(0);
+    expect(historyManager.undo(three)?.command.label).toBe('newer-edit');
+  });
+
+  it('does not restore an old command after clear during an asynchronous undo', async () => {
+    const before = makeProject('before');
+    const after = makeProject('after');
+    historyManager.push(makeCommand('edit-track', before, after), before);
+    const save = deferred<boolean>();
+    const commit = vi.fn((_project: IProject) => save.promise);
+
+    const pendingUndo = historyManager.undo(after, commit);
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledWith(before));
+    historyManager.clear();
+
+    save.resolve(true);
+    await expect(pendingUndo).resolves.toBeNull();
+    expect(historyManager.getUndoCount()).toBe(0);
+    expect(historyManager.getRedoCount()).toBe(0);
+  });
+
+  it('finishes an already-saving undo before a project load replaces the old stacks', async () => {
+    const before = makeProject('before');
+    const after = makeProject('after');
+    historyManager.push(makeCommand('edit-track', before, after), before);
+    const save = deferred<boolean>();
+    const commit = vi.fn((_project: IProject) => save.promise);
+
+    const pendingUndo = historyManager.undo(after, commit);
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledWith(before));
+    const loading = historyManager.loadForProject('next-project');
+    save.resolve(true);
+
+    await expect(pendingUndo).resolves.toMatchObject({
+      project: before,
+      command: { label: 'edit-track' },
+    });
+    await expect(loading).resolves.toBe(0);
+    expect(historyManager.getUndoCount()).toBe(0);
+    expect(historyManager.getRedoCount()).toBe(0);
+  });
 });
