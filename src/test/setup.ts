@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
+import type { IProject } from '@/types/project';
 
 // Mock Dexie / IndexedDB（jsdom 没有真实 IndexedDB）
 vi.mock('@/db/audioDb', () => {
@@ -27,7 +28,37 @@ vi.mock('@/db/audioDb', () => {
 });
 
 // Dexie 和 IndexedDB 在 jsdom 中不可用，用 mock 跳过
-beforeEach(() => {
+beforeEach(async () => {
+  // Older page test doubles predate editLatestProject. Adapt only those mocks
+  // to the real contract so their existing saveProject assertions still inspect
+  // the edited snapshot; production code has no whole-snapshot fallback.
+  const { projectService } = await import('@/services/projectService');
+  const service = projectService as unknown as Record<string, unknown>;
+  if (vi.isMockFunction(service.getProject)
+    && vi.isMockFunction(service.saveProject)
+    && (typeof service.editLatestProject !== 'function' || service.__testLatestProjectAdapter === true)) {
+    let queuedLatest: IProject | null | undefined;
+    Object.assign(service, {
+      __testLatestProjectAdapter: true,
+      editLatestProject: vi.fn(async (
+        projectId: string,
+        edit: (latest: IProject) => IProject,
+      ) => {
+        const getProject = service.getProject as (id: string) => Promise<IProject | null>;
+        const openProject = service.openProject as (id: string) => Promise<IProject | null>;
+        const latest = queuedLatest ?? await getProject(projectId) ?? await openProject(projectId);
+        if (!latest) return null;
+        const before = structuredClone(latest);
+        const after = edit(latest);
+        if (after === latest) return null;
+        const saveProject = service.saveProject as (project: IProject) => Promise<unknown>;
+        await saveProject(after);
+        queuedLatest = after;
+        return { before, after };
+      }),
+    });
+  }
+
   // mock window.matchMedia
   if (typeof window !== 'undefined' && !window.matchMedia) {
     Object.defineProperty(window, 'matchMedia', {

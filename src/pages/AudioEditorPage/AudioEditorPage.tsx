@@ -2552,24 +2552,14 @@ function AudioEditorPageContent() {
       : [key];
   }
 
-  async function commitClipEdit(updated: IProject, label: string) {
-    if (!project || updated === project) return;
-    const before = project;
-    setProject(updated);
-    await projectService.saveProject(updated);
-    pushHistoryCmd({
-      id: generateId(),
-      label,
-      execute: () => updated,
-      undo: () => before,
-    });
-  }
-
-  async function commitLatestClipEdit(edit: (latest: IProject) => IProject, label: string) {
-    if (!project) return;
+  async function commitClipEdit(
+    edit: (latest: IProject) => IProject,
+    label: string,
+  ): Promise<boolean> {
+    if (!project) return false;
     try {
       const result = await projectService.editLatestProject(project.id, edit);
-      if (!result) return;
+      if (!result) return false;
       setProject(result.after);
       pushHistoryCmd({
         id: generateId(),
@@ -2577,20 +2567,25 @@ function AudioEditorPageContent() {
         execute: () => result.after,
         undo: () => result.before,
       }, result.before);
+      return true;
     } catch (error) {
       logger.error('Clip edit failed', error);
       toast.error(error instanceof Error ? error.message : 'Clip edit failed');
+      return false;
     }
   }
 
   async function handleTempoChange(value: number) {
     if (!project || playbackState !== 'stopped' || recordingState === 'recording') return;
-    await commitClipEdit(updateProjectTempo(project, value), '调整 BPM');
+    await commitClipEdit((latest) => updateProjectTempo(latest, value), '调整 BPM');
   }
 
   async function handleTimeSignatureChange(numerator: number, denominator: number) {
     if (!project) return;
-    await commitClipEdit(updateProjectTimeSignature(project, numerator, denominator), '调整拍号');
+    await commitClipEdit(
+      (latest) => updateProjectTimeSignature(latest, numerator, denominator),
+      '调整拍号',
+    );
   }
 
   function createSnapSettings(points: readonly number[], bypassSnap: boolean): SnapSettings {
@@ -2642,7 +2637,7 @@ function AudioEditorPageContent() {
     const keys = keysForClip(trackId, clipId);
     const delta = resolveClipSnapDelta(trackId, clipId, `trim-${edge}`, deltaSeconds, bypassSnap);
     if (Math.abs(delta) < 0.001) return;
-    await commitLatestClipEdit(
+    await commitClipEdit(
       (latest) => trimClipSelection(latest, keys, edge, delta),
       keys.length > 1 ? '成组修剪片段' : '修剪片段',
     );
@@ -2659,7 +2654,7 @@ function AudioEditorPageContent() {
     const keys = keysForClip(trackId, clipId);
     const delta = resolveClipSnapDelta(trackId, clipId, `stretch-${edge}`, deltaSeconds, bypassSnap);
     if (Math.abs(delta) < 0.001) return;
-    await commitLatestClipEdit(
+    await commitClipEdit(
       (latest) => stretchClipSelection(latest, keys, edge, delta),
       keys.length > 1 ? '成组拉伸片段' : '时间拉伸片段',
     );
@@ -2670,7 +2665,7 @@ function AudioEditorPageContent() {
     const keys = keysForClip(trackId, clipId);
     const delta = resolveClipSnapDelta(trackId, clipId, 'move', deltaSeconds, bypassSnap);
     if (Math.abs(delta) < 0.001) return;
-    await commitLatestClipEdit(
+    await commitClipEdit(
       (latest) => moveClipSelection(latest, keys, delta),
       keys.length > 1 ? '成组移动片段' : '移动片段',
     );
@@ -2678,14 +2673,18 @@ function AudioEditorPageContent() {
 
   async function handleClipReset(trackId: string, clipId: string) {
     if (!project) return;
-    await commitClipEdit(resetClipStretch(project, keysForClip(trackId, clipId)), '恢复片段速度 100%');
+    const keys = keysForClip(trackId, clipId);
+    await commitClipEdit((latest) => resetClipStretch(latest, keys), '恢复片段速度 100%');
   }
 
   async function handleClipPitchAndSpeed(settings: ClipPitchAndSpeedSettings) {
     if (!project || !pitchAndSpeedClipKey) return;
-    const updated = applyClipPitchAndSpeed(project, pitchAndSpeedClipKey, settings);
-    await commitClipEdit(updated, '调整片段音高与速度');
-    toast.success('已更新片段音高与速度');
+    const key = pitchAndSpeedClipKey;
+    const committed = await commitClipEdit(
+      (latest) => applyClipPitchAndSpeed(latest, key, settings),
+      '调整片段音高与速度',
+    );
+    if (committed) toast.success('已更新片段音高与速度');
   }
 
   async function resetClipPitchAndSpeed(trackId: string, clipId: string) {
@@ -2695,12 +2694,11 @@ function AudioEditorPageContent() {
       ?.clips.find((candidate) => candidate.id === clipId);
     if (!clip || !hasClipPitchOrSpeed(clip)) return;
     stopPlaybackAndSyncMonitoring();
-    const updated = applyClipPitchAndSpeed(project, key, {
+    await commitClipEdit((latest) => applyClipPitchAndSpeed(latest, key, {
       pitchCents: 0,
       speedPercentage: 100,
       optimizeForVoice: false,
-    });
-    await commitClipEdit(updated, '重置片段音高与速度');
+    }), '重置片段音高与速度');
   }
 
   async function renderClipPitchAndSpeed(trackId: string, clipId: string) {
@@ -2719,8 +2717,11 @@ function AudioEditorPageContent() {
       const renderedChannels = renderClipPitchAndSpeedChannels(clip, channels, project.sampleRate);
       const renderedDuration = renderedChannels[0].length / project.sampleRate;
       const bufferId = await storeProjectBuffer(project.id, renderedChannels, project.sampleRate);
-      const updated = replaceClipWithRenderedPitchAndSpeed(project, key, bufferId, renderedDuration);
-      await commitClipEdit(updated, 'Rendered time-stretched audio · Render');
+      const committed = await commitClipEdit(
+        (latest) => replaceClipWithRenderedPitchAndSpeed(latest, key, bufferId, renderedDuration),
+        'Rendered time-stretched audio · Render',
+      );
+      if (!committed) return;
       setSelectedClips([key]);
       clipSelectionAnchorRef.current = key;
       toast.success('Rendered time-stretched audio');
@@ -2750,7 +2751,11 @@ function AudioEditorPageContent() {
         toast.info('未找到所有声道同时精确为零且至少 0.01 秒的静音区间');
         return;
       }
-      await commitClipEdit(result.project, 'Split at silences');
+      const committed = await commitClipEdit(
+        (latest) => disjoinClipAtSilences(latest, key, channels, generateId).project,
+        'Split at silences',
+      );
+      if (!committed) return;
       setSelectedClips([]);
       clipSelectionAnchorRef.current = null;
       toast.success(`Split at silences · 移除 ${result.regions.length} 个静音区间`);
@@ -2770,15 +2775,17 @@ function AudioEditorPageContent() {
     const enabled = !isClipStretchToMatchTempo(clip);
     stopPlaybackAndSyncMonitoring();
     await commitClipEdit(
-      toggleClipStretchToMatchTempo(project, { trackId, clipId }),
+      (latest) => toggleClipStretchToMatchTempo(latest, { trackId, clipId }),
       enabled ? '启用 Stretch with tempo changes' : '停用 Stretch with tempo changes',
     );
   }
 
   async function changeClipColor(trackId: string, clipId: string, colorIndex: number) {
     if (!project || renderingPitchAndSpeedClipId) return;
-    const updated = setClipColor(project, { trackId, clipId }, colorIndex);
-    await commitClipEdit(updated, '修改片段颜色');
+    await commitClipEdit(
+      (latest) => setClipColor(latest, { trackId, clipId }, colorIndex),
+      '修改片段颜色',
+    );
   }
 
   async function changeTrackColor(trackId: string, colorIndex: number): Promise<void> {
@@ -2822,8 +2829,10 @@ function AudioEditorPageContent() {
 
   async function changeClipTitle(trackId: string, clipId: string, newTitle: string) {
     if (!project || renderingPitchAndSpeedClipId) return;
-    const updated = renameClipTitle(project, { trackId, clipId }, newTitle);
-    await commitClipEdit(updated, '重命名片段');
+    await commitClipEdit(
+      (latest) => renameClipTitle(latest, { trackId, clipId }, newTitle),
+      '重命名片段',
+    );
   }
 
   function openClipProperties(trackId: string, clipId: string) {
@@ -2838,9 +2847,10 @@ function AudioEditorPageContent() {
     useGlobalSettings: boolean,
   ) {
     if (!project) return;
-    const updated = updateTrackSpectrogramSettings(project, trackId, settings, useGlobalSettings);
-    if (updated === project) return;
-    await commitClipEdit(updated, useGlobalSettings ? '恢复全局 Spectrogram 设置' : '调整轨道 Spectrogram 设置');
+    await commitClipEdit(
+      (latest) => updateTrackSpectrogramSettings(latest, trackId, settings, useGlobalSettings),
+      useGlobalSettings ? '恢复全局 Spectrogram 设置' : '调整轨道 Spectrogram 设置',
+    );
   }
 
   function openClipPitchAndSpeed(trackId: string, clipId: string) {
@@ -2851,8 +2861,12 @@ function AudioEditorPageContent() {
 
   async function handleDeleteSelectedClips() {
     if (!project || selectedClips.length === 0) return;
-    await commitClipEdit(deleteClipSelection(project, selectedClips), `删除 ${selectedClips.length} 个片段`);
-    setSelectedClips([]);
+    const keys = selectedClips;
+    const committed = await commitClipEdit(
+      (latest) => deleteClipSelection(latest, keys),
+      `删除 ${keys.length} 个片段`,
+    );
+    if (committed) setSelectedClips([]);
   }
 
   async function splitClipsAtCursor(keysOverride?: ClipKey[]) {
@@ -2862,12 +2876,17 @@ function AudioEditorPageContent() {
       : project.tracks
         .filter((track) => track.id === selectedTrackId)
         .flatMap((track) => track.clips.map((clip) => ({ trackId: track.id, clipId: clip.id }))));
-    const result = splitClipSelectionAtTime(project, keys, cursorPosition, generateId);
+    const splitTime = cursorPosition;
+    const result = splitClipSelectionAtTime(project, keys, splitTime, generateId);
     if (!result.didSplit) {
       toast.info('请将播放光标放在选中片段内部');
       return;
     }
-    await commitClipEdit(result.project, '在光标处分割片段');
+    const committed = await commitClipEdit(
+      (latest) => splitClipSelectionAtTime(latest, keys, splitTime, generateId).project,
+      '在光标处分割片段',
+    );
+    if (!committed) return;
     setSelectedClips([]);
     toast.success('已分割片段');
   }
@@ -3825,8 +3844,20 @@ function AudioEditorPageContent() {
         return;
       }
 
-      const updated = { ...result.project, selection: null, spectralSelection: null };
-      await commitClipEdit(updated, labels[mode]);
+      const committed = await commitClipEdit((latest) => {
+        const edited = applySelectionEdit(
+          latest,
+          activeSelection.start,
+          activeSelection.end,
+          mode,
+          targetTrackIds,
+          generateId,
+        );
+        return edited.didChange
+          ? { ...edited.project, selection: null, spectralSelection: null }
+          : latest;
+      }, labels[mode]);
+      if (!committed) return;
       setSelection(null);
       setSpectralSelection(null);
       setSelectedClips([]);
@@ -3910,18 +3941,17 @@ function AudioEditorPageContent() {
     }
     setSelectionUtilityOperation('split');
     try {
-      const result = splitRangeSelection(
-        project,
-        activeSelection,
-        target ? [target.trackId] : project.tracks.map((track) => track.id),
-        generateId,
-      );
+      const trackIds = target ? [target.trackId] : project.tracks.map((track) => track.id);
+      const result = splitRangeSelection(project, activeSelection, trackIds, generateId);
       if (!result.didChange) {
         toast.info('选区边界没有需要分割的 Clip');
         return;
       }
-      await commitClipEdit(result.project, 'Split');
-      toast.success('已按选区边界分割');
+      const committed = await commitClipEdit(
+        (latest) => splitRangeSelection(latest, activeSelection, trackIds, generateId).project,
+        'Split',
+      );
+      if (committed) toast.success('已按选区边界分割');
     } catch (error) {
       console.error('Range split failed:', error);
       toast.error('分割选区失败，请重试');
@@ -3941,29 +3971,38 @@ function AudioEditorPageContent() {
       const targets = project.tracks.flatMap((track) => track.clips
         .filter((clip) => clip.startTime < selection.end && clip.startTime + clip.duration > selection.start)
         .map((clip) => ({ trackId: track.id, clipId: clip.id, clip })));
-      let updated = project;
-      let removedRegions = 0;
+      const channelsByClip = new Map<string, Float32Array[]>();
       for (const target of targets) {
         const channels = await projectService.loadAudioChannels(target.clip.audioBufferId, project.sampleRate);
         if (!channels || channels.length === 0) throw new Error(`Missing audio for clip ${target.clipId}`);
-        const result = disjoinClipAtSilences(
-          updated,
-          { trackId: target.trackId, clipId: target.clipId },
-          channels,
-          generateId,
-          selection,
-        );
-        if (result.didChange) {
-          updated = result.project;
-          removedRegions += result.regions.length;
-        }
+        channelsByClip.set(clipKeyId(target), channels);
       }
-      if (updated === project) {
+      let removedRegions = 0;
+      const applyDisjoin = (source: IProject): IProject => {
+        let next = source;
+        let removed = 0;
+        for (const target of targets) {
+          const result = disjoinClipAtSilences(
+            next,
+            { trackId: target.trackId, clipId: target.clipId },
+            channelsByClip.get(clipKeyId(target))!,
+            generateId,
+            selection,
+          );
+          if (result.didChange) {
+            next = result.project;
+            removed += result.regions.length;
+          }
+        }
+        removedRegions = removed;
+        return next;
+      };
+      if (applyDisjoin(project) === project) {
         toast.info('选区内没有至少 0.01 秒的全声道精确零静音');
         return;
       }
-      await commitClipEdit(updated, 'Split at silences');
-      toast.success(`已删除 ${removedRegions} 段选区内静音`);
+      const committed = await commitClipEdit(applyDisjoin, 'Split at silences');
+      if (committed) toast.success(`已删除 ${removedRegions} 段选区内静音`);
     } catch (error) {
       console.error('Range disjoin failed:', error);
       toast.error('按静音分割失败，请重试');
@@ -3990,7 +4029,11 @@ function AudioEditorPageContent() {
     }
     setSelectionUtilityOperation('join');
     try {
-      let updated = project;
+      const prepared: Array<{
+        trackId: string;
+        sourceClipIds: ReadonlySet<string>;
+        joinedClip: IClip;
+      }> = [];
       const joinedSelection: ClipKey[] = [];
       const sampleRate = project.sampleRate;
       for (const group of groups) {
@@ -4032,7 +4075,7 @@ function AudioEditorPageContent() {
             }
           }
         }
-        const audioBufferId = await storeProjectBuffer(updated.id, channels, sampleRate);
+        const audioBufferId = await storeProjectBuffer(project.id, channels, sampleRate);
         const first = group.clips[0]!;
         const joinedClip: IClip = {
           id: generateId(),
@@ -4048,21 +4091,38 @@ function AudioEditorPageContent() {
           name: first.name,
           colorIndex: first.colorIndex,
         };
-        const joinedIds = new Set(group.clips.map((clip) => clip.id));
-        updated = {
-          ...updated,
-          tracks: updated.tracks.map((track) => track.id === group.trackId
-            ? {
-              ...track,
-              clips: [...track.clips.filter((clip) => !joinedIds.has(clip.id)), joinedClip]
-                .sort((left, right) => left.startTime - right.startTime || left.id.localeCompare(right.id)),
-            }
-            : track),
-        };
+        prepared.push({
+          trackId: group.trackId,
+          sourceClipIds: new Set(group.clips.map((clip) => clip.id)),
+          joinedClip,
+        });
         joinedSelection.push({ trackId: group.trackId, clipId: joinedClip.id });
       }
       if (joinedSelection.length === 0) return;
-      await commitClipEdit(updated, 'Join');
+      const committed = await commitClipEdit((latest) => {
+        for (const item of prepared) {
+          const track = latest.tracks.find((candidate) => candidate.id === item.trackId);
+          if (!track || [...item.sourceClipIds].some((id) => !track.clips.some((clip) => clip.id === id))) {
+            return latest;
+          }
+        }
+        return {
+          ...latest,
+          tracks: latest.tracks.map((track) => {
+            const trackJoins = prepared.filter((item) => item.trackId === track.id);
+            if (trackJoins.length === 0) return track;
+            const joinedIds = new Set(trackJoins.flatMap((item) => [...item.sourceClipIds]));
+            return {
+              ...track,
+              clips: [
+                ...track.clips.filter((clip) => !joinedIds.has(clip.id)),
+                ...trackJoins.map((item) => item.joinedClip),
+              ].sort((left, right) => left.startTime - right.startTime || left.id.localeCompare(right.id)),
+            };
+          }),
+        };
+      }, 'Join');
+      if (!committed) return;
       setSelectedClips(joinedSelection);
       setSelectedTrackId(joinedSelection[0]!.trackId);
       clipSelectionAnchorRef.current = joinedSelection[0]!;
@@ -4352,10 +4412,13 @@ function AudioEditorPageContent() {
     setSelectionEditOperation(`${operation}:multi-clip:${mode}`);
     try {
       if (operation === 'cut') await storeMultiClipSelectionInClipboard(keys);
-      const updated = removeMultiClipSelection(project, keys, mode === 'per-track');
-      if (!updated) return;
+      if (!removeMultiClipSelection(project, keys, mode === 'per-track')) return;
       const label = `${operation === 'cut' ? 'Cut' : 'Delete'} ${mode === 'per-track' ? 'and close gap on this track' : 'and leave gap'}`;
-      await commitClipEdit(updated, label);
+      const committed = await commitClipEdit(
+        (latest) => removeMultiClipSelection(latest, keys, mode === 'per-track') ?? latest,
+        label,
+      );
+      if (!committed) return;
       setSelectedClips([]);
       toast.success(`${operation === 'cut' ? 'Cut' : 'Delete'} 已仅作用于选中 Clip`);
     } catch (error) {
@@ -4402,8 +4465,13 @@ function AudioEditorPageContent() {
         ? applyClipGrouping(project, keys)
         : applyClipUngrouping(project, keys);
       if (!updated) return;
-      await commitClipEdit(updated, command === 'group' ? 'Group clips' : 'Ungroup clips');
-      toast.success(command === 'group' ? '已分组选中 Clip' : '已取消选中 Clip 的分组');
+      const committed = await commitClipEdit((latest) => {
+        const edited = command === 'group'
+          ? applyClipGrouping(latest, keys)
+          : applyClipUngrouping(latest, keys);
+        return edited ?? latest;
+      }, command === 'group' ? 'Group clips' : 'Ungroup clips');
+      if (committed) toast.success(command === 'group' ? '已分组选中 Clip' : '已取消选中 Clip 的分组');
       return;
     }
     if (command === 'join') {
@@ -4736,11 +4804,11 @@ function AudioEditorPageContent() {
         id: generateId(),
         kind: 'clipping',
       }));
-      const updated: IProject = {
-        ...appendAnalysisLabels(project, created, generateId),
+      const committed = await commitClipEdit((latest) => ({
+        ...appendAnalysisLabels(latest, created, generateId),
         updatedAt: Date.now(),
-      };
-      await commitClipEdit(updated, `Find Clipping 查找削波（${created.length} 个标签）`);
+      }), `Find Clipping 查找削波（${created.length} 个标签）`);
+      if (!committed) return;
       toast.success(`已创建 ${created.length} 个 Clipping 标签`);
       setFindClippingDialogOpen(false);
     } finally {
@@ -4783,11 +4851,11 @@ function AudioEditorPageContent() {
         id: generateId(),
         kind: 'manual',
       }));
-      const updated: IProject = {
-        ...appendAnalysisLabels(project, created, generateId),
+      const committed = await commitClipEdit((latest) => ({
+        ...appendAnalysisLabels(latest, created, generateId),
         updatedAt: Date.now(),
-      };
-      await commitClipEdit(updated, `Label sounds 标记声音（${created.length} 个标签）`);
+      }), `Label sounds 标记声音（${created.length} 个标签）`);
+      if (!committed) return;
       toast.success(`已创建 ${created.length} 个声音标签`);
       setLabelSoundsDialogOpen(false);
     } finally {
@@ -4830,11 +4898,11 @@ function AudioEditorPageContent() {
         id: generateId(),
         kind: 'manual',
       }));
-      const updated: IProject = {
-        ...appendAnalysisLabels(project, created, generateId),
+      const committed = await commitClipEdit((latest) => ({
+        ...appendAnalysisLabels(latest, created, generateId),
         updatedAt: Date.now(),
-      };
-      await commitClipEdit(updated, `Beat finder 节拍查找（${created.length} 个标签）`);
+      }), `Beat finder 节拍查找（${created.length} 个标签）`);
+      if (!committed) return;
       toast.success(`已创建 ${created.length} 个节拍标签`);
       setBeatFinderDialogOpen(false);
     } finally {
@@ -4861,11 +4929,16 @@ function AudioEditorPageContent() {
         kind: 'manual',
         trackId: targetTrack.id,
       }));
-      const updated: IProject = {
-        ...appendAnalysisLabels(project, created, generateId),
-        updatedAt: Date.now(),
-      };
-      await commitClipEdit(updated, `Regular interval labels 等间隔标签（${created.length} 个标签）`);
+      const committed = await commitClipEdit((latest) => {
+        if (!latest.tracks.some((track) => track.id === targetTrack.id)) {
+          throw new Error('目标轨道已不存在，未创建标签');
+        }
+        return {
+          ...appendAnalysisLabels(latest, created, generateId),
+          updatedAt: Date.now(),
+        };
+      }, `Regular interval labels 等间隔标签（${created.length} 个标签）`);
+      if (!committed) return;
       setRegularIntervalLabelsDialogOpen(false);
       if (result.completion?.type === 'warning') toast.warning(result.completion.message);
       else if (result.completion?.type === 'success') toast.success(result.completion.message);
@@ -4891,17 +4964,19 @@ function AudioEditorPageContent() {
       const targetTrackId = project.tracks.some((track) => track.id === selectedTrackId)
         ? selectedTrackId!
         : project.tracks[0]?.id ?? '';
-      const imported = importLabelsAsNewTrack(project, parsed.labels, targetTrackId, generateId);
-      await commitClipEdit(
-        { ...imported.project, updatedAt: Date.now() },
-        `Import labels 导入标签（${imported.labels.length} 个标签）`,
-      );
+      let imported: ReturnType<typeof importLabelsAsNewTrack> | null = null;
+      const committed = await commitClipEdit((latest) => {
+        imported = importLabelsAsNewTrack(latest, parsed.labels, targetTrackId, generateId);
+        return { ...imported.project, updatedAt: Date.now() };
+      }, `Import labels 导入标签（${parsed.labels.length} 个标签）`);
+      if (!committed || !imported) throw new Error('Import labels 未保存');
+      const importedLabels = imported.labels;
       if (parsed.rejectedCount > 0) {
         toast.warning(`One or more saved labels could not be read. 已跳过 ${parsed.rejectedCount} 条无法读取的标签`);
       } else {
-        toast.success(`已导入 ${imported.labels.length} 个标签并创建 Label Track`);
+        toast.success(`已导入 ${importedLabels.length} 个标签并创建 Label Track`);
       }
-      return imported.labels;
+      return importedLabels;
     } finally {
       setIsApplyingLabels(false);
     }
@@ -4915,11 +4990,11 @@ function AudioEditorPageContent() {
     }
     setIsApplyingLabels(true);
     try {
-      const updated: IProject = {
-        ...replaceAnalysisLabels(project, labels, generateId),
+      const committed = await commitClipEdit((latest) => ({
+        ...replaceAnalysisLabels(latest, labels, generateId),
         updatedAt: Date.now(),
-      };
-      await commitClipEdit(updated, `Edit Labels 编辑标签（${labels.length} 个标签）`);
+      }), `Edit Labels 编辑标签（${labels.length} 个标签）`);
+      if (!committed) return;
       setLabelEditorDialogOpen(false);
       toast.success(`已保存 ${labels.length} 个标签`);
     } finally {
@@ -4927,34 +5002,49 @@ function AudioEditorPageContent() {
     }
   }
 
-  async function commitLabelTrackEdit(updated: IProject, historyLabel: string): Promise<void> {
-    if (!project || updated === project) return;
-    await commitClipEdit({ ...updated, updatedAt: Date.now() }, historyLabel);
+  async function commitLabelTrackEdit(
+    edit: (latest: IProject) => IProject,
+    historyLabel: string,
+  ): Promise<void> {
+    if (!project) return;
+    await commitClipEdit((latest) => {
+      const edited = edit(latest);
+      return edited === latest ? latest : { ...edited, updatedAt: Date.now() };
+    }, historyLabel);
   }
 
   async function handleRenameLabelTrack(trackId: string, name: string): Promise<void> {
     if (!project) return;
-    await commitLabelTrackEdit(renameLabelTrack(project, trackId, name), 'Rename label track');
+    await commitLabelTrackEdit((latest) => renameLabelTrack(latest, trackId, name), 'Rename label track');
   }
 
   async function handleDuplicateLabelTrack(trackId: string): Promise<void> {
     if (!project) return;
-    await commitLabelTrackEdit(duplicateLabelTrack(project, trackId, generateId), 'Duplicate label track');
+    await commitLabelTrackEdit(
+      (latest) => duplicateLabelTrack(latest, trackId, generateId),
+      'Duplicate label track',
+    );
   }
 
   async function handleDeleteLabelTrack(trackId: string): Promise<void> {
     if (!project) return;
-    await commitLabelTrackEdit(deleteLabelTrack(project, trackId), 'Delete label track');
+    await commitLabelTrackEdit((latest) => deleteLabelTrack(latest, trackId), 'Delete label track');
   }
 
   async function handleMoveLabelTrack(trackId: string, direction: TrackMoveDirection): Promise<void> {
     if (!project) return;
-    await commitLabelTrackEdit(moveLabelTrack(project, trackId, direction), 'Move label track');
+    await commitLabelTrackEdit(
+      (latest) => moveLabelTrack(latest, trackId, direction),
+      'Move label track',
+    );
   }
 
   async function handleLabelTrackColorChange(trackId: string, colorIndex: number): Promise<void> {
     if (!project) return;
-    await commitLabelTrackEdit(setLabelTrackColor(project, trackId, colorIndex), 'Change label track color');
+    await commitLabelTrackEdit(
+      (latest) => setLabelTrackColor(latest, trackId, colorIndex),
+      'Change label track color',
+    );
   }
 
   function handleExportLabels(request: LabelExportRequest): void {

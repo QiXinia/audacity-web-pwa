@@ -33,6 +33,11 @@ function makeProject(): IProject {
     viewState: { horizontalZoom: 100, verticalZoom: 1, scrollX: 0, viewMode: 'waveform' },
     updatedAt: 100, createdAt: 50, sampleRate: 1000,
     timeSignature: { numerator: 4, denominator: 4 }, tempo: 120,
+    labelTracks: [{ id: 'lane-a', name: 'Markers', colorIndex: 0 }],
+    analysisLabels: [{
+      id: 'label-a', kind: 'manual', trackId: 'track-a', labelTrackId: 'lane-a',
+      start: 1, end: 2, text: 'Marker',
+    }],
   };
 }
 
@@ -91,6 +96,39 @@ async function renderEditor(): Promise<void> {
   render(<AudioEditorPage />);
   expect(await screen.findByText('Clip write race integration')).toBeInTheDocument();
   await screen.findByText('Voice take');
+}
+
+function mockBlockedProjectWrite(gate: Promise<void>): void {
+  // The old page takes this whole-snapshot save path. The fixed page takes
+  // editLatestProject and therefore evaluates the operation after the gate.
+  mocks.saveProject.mockImplementation(async (project: IProject) => {
+    await gate;
+    mockProject = project;
+    return true;
+  });
+  mocks.editLatestProject.mockImplementation(async (
+    _projectId: string,
+    edit: (project: IProject) => IProject,
+  ) => {
+    await gate;
+    const before = structuredClone(mockProject);
+    const after = edit(mockProject);
+    if (after === mockProject) return null;
+    mockProject = after;
+    return { before, after };
+  });
+}
+
+function addConcurrentTrackAndRename(): void {
+  mockProject = {
+    ...mockProject,
+    tracks: [
+      ...mockProject.tracks.map((track) => track.id === 'track-a'
+        ? { ...track, name: 'Renamed Alpha' }
+        : track),
+      makeTrack('track-c'),
+    ],
+  };
 }
 
 describe('AudioEditorPage queued clip writes', () => {
@@ -162,6 +200,65 @@ describe('AudioEditorPage queued clip writes', () => {
     expect(Number(rendered?.getAttribute('data-start-time'))).toBeCloseTo(expected.startTime, 10);
     expect(Number(rendered?.getAttribute('data-duration'))).toBeCloseTo(expected.duration, 10);
     expect(Number(rendered?.getAttribute('data-stretch-ratio'))).toBeCloseTo(expected.stretchRatio, 10);
+    const command = mocks.push.mock.calls[0]?.[0];
+    expect(command.execute().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+    expect(command.undo().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+  });
+
+  it.each([
+    { operation: 'reset' },
+    { operation: 'color' },
+    { operation: 'split' },
+    { operation: 'delete' },
+    { operation: 'duplicate-label' },
+  ] as const)('preserves concurrent additions and renames during $operation', async ({ operation }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mockBlockedProjectWrite(gate);
+    if (operation === 'reset') {
+      const clip = mockProject.tracks[0]!.clips[0]!;
+      mockProject.tracks[0]!.clips[0] = { ...clip, duration: 2, stretchRatio: 2 };
+    }
+    if (operation === 'split') mockProject = { ...mockProject, cursorPosition: 1.5 };
+
+    await renderEditor();
+    const clip = screen.getByRole('button', { name: /^Voice take/ });
+    if (operation === 'reset') {
+      fireEvent.click(clip);
+      fireEvent.click(screen.getByRole('button', { name: '速度 100%' }));
+    } else if (operation === 'color') {
+      fireEvent.contextMenu(clip);
+      fireEvent.keyDown(await screen.findByTestId('clip-color-menu'), { key: 'ArrowRight' });
+      fireEvent.click(await screen.findByTestId('clip-color-2'));
+    } else if (operation === 'split') {
+      fireEvent.contextMenu(clip);
+      fireEvent.click(await screen.findByTestId('clip-split-menu'));
+    } else if (operation === 'delete') {
+      fireEvent.click(clip);
+      fireEvent.click(screen.getByRole('button', { name: '删除选中片段' }));
+    } else {
+      fireEvent.contextMenu(screen.getByTestId('label-track-lane-a'));
+      fireEvent.click(await screen.findByTestId('label-track-duplicate-menu'));
+    }
+    await waitFor(() => expect(
+      mocks.saveProject.mock.calls.length + mocks.editLatestProject.mock.calls.length,
+    ).toBe(1));
+
+    addConcurrentTrackAndRename();
+    release();
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
+    expect(mockProject.tracks.map((track) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
+    expect(mockProject.tracks[0]?.name).toBe('Renamed Alpha');
+    const editedClip = mockProject.tracks[0]?.clips.find((item) => item.id === 'clip-a');
+    if (operation === 'reset') expect(editedClip).toMatchObject({ duration: 4, stretchRatio: 1 });
+    if (operation === 'color') expect(editedClip?.colorIndex).toBe(2);
+    if (operation === 'split') expect(mockProject.tracks[0]?.clips).toHaveLength(2);
+    if (operation === 'delete') expect(editedClip).toBeUndefined();
+    if (operation === 'duplicate-label') {
+      expect(mockProject.labelTracks).toHaveLength(2);
+      expect(mockProject.analysisLabels).toHaveLength(2);
+    }
     const command = mocks.push.mock.calls[0]?.[0];
     expect(command.execute().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
     expect(command.undo().tracks.map((track: ITrack) => track.id)).toEqual(['track-a', 'track-b', 'track-c']);
