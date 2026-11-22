@@ -605,7 +605,10 @@ describe('AudioEditorPage Timer Record', () => {
     expect(mocks.warning).toHaveBeenCalledWith('请先停止当前录音或取消已有定时录音');
     expect(screen.queryByTestId('timer-record-status')).not.toBeInTheDocument();
     resolveStart();
-    await waitFor(() => expect(mocks.info).toHaveBeenCalledWith('正在录音（worklet）…'));
+    await waitFor(() => expect(mocks.info).toHaveBeenCalledWith(
+      '正在录音（worklet）…',
+      { position: 'bottom-right', duration: 4000 },
+    ));
     expect(mocks.startRecording).toHaveBeenCalledTimes(1);
   }, 10_000);
 

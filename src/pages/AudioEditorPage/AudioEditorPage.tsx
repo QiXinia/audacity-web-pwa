@@ -1476,7 +1476,12 @@ function AudioEditorPageContent() {
       recordingSampleRateRef.current = audioEngine.getSampleRate();
       recordingStateRef.current = 'recording';
       setRecordingState('recording');
-      toast.info(`正在录音（${audioEngine.getRecordingMode()}）…`);
+      // Keep transient capture feedback away from the transport controls: a
+      // top-centre toast covers the same Record button needed to stop capture.
+      toast.info(`正在录音（${audioEngine.getRecordingMode()}）…`, {
+        position: 'bottom-right',
+        duration: 4000,
+      });
       setMicPermissionState('granted');
       return true;
     } catch (e) {
