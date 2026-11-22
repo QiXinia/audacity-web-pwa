@@ -280,4 +280,40 @@ describe('Audacity StaffPad boundary contracts', () => {
     expect(output[0].every((sample) => Number.isFinite(sample))).toBe(true);
     expect(nonSilentSamples).toBeGreaterThan(90_000);
   }, 180_000);
+
+  it('processes one million stereo frames at 1000% speed without channel bleed or ring loss', () => {
+    const sampleRate = 1000;
+    const inputFrames = 1_000_000;
+    const left = new Float32Array(inputFrames);
+    const right = new Float32Array(inputFrames);
+    for (let index = 0; index < left.length; index += 1) {
+      left[index] = 0.2 * Math.sin(index * 0.037) + 0.1 * Math.cos(index * 0.011);
+    }
+    const untouchedLeft = left.slice();
+    const untouchedRight = right.slice();
+    const startedAt = performance.now();
+    const output = processStaffPadTimeAndPitchChannels([left, right], {
+      sampleRate,
+      timeRatio: 0.1,
+      pitchRatio: 1,
+      preserveFormants: true,
+      fftSize: 64,
+    });
+    const nonSilentLeft = output[0].reduce((count, sample) => count + (sample !== 0 ? 1 : 0), 0);
+    console.log('StaffPad million-frame stereo stress', {
+      inputFrames,
+      outputFrames: output[0].length,
+      nonSilentLeft,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+    expect(left).toEqual(untouchedLeft);
+    expect(right).toEqual(untouchedRight);
+    expect(output).toHaveLength(2);
+    expect(output[0]).toHaveLength(100_000);
+    expect(output[1]).toHaveLength(100_000);
+    expect(output[0].every((sample) => Number.isFinite(sample))).toBe(true);
+    expect(output[1].every((sample) => Number.isFinite(sample))).toBe(true);
+    expect(nonSilentLeft).toBeGreaterThan(90_000);
+    expect(output[1].every((sample) => sample === 0)).toBe(true);
+  }, 180_000);
 });
