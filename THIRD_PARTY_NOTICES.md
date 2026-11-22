@@ -129,6 +129,22 @@ The implementation follows Audacity 4.0.2's 16384-point real FFT, 20 Hz lower en
 
 The implementation follows Audacity 4.0.2's 31 third-octave band centres, −25…25 dB faders, B-spline response (including the 180-point envelope's endpoint behaviour), 16384-point real FFT, default 8191-tap Blackman taper, centred impulse and original-length overlap-add processing. The dialog implements Reset, Invert and double-click-to-zero, and disables bands above Nyquist. `scripts/graphic-eq-oracle.cpp` independently uses direct symmetric DFT and direct linear convolution rather than the product FFT; `npm run test:graphic-eq:oracle` regenerates four frozen cases and checks FIR coefficients and PCM within accumulated Float32 round-off. The implementation fixes the exact-Nyquist/highest-active-band interval boundary so it cannot generate non-finite output; this is a defensive boundary guard, not a claim of bit-identical behaviour for undefined upstream input states. No Audacity executable or upstream golden audio is bundled.
 
+## glibc scalar libm routines
+
+- Upstream: https://github.com/bminor/glibc/tree/glibc-2.35/sysdeps/ieee754/flt-32
+- Purpose: scalar `sinf`/`cosf` and `atanf`/`atan2f` behavior used by the native StaffPad oracle, ported in `src/lib/staffPadLibm.ts`
+- License: GNU Lesser General Public License 2.1 or later for the glibc sine/cosine implementation; the separate SunPro notice is retained for the fdlibm atanf/atan2f portions
+
+Copyright (C) 2018-2022 Free Software Foundation, Inc. The full LGPL 2.1 text is preserved in [`licenses/glibc-LGPL-2.1.txt`](licenses/glibc-LGPL-2.1.txt). Copyright (C) 1993 Sun Microsystems, Inc.; the SunPro permission notice is preserved in [`licenses/glibc-SunPro.txt`](licenses/glibc-SunPro.txt).
+
+## PFFFT / FFTPACK
+
+- Upstream: https://github.com/marton78/pffft/tree/67a4a6a113179ab4ac398298f46fce8dd60498dc
+- Purpose: exact PFFFT WASM and native setup-table corrections used by `src/lib/pffftRealFft.ts` for the StaffPad time-and-pitch implementation
+- License: BSD-like PFFFT / FFTPACK terms; the complete notices and disclaimer are preserved in [`licenses/pffft-FFTPACK.txt`](licenses/pffft-FFTPACK.txt)
+
+The pinned source revision is `67a4a6a113179ab4ac398298f46fce8dd60498dc`. The generated `src/lib/pffftWasmBase64.ts` and `src/lib/pffftSetupCorrections.ts` can be reproduced with `scripts/build-staffpad-pffft.py`; do not substitute a different PFFFT binary or source revision without regenerating and revalidating the native numerical fixtures.
+
 ## Other dependencies
 
 Other direct and transitive dependencies retain their respective names, versions, license metadata, and license texts in their npm packages. See `package.json` and `package-lock.json` for the reproducible dependency inventory.

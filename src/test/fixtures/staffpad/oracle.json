@@ -84,6 +84,66 @@
       "preserveFormants": true,
       "fftSize": 512,
       "nativeFrames": 8192
+    },
+    {
+      "name": "voice-fast-44k-mono",
+      "input": "voice-up",
+      "channels": 1,
+      "sampleRate": 44100,
+      "inputFrames": 2048,
+      "timeRatio": 0.1,
+      "pitchRatio": 2.0,
+      "preserveFormants": true,
+      "fftSize": 2048,
+      "nativeFrames": 205
+    },
+    {
+      "name": "voice-ring-44k-stereo",
+      "input": "voice-stretch-stereo",
+      "channels": 2,
+      "sampleRate": 44100,
+      "inputFrames": 2048,
+      "timeRatio": 4.0,
+      "pitchRatio": 1.189207115002721,
+      "preserveFormants": true,
+      "fftSize": 2048,
+      "nativeFrames": 8192
+    },
+    {
+      "name": "voice-slow-44k-stereo",
+      "input": "voice-stretch-stereo",
+      "channels": 2,
+      "sampleRate": 44100,
+      "inputFrames": 2048,
+      "timeRatio": 100.0,
+      "pitchRatio": 0.5,
+      "preserveFormants": true,
+      "fftSize": 2048,
+      "nativeFrames": 204800
+    },
+    {
+      "name": "voice-slow-44k-stereo-no-formant",
+      "input": "voice-stretch-stereo",
+      "channels": 2,
+      "sampleRate": 44100,
+      "inputFrames": 2048,
+      "timeRatio": 100.0,
+      "pitchRatio": 0.5,
+      "preserveFormants": false,
+      "fftSize": 4096,
+      "nativeFrames": 204800
+    },
+    {
+      "name": "voice-down-44k-stereo",
+      "input": "voice-stretch-stereo",
+      "channels": 2,
+      "sampleRate": 44100,
+      "inputFrames": 2048,
+      "timeRatio": 1.0,
+      "pitchRatio": 0.5,
+      "preserveFormants": true,
+      "fftSize": 2048,
+      "nativeFrames": 2048
     }
   ]
 }

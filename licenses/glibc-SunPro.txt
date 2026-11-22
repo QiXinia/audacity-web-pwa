@@ -1,0 +1,12 @@
+glibc 2.35 s_atanf.c / e_atan2f.c SunPro permission notice
+
+Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+Developed at SunPro, a Sun Microsystems, Inc. business.
+Permission to use, copy, modify, and distribute this
+software is freely granted, provided that this notice
+is preserved.
+
+Source files:
+https://raw.githubusercontent.com/bminor/glibc/glibc-2.35/sysdeps/ieee754/flt-32/s_atanf.c
+https://raw.githubusercontent.com/bminor/glibc/glibc-2.35/sysdeps/ieee754/flt-32/e_atan2f.c

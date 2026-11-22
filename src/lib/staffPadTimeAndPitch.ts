@@ -3,7 +3,13 @@
 // au3/libraries/au3-time-and-pitch/StaffPad/TimeAndPitch.cpp and FormantShifter.cpp.
 // The browser port preserves the official processing order and state machine.
 
-const TWO_PI = 6.283185307179586;
+import { forwardPffftReal, inversePffftReal } from './pffftRealFft.ts';
+import { STAFFPAD_WINDOW_CORRECTIONS } from './staffPadWindowCorrections.ts';
+import { staffPadAtan2f, staffPadCosf, staffPadSinf } from './staffPadLibm.ts';
+
+// Audacity declares `constexpr double twoPi = ...f`: the literal is rounded
+// to float first, then stored in a double. Preserve that observable value.
+const TWO_PI = Math.fround(6.2831853);
 const MAX_BLOCK_SIZE = 1024;
 const FLOAT_MIN_NORMAL = 1.1754943508222875e-38;
 
@@ -28,74 +34,13 @@ function nextPowerOfTwo(value: number): number {
   return result;
 }
 
-/** Unscaled radix-2 complex FFT, matching PFFFT's forward/backward convention. */
-function fftInPlace(real: Float64Array, imaginary: Float64Array, inverse: boolean): void {
-  const length = real.length;
-  for (let source = 1, target = 0; source < length; source += 1) {
-    let bit = length >> 1;
-    while (target & bit) {
-      target ^= bit;
-      bit >>= 1;
-    }
-    target ^= bit;
-    if (source < target) {
-      [real[source], real[target]] = [real[target], real[source]];
-      [imaginary[source], imaginary[target]] = [imaginary[target], imaginary[source]];
-    }
-  }
-  for (let block = 2; block <= length; block *= 2) {
-    const angle = (inverse ? 2 : -2) * Math.PI / block;
-    const stepReal = Math.cos(angle);
-    const stepImaginary = Math.sin(angle);
-    const half = block / 2;
-    for (let start = 0; start < length; start += block) {
-      let twiddleReal = 1;
-      let twiddleImaginary = 0;
-      for (let offset = 0; offset < half; offset += 1) {
-        const even = start + offset;
-        const odd = even + half;
-        const oddReal = real[odd] * twiddleReal - imaginary[odd] * twiddleImaginary;
-        const oddImaginary = real[odd] * twiddleImaginary + imaginary[odd] * twiddleReal;
-        real[odd] = real[even] - oddReal;
-        imaginary[odd] = imaginary[even] - oddImaginary;
-        real[even] += oddReal;
-        imaginary[even] += oddImaginary;
-        const nextReal = twiddleReal * stepReal - twiddleImaginary * stepImaginary;
-        twiddleImaginary = twiddleReal * stepImaginary + twiddleImaginary * stepReal;
-        twiddleReal = nextReal;
-      }
-    }
-  }
-}
-
 export function forwardRealSpectrum(input: Float32Array): ComplexSpectrum {
-  const size = input.length;
-  const real = new Float64Array(size);
-  const imaginary = new Float64Array(size);
-  real.set(input);
-  fftInPlace(real, imaginary, false);
-  const bins = size / 2 + 1;
-  return {
-    real: Float32Array.from(real.subarray(0, bins)),
-    imaginary: Float32Array.from(imaginary.subarray(0, bins)),
-  };
+  return forwardPffftReal(input);
 }
 
 /** Inverse real FFT without 1/N scaling; callers apply the same scale as StaffPad. */
 export function inverseRealSpectrum(spectrum: ComplexSpectrum): Float32Array {
-  const bins = spectrum.real.length;
-  const size = (bins - 1) * 2;
-  const real = new Float64Array(size);
-  const imaginary = new Float64Array(size);
-  real.set(spectrum.real);
-  imaginary.set(spectrum.imaginary);
-  for (let index = bins; index < size; index += 1) {
-    const mirror = size - index;
-    real[index] = spectrum.real[mirror];
-    imaginary[index] = -spectrum.imaginary[mirror];
-  }
-  fftInPlace(real, imaginary, true);
-  return Float32Array.from(real);
+  return inversePffftReal(spectrum);
 }
 
 const fastLogStorage = new ArrayBuffer(4);
@@ -111,9 +56,11 @@ export function fastLog2(value: number): number {
   fastLogBits[0] = bits;
   const normalized = fastLogFloat[0];
   const polynomial = Math.fround(
-    Math.fround(Math.fround(-0.3358287811 * normalized) + 2) * normalized,
+    Math.fround(Math.fround(Math.fround(-0.3358287811) * normalized) + 2) * normalized,
   );
-  return Math.fround(exponent + Math.fround(polynomial - 0.65871759316667));
+  return Math.fround(
+    exponent + Math.fround(polynomial - Math.fround(0.65871759316667)),
+  );
 }
 
 export function mapToPositiveHalfIndex(index: number, fullSize: number): number {
@@ -133,10 +80,13 @@ function resampleFrequencyDomain(
   for (let index = 0; index < end; index += 1) {
     const position = index / factor;
     const integerPosition = Math.trunc(position);
-    const fraction = position - integerPosition;
+    const fraction = Math.fround(Math.fround(index) / factor - integerPosition);
     const left = mapToPositiveHalfIndex(integerPosition, fftSize);
     const right = mapToPositiveHalfIndex(integerPosition + 1, fftSize);
-    resampled[index] = (1 - fraction) * values[left] + fraction * values[right];
+    resampled[index] = Math.fround(
+      Math.fround(Math.fround(1 - fraction) * values[left])
+        + Math.fround(fraction * values[right]),
+    );
   }
   values.set(resampled);
   values.fill(0, end);
@@ -170,7 +120,9 @@ export function processFormantSpectrum(
     imaginary: new Float32Array(bins),
   };
   for (let index = 0; index < bins; index += 1) {
-    envelope.real[index] = 0.5 * fastLog2(powerSpectrum[index]) - normalizer;
+    envelope.real[index] = Math.fround(
+      Math.fround(0.5 * fastLog2(powerSpectrum[index])) - normalizer,
+    );
   }
 
   const cepstrum = inverseRealSpectrum(envelope);
@@ -271,6 +223,22 @@ class Mt19937 {
     return Math.fround(this.nextUint32() / 4294967296);
   }
 
+  /** Match the native oracle's 32-bit libstdc++ uniform_int_distribution. */
+  nextUniformInt(range: number): number {
+    if (!Number.isSafeInteger(range) || range <= 0 || range > 0x100000000) {
+      throw new RangeError('随机整数范围无效');
+    }
+    const wideRange = BigInt(range);
+    const threshold = BigInt.asUintN(32, -wideRange) % wideRange;
+    let product = BigInt(this.nextUint32()) * wideRange;
+    let low = BigInt.asUintN(32, product);
+    while (low < range && low < threshold) {
+      product = BigInt(this.nextUint32()) * wideRange;
+      low = BigInt.asUintN(32, product);
+    }
+    return Number(product >> 32n);
+  }
+
   private twist(): void {
     for (let index = 0; index < 624; index += 1) {
       const value = (this.state[index] & 0x80000000)
@@ -284,19 +252,49 @@ class Mt19937 {
 }
 
 function lagrange6(samples: Float32Array, t: number): number {
-  const ym1Y1 = samples[1] + samples[3];
-  const twentyFourthYm2Y2 = (samples[0] + samples[4]) / 24;
+  const ym1Y1 = Math.fround(samples[1] + samples[3]);
+  const twentyFourthYm2Y2 = Math.fround(
+    Math.fround(1 / 24) * Math.fround(samples[0] + samples[4]),
+  );
   const c0 = samples[2];
-  const c1 = 0.05 * samples[0] - 0.5 * samples[1] - samples[2] / 3
-    + samples[3] - 0.25 * samples[4] + samples[5] / 30;
-  const c2 = (2 / 3) * ym1Y1 - 1.25 * samples[2] - twentyFourthYm2Y2;
-  const c3 = (5 / 12) * samples[2] - (7 / 12) * samples[3] + (7 / 24) * samples[4]
-    - (samples[0] + samples[1] + samples[5]) / 24;
-  const c4 = 0.25 * samples[2] - ym1Y1 / 6 + twentyFourthYm2Y2;
-  const c5 = (samples[5] - samples[0]) / 120 + (samples[1] - samples[4]) / 24
-    + (samples[3] - samples[2]) / 12;
-  const t2 = t * t;
-  return (c0 + c1 * t) + (c2 + c3 * t) * t2 + (c4 + c5 * t) * t2 * t2;
+  let c1 = Math.fround(Math.fround(0.05) * samples[0]);
+  c1 = Math.fround(c1 - Math.fround(0.5 * samples[1]));
+  c1 = Math.fround(c1 - Math.fround(Math.fround(1 / 3) * samples[2]));
+  c1 = Math.fround(c1 + samples[3]);
+  c1 = Math.fround(c1 - Math.fround(0.25 * samples[4]));
+  c1 = Math.fround(c1 + Math.fround(Math.fround(1 / 30) * samples[5]));
+  const c2 = Math.fround(
+    Math.fround(
+      Math.fround(Math.fround(2 / 3) * ym1Y1) - Math.fround(1.25 * samples[2]),
+    ) - twentyFourthYm2Y2,
+  );
+  let c3 = Math.fround(Math.fround(5 / 12) * samples[2]);
+  c3 = Math.fround(c3 - Math.fround(Math.fround(7 / 12) * samples[3]));
+  c3 = Math.fround(c3 + Math.fround(Math.fround(7 / 24) * samples[4]));
+  c3 = Math.fround(
+    c3 - Math.fround(
+      Math.fround(1 / 24) * Math.fround(Math.fround(samples[0] + samples[1]) + samples[5]),
+    ),
+  );
+  const c4 = Math.fround(
+    Math.fround(Math.fround(0.25 * samples[2]) - Math.fround(Math.fround(1 / 6) * ym1Y1))
+      + twentyFourthYm2Y2,
+  );
+  const c5Left = Math.fround(
+    Math.fround(Math.fround(1 / 120) * Math.fround(samples[5] - samples[0]))
+      + Math.fround(Math.fround(1 / 24) * Math.fround(samples[1] - samples[4])),
+  );
+  const c5 = Math.fround(
+    c5Left + Math.fround(Math.fround(1 / 12) * Math.fround(samples[3] - samples[2])),
+  );
+  const t2 = Math.fround(t * t);
+  const first = Math.fround(c0 + Math.fround(c1 * t));
+  const second = Math.fround(c2 + Math.fround(c3 * t));
+  const third = Math.fround(c4 + Math.fround(c5 * t));
+  return Math.fround(
+    Math.fround(first + Math.fround(second * t2))
+      + Math.fround(Math.fround(third * t2) * t2),
+  );
 }
 
 function rint(value: number): number {
@@ -308,7 +306,17 @@ function rint(value: number): number {
 }
 
 function unwrapPhase(value: number): number {
-  return value - rint(value * 0.15915494309) * 6.283185307;
+  const scaled = Math.fround(value * Math.fround(0.15915494309));
+  const turns = rint(scaled);
+  return Math.fround(value - Math.fround(turns * Math.fround(6.283185307)));
+}
+
+function unwrapPhaseScalarTail(value: number): number {
+  const scaled = Math.fround(value * Math.fround(0.15915494309));
+  const turns = rint(scaled);
+  // _unwrapPhaseVec's lambda resolves scalar float rint to global double rint;
+  // its final multiplication/subtraction are therefore double, unlike SIMD lanes.
+  return Math.fround(value - turns * Math.fround(6.283185307));
 }
 
 function fftShift(values: Float32Array): void {
@@ -392,13 +400,25 @@ class StaffPadProcessor {
     this.cosWindow = new Float32Array(options.fftSize);
     this.sqWindow = new Float32Array(options.fftSize);
     for (let index = 0; index < options.fftSize; index += 1) {
-      const value = -0.5 * Math.cos(TWO_PI * index / options.fftSize) + 0.5;
+      const angle = Math.fround(TWO_PI * Math.fround(index) / Math.fround(options.fftSize));
+      const cosine = Math.fround(Math.cos(angle));
+      const value = Math.fround(Math.fround(-0.5 * cosine) + 0.5);
       this.cosWindow[index] = value;
-      this.sqWindow[index] = value * value;
+      this.sqWindow[index] = Math.fround(value * value);
+    }
+    const windowCorrections = STAFFPAD_WINDOW_CORRECTIONS[options.fftSize];
+    if (windowCorrections) {
+      const words = new Uint32Array(this.cosWindow.buffer);
+      for (const [index, bits] of windowCorrections) {
+        words[index] = bits;
+        this.sqWindow[index] = Math.fround(this.cosWindow[index] * this.cosWindow[index]);
+      }
     }
     this.randomPhases = new Float32Array(this.bins);
     for (let index = 0; index < this.bins; index += 1) {
-      this.randomPhases[index] = -Math.PI + this.random.nextFloat() * TWO_PI;
+      this.randomPhases[index] = Math.fround(
+        Math.fround(this.random.nextFloat() * TWO_PI) - Math.fround(Math.PI),
+      );
     }
     this.setTimeStretchAndPitchFactor();
     // Audacity TimeAndPitch.cpp uses a fixed ring, not a buffer proportional
@@ -491,7 +511,7 @@ class StaffPadProcessor {
     let readPos = this.resampleReadPos;
     while (readPos < 0) {
       const integerPosition = Math.floor(readPos);
-      const fraction = readPos - integerPosition;
+      const fraction = Math.fround(readPos - integerPosition);
       for (let channel = 0; channel < this.channels; channel += 1) {
         const samples = this.resampleInput[channel].readBlock(integerPosition - 6, 6);
         const value = fraction === 0 ? samples[2] : lagrange6(samples, fraction);
@@ -533,9 +553,11 @@ class StaffPadProcessor {
       for (let index = 0; index < this.bins; index += 1) {
         const real = this.spectrum[0].real[index];
         const imaginary = this.spectrum[0].imaginary[index];
-        this.norm[index] = real * real + imaginary * imaginary;
+        this.norm[index] = Math.fround(
+          Math.fround(real * real) + Math.fround(imaginary * imaginary),
+        );
         for (let channel = 0; channel < this.channels; channel += 1) {
-          this.phase[channel][index] = Math.atan2(
+          this.phase[channel][index] = staffPadAtan2f(
             this.spectrum[channel].imaginary[index],
             this.spectrum[channel].real[index],
           );
@@ -553,16 +575,23 @@ class StaffPadProcessor {
       }
       if (this.pitchRatio < 1) this.applyImagingReduction();
       this.timeStretchPhase(hopA, hopS);
+      const vectorBins = this.bins - (this.bins % 4);
       for (let channel = 0; channel < this.channels; channel += 1) {
         for (let index = 0; index < this.bins; index += 1) {
-          this.phaseAccum[channel][index] = unwrapPhase(this.phaseAccum[channel][index]);
-          const theta = this.phaseAccum[channel][index] - this.phase[channel][index];
-          const cosine = Math.cos(theta);
-          const sine = Math.sin(theta);
+          this.phaseAccum[channel][index] = index < vectorBins
+            ? unwrapPhase(this.phaseAccum[channel][index])
+            : unwrapPhaseScalarTail(this.phaseAccum[channel][index]);
+          const theta = Math.fround(this.phaseAccum[channel][index] - this.phase[channel][index]);
+          const sine = staffPadSinf(theta);
+          const cosine = staffPadCosf(theta);
           const real = this.spectrum[channel].real[index];
           const imaginary = this.spectrum[channel].imaginary[index];
-          this.spectrum[channel].real[index] = real * cosine - imaginary * sine;
-          this.spectrum[channel].imaginary[index] = real * sine + imaginary * cosine;
+          this.spectrum[channel].real[index] = Math.fround(
+            Math.fround(real * cosine) - Math.fround(imaginary * sine),
+          );
+          this.spectrum[channel].imaginary[index] = Math.fround(
+            Math.fround(real * sine) + Math.fround(imaginary * cosine),
+          );
         }
         this.fftTimeseries[channel] = inverseRealSpectrum(this.spectrum[channel]);
         for (let index = 0; index < this.fftSize; index += 1) {
@@ -623,15 +652,19 @@ class StaffPadProcessor {
     const count = this.bins - imagingBeginBin;
     for (let index = 0; index < count; index += 1) {
       const theta = this.randomPhases[index];
-      const cosine = Math.cos(theta);
-      const sine = Math.sin(theta);
+      const sine = staffPadSinf(theta);
+      const cosine = staffPadCosf(theta);
       const target = imagingBeginBin + index;
       const real = this.spectrum[0].real[target];
       const imaginary = this.spectrum[0].imaginary[target];
-      this.spectrum[0].real[target] = real * cosine - imaginary * sine;
-      this.spectrum[0].imaginary[target] = real * sine + imaginary * cosine;
+      this.spectrum[0].real[target] = Math.fround(
+        Math.fround(real * cosine) - Math.fround(imaginary * sine),
+      );
+      this.spectrum[0].imaginary[target] = Math.fround(
+        Math.fround(real * sine) + Math.fround(imaginary * cosine),
+      );
     }
-    const middle = this.random.nextUint32() % count;
+    const middle = this.random.nextUniformInt(count);
     const rotated = new Float32Array(count);
     for (let index = 0; index < count; index += 1) {
       rotated[index] = this.randomPhases[(index + middle) % count];
@@ -640,7 +673,7 @@ class StaffPadProcessor {
   }
 
   private timeStretchPhase(hopA: number, hopS: number): void {
-    const alpha = hopS / hopA;
+    const alpha = Math.fround(hopS / hopA);
     const peakIndex: number[] = [];
     const troughIndex: number[] = [];
     let lowest = this.norm[0];
@@ -676,41 +709,59 @@ class StaffPadProcessor {
       peakIndex.push(maximumIndex);
     }
 
-    const expectedChangeA = hopA * this.expectedPhaseChangePerBinPerSample;
-    const expectedChangeS = hopS * this.expectedPhaseChangePerBinPerSample;
+    const expectedChange = Math.fround(this.expectedPhaseChangePerBinPerSample);
+    const expectedChangeA = Math.fround(hopA * expectedChange);
+    const expectedChangeS = Math.fround(hopS * expectedChange);
     for (let index = 0; index < peakIndex.length; index += 1) {
       const bin = peakIndex[index];
+      const expectedA = Math.fround(bin * expectedChangeA);
+      const expectedS = Math.fround(bin * expectedChangeS);
       for (let channel = 0; channel < this.channels; channel += 1) {
-        this.phaseAccum[channel][bin] += alpha * unwrapPhase(
-          this.phase[channel][bin] - this.lastPhase[channel][bin] - bin * expectedChangeA,
-        ) + bin * expectedChangeS;
+        const difference = Math.fround(
+          Math.fround(this.phase[channel][bin] - this.lastPhase[channel][bin]) - expectedA,
+        );
+        const integrated = Math.fround(alpha * unwrapPhase(difference));
+        const accumulated = Math.fround(this.phaseAccum[channel][bin] + integrated);
+        this.phaseAccum[channel][bin] = Math.fround(accumulated + expectedS);
       }
     }
     for (let bin = peakIndex[0]; bin > 0; bin -= 1) {
       for (let channel = 0; channel < this.channels; channel += 1) {
-        this.phaseAccum[channel][bin - 1] = this.phaseAccum[channel][bin]
-          - alpha * unwrapPhase(this.phase[channel][bin] - this.phase[channel][bin - 1]);
+        const difference = Math.fround(this.phase[channel][bin] - this.phase[channel][bin - 1]);
+        const integrated = Math.fround(alpha * unwrapPhase(difference));
+        this.phaseAccum[channel][bin - 1] = Math.fround(
+          this.phaseAccum[channel][bin] - integrated,
+        );
       }
     }
     for (let index = 0; index < peakIndex.length - 1; index += 1) {
       const middle = troughIndex[index + 1];
       for (let bin = peakIndex[index]; bin < middle; bin += 1) {
         for (let channel = 0; channel < this.channels; channel += 1) {
-          this.phaseAccum[channel][bin + 1] = this.phaseAccum[channel][bin]
-            + alpha * unwrapPhase(this.phase[channel][bin + 1] - this.phase[channel][bin]);
+          const difference = Math.fround(this.phase[channel][bin + 1] - this.phase[channel][bin]);
+          const integrated = Math.fround(alpha * unwrapPhase(difference));
+          this.phaseAccum[channel][bin + 1] = Math.fround(
+            this.phaseAccum[channel][bin] + integrated,
+          );
         }
       }
       for (let bin = peakIndex[index + 1]; bin > middle + 1; bin -= 1) {
         for (let channel = 0; channel < this.channels; channel += 1) {
-          this.phaseAccum[channel][bin - 1] = this.phaseAccum[channel][bin]
-            - alpha * unwrapPhase(this.phase[channel][bin] - this.phase[channel][bin - 1]);
+          const difference = Math.fround(this.phase[channel][bin] - this.phase[channel][bin - 1]);
+          const integrated = Math.fround(alpha * unwrapPhase(difference));
+          this.phaseAccum[channel][bin - 1] = Math.fround(
+            this.phaseAccum[channel][bin] - integrated,
+          );
         }
       }
     }
     for (let bin = peakIndex[peakIndex.length - 1]; bin < this.bins - 1; bin += 1) {
       for (let channel = 0; channel < this.channels; channel += 1) {
-        this.phaseAccum[channel][bin + 1] = this.phaseAccum[channel][bin]
-          + alpha * unwrapPhase(this.phase[channel][bin + 1] - this.phase[channel][bin]);
+        const difference = Math.fround(this.phase[channel][bin + 1] - this.phase[channel][bin]);
+        const integrated = Math.fround(alpha * unwrapPhase(difference));
+        this.phaseAccum[channel][bin + 1] = Math.fround(
+          this.phaseAccum[channel][bin] + integrated,
+        );
       }
     }
     this.lastNorm.set(this.norm);
@@ -765,9 +816,12 @@ export function processStaffPadTimeAndPitchChannels(
   const processor = new StaffPadProcessor(channels, options);
 
   const latency = options.fftSize - options.fftSize / 4 + 3;
-  const combined = options.timeRatio * options.pitchRatio;
-  const coefficient = combined < 1 ? 1 / 3 : 2 / 3;
-  let remainingDiscard = Math.trunc(latency * (combined * coefficient + (1 - coefficient)));
+  const combined = Math.fround(options.timeRatio * options.pitchRatio);
+  const coefficient = Math.fround(combined < 1 ? 1 / 3 : 2 / 3);
+  const latencyFactor = Math.fround(
+    Math.fround(combined * coefficient) + Math.fround(1 - coefficient),
+  );
+  let remainingDiscard = Math.trunc(Math.fround(latency * latencyFactor));
   let guard = 0;
   while (remainingDiscard > 0) {
     // StaffPadTimeAndPitch::InitializeStretcher returns on IllState. The
