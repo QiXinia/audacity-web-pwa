@@ -33,7 +33,7 @@ export function getClipPitchCents(clip: IClip): number {
 
 export function normalizeClipSpeedPercentage(value: unknown): number {
   const numeric = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) return 100;
+  if (!Number.isFinite(numeric)) return 100;
   return clamp(
     Math.round(numeric * 1000) / 1000,
     MIN_CLIP_SPEED_PERCENT,

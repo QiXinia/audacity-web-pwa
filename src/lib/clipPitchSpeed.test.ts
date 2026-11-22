@@ -47,6 +47,9 @@ describe('Audacity 4 clip pitch and speed model', () => {
   it('supports 1…1000% with three decimals and preserves the visible source window', () => {
     expect(normalizeClipSpeedPercentage(150.12349)).toBe(150.123);
     expect(normalizeClipSpeedPercentage(0.1)).toBe(1);
+    expect(normalizeClipSpeedPercentage(0)).toBe(1);
+    expect(normalizeClipSpeedPercentage(-25)).toBe(1);
+    expect(normalizeClipSpeedPercentage(Number.NaN)).toBe(100);
     expect(normalizeClipSpeedPercentage(1001)).toBe(1000);
     const source = project();
     const faster = applyClipPitchAndSpeed(source, { trackId: 'track-a', clipId: 'clip-a' }, {
@@ -66,6 +69,11 @@ describe('Audacity 4 clip pitch and speed model', () => {
     }).tracks[0].clips[0];
     expect(slowest.stretchRatio).toBe(0.01);
     expect(slowest.duration).toBeCloseTo(450, 10);
+    const nonPositive = applyClipPitchAndSpeed(source, { trackId: 'track-a', clipId: 'clip-a' }, {
+      pitchCents: 0, speedPercentage: 0, optimizeForVoice: false,
+    }).tracks[0].clips[0];
+    expect(nonPositive.stretchRatio).toBe(0.01);
+    expect(nonPositive.duration).toBeCloseTo(450, 10);
     const fastest = applyClipPitchAndSpeed(source, { trackId: 'track-a', clipId: 'clip-a' }, {
       pitchCents: 0, speedPercentage: 1000, optimizeForVoice: false,
     }).tracks[0].clips[0];
