@@ -1642,10 +1642,15 @@ function AudioEditorPageContent() {
   async function addTrack() {
     if (!project) return;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
-      const newTrack = await projectService.addTrack(project.id);
+      const newTrack = await projectService.addTrack(projectId);
+      if (!isCurrentAction()) return;
       if (newTrack) {
-        const updated = await projectService.getProject(project.id);
+        const updated = await projectService.getProject(projectId);
+        if (!isCurrentAction()) return;
         if (updated) {
           setProject(updated);
           pushHistoryCmd({
@@ -1657,6 +1662,7 @@ function AudioEditorPageContent() {
         }
       }
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Add track failed', error);
       toast.error(`添加轨道失败：${error instanceof Error ? error.message : '未知错误'}`);
     }
@@ -1665,9 +1671,14 @@ function AudioEditorPageContent() {
   async function deleteTrack(trackId: string) {
     if (!project) return;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
-      await projectService.removeTrack(project.id, trackId);
-      const updated = await projectService.getProject(project.id);
+      await projectService.removeTrack(projectId, trackId);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (updated) {
         const fallbackTrackId = updated.tracks[0]?.id ?? null;
         setProject(updated);
@@ -1685,6 +1696,7 @@ function AudioEditorPageContent() {
         });
       }
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Delete track failed', error);
       toast.error(`删除轨道失败：${error instanceof Error ? error.message : '未知错误'}`);
     }
@@ -2400,11 +2412,16 @@ function AudioEditorPageContent() {
     const source = project.tracks.find((track) => track.id === trackId);
     if (!source) return;
     const before = structuredClone(project);
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsDuplicatingTrack(true);
     try {
-      const duplicated = await projectService.duplicateTrack(project.id, trackId);
+      const duplicated = await projectService.duplicateTrack(projectId, trackId);
+      if (!isCurrentAction()) return;
       if (!duplicated) throw new Error('目标轨道不可用');
-      const persisted = await projectService.getProject(project.id);
+      const persisted = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!persisted) throw new Error('轨道复制后无法重新加载工程');
       setProject(persisted);
       pushHistoryCmd({
@@ -2415,6 +2432,7 @@ function AudioEditorPageContent() {
       });
       toast.success(`已复制轨道「${source.name}」`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Duplicate track failed', error);
       toast.error(error instanceof Error ? error.message : '轨道复制失败');
     } finally {
