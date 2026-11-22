@@ -801,7 +801,7 @@ export function processStaffPadTimeAndPitchChannels(
     || (options.fftSize & (options.fftSize - 1)) !== 0
   ) throw new RangeError('StaffPad FFT 尺寸必须是至少 64 的 2 的幂');
   if (inputFrames === 0) return channels.map(() => new Float32Array());
-  if (Math.abs(options.timeRatio - 1) < 1e-6 && options.pitchRatio === 1) {
+  if (options.timeRatio === 1 && options.pitchRatio === 1) {
     return channels.map((channel) => channel.slice());
   }
 

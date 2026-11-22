@@ -214,6 +214,24 @@ describe('Audacity StaffPad boundary contracts', () => {
     }
   });
 
+  it('does not use the near-neutral shortcut when it changes the requested output length', () => {
+    const source = new Float32Array(500_001);
+    source[source.length - 1] = 0.25;
+    const output = processStaffPadTimeAndPitchChannels([source], {
+      sampleRate: 1000,
+      // IEEE-754 evaluates this offset as slightly less than 1e-6. The old
+      // near-neutral shortcut returned 500001 frames instead of the requested
+      // Math.round(500001 * timeRatio) = 500002 frames.
+      timeRatio: 1.000001,
+      pitchRatio: 1,
+      preserveFormants: true,
+      fftSize: 64,
+    });
+    expect(output).toHaveLength(1);
+    expect(output[0]).toHaveLength(500_002);
+    expect(output[0].every((sample) => Number.isFinite(sample))).toBe(true);
+  }, 180_000);
+
   it('keeps the lowest-rate slowest-speed highest-pitch combination finite and non-silent', () => {
     const source = Array.from({ length: 2 }, (_, channel) => (
       Float32Array.from({ length: 17 }, (_, index) => (
