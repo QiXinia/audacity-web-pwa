@@ -144,6 +144,18 @@
       "preserveFormants": true,
       "fftSize": 2048,
       "nativeFrames": 2048
+    },
+    {
+      "name": "subsample-analysis-hop-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 17,
+      "timeRatio": 100.0,
+      "pitchRatio": 2.0,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 1700,
+      "nativePeak": 0.0
     }
   ]
 }

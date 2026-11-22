@@ -249,7 +249,7 @@ describe('Audacity StaffPad boundary contracts', () => {
     expect(output[0].every((sample) => Number.isFinite(sample))).toBe(true);
   }, 180_000);
 
-  it('keeps the lowest-rate slowest-speed highest-pitch combination finite and non-silent', () => {
+  it('matches native silence when the exact analysis hop is below one sample', () => {
     const source = Array.from({ length: 2 }, (_, channel) => (
       Float32Array.from({ length: 17 }, (_, index) => (
         0.3 * Math.sin(index * 0.41 + channel * 0.7) + 0.1 * Math.cos(index * 0.13)
@@ -266,7 +266,9 @@ describe('Audacity StaffPad boundary contracts', () => {
     for (const channel of output) {
       expect(channel).toHaveLength(1700);
       expect(channel.every((sample) => Number.isFinite(sample))).toBe(true);
-      expect(channel.some((sample) => sample !== 0)).toBe(true);
+      // Native StaffPad reaches IllState for exactHopA=512/(4*100*2)=0.64.
+      // StaffPadTimeAndPitch::GetSamples consequently leaves the output zeroed.
+      expect(channel.every((sample) => sample === 0)).toBe(true);
     }
   }, 30_000);
 

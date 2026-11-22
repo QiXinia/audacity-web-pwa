@@ -175,7 +175,7 @@ describe('Audacity 4 non-destructive clip PCM rendering', () => {
     }));
   });
 
-  it('routes the UI-limit voice settings through the real clip processor without silent data loss', () => {
+  it('matches native zero-filled output at the UI-limit voice settings', () => {
     const sampleRate = 8000;
     const source = Array.from({ length: 2 }, (_, channel) => (
       Float32Array.from({ length: 17 }, (_, index) => (
@@ -194,7 +194,8 @@ describe('Audacity 4 non-destructive clip PCM rendering', () => {
     for (const channel of output) {
       expect(channel).toHaveLength(1700);
       expect(channel.every((sample) => Number.isFinite(sample))).toBe(true);
-      expect(channel.some((sample) => sample !== 0)).toBe(true);
+      // This is the native subsample-analysis-hop-stereo oracle case.
+      expect(channel.every((sample) => sample === 0)).toBe(true);
     }
   });
 
