@@ -238,7 +238,11 @@ export function renderClipPitchAndSpeedChannels(
   );
   if (visibleEnd <= visibleStart) throw new RangeError('片段没有可渲染的源音频');
 
-  const contextSamples = Math.max(1, Math.round(ratio * sampleRate));
+  // GetRenderedCopy retains one second of raw, unstretched source on each side.
+  // That source context is independent of the speed ratio: the official code
+  // extends the timeline by its stretchRatio, which cancels again when the
+  // ClipTimeAndPitchSource maps the interval back to raw samples.
+  const contextSamples = sampleRate;
   const contextStart = Math.max(0, visibleStart - contextSamples);
   const contextEnd = Math.min(sourceLength, visibleEnd + contextSamples);
   const processed = processClipPitchAndSpeedChannels(

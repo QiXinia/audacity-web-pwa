@@ -278,6 +278,51 @@ describe('Audacity 4 Render pitch and speed', () => {
     expect(sourceProject.tracks[0].clips[0].audioBufferId).toBe('buffer-a');
   });
 
+  it('uses exactly one second of raw source context at the 1000% speed limit', () => {
+    const sampleRate = 8000;
+    const source = new Float32Array(sampleRate * 5);
+    let state = 0x12345678;
+    for (let index = 0; index < source.length; index += 1) {
+      state = (Math.imul(1664525, state) + 1013904223) >>> 0;
+      source[index] = (state / 0x100000000 * 2 - 1) * 0.4;
+    }
+    const target = clip({
+      offset: 1.2,
+      duration: 0.2,
+      originalDuration: 5,
+      stretchRatio: 10,
+      pitchCents: 300,
+      optimizeForVoice: true,
+    });
+
+    // WaveTrack.cpp GetRenderedCopy leaves one second of raw, unstretched audio
+    // on either side. The web stretchRatio is source/timeline, so multiplying
+    // the context by it would incorrectly retain ten seconds at 1000% speed.
+    const contextStart = Math.round((target.offset - 1) * sampleRate);
+    const visibleEnd = Math.round((target.offset + target.duration * 10) * sampleRate);
+    const contextEnd = Math.round(visibleEnd + sampleRate);
+    const processed = processStaffPadTimeAndPitchChannels(
+      [source.slice(contextStart, contextEnd)],
+      {
+        sampleRate,
+        timeRatio: 0.1,
+        pitchRatio: 2 ** (300 / 1200),
+        preserveFormants: true,
+        fftSize: 512,
+      },
+    )[0];
+    const leadingOutputFrames = Math.round(sampleRate / 10);
+    const outputFrames = Math.round(target.duration * sampleRate);
+    const expected = processed.slice(
+      leadingOutputFrames,
+      leadingOutputFrames + outputFrames,
+    );
+
+    const actual = renderClipPitchAndSpeedChannels(target, [source], sampleRate)[0];
+    expect(actual).toHaveLength(outputFrames);
+    expect(actual).toEqual(expected);
+  }, 30_000);
+
   it('handles visible regions touching either source boundary', () => {
     const sampleRate = 8000;
     const source = new Float32Array(1600).map((_, index) => (
