@@ -1,9 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject } from '@/types/project';
 
 const mocks = vi.hoisted(() => ({
+  addTrack: vi.fn(),
   updateTrack: vi.fn(),
+  push: vi.fn(),
   error: vi.fn(),
 }));
 
@@ -32,6 +34,7 @@ vi.mock('@/services/projectService', () => ({
   projectService: {
     getProject: vi.fn(async () => mockProject),
     openProject: vi.fn(async () => mockProject),
+    addTrack: mocks.addTrack,
     updateTrack: mocks.updateTrack,
     loadAudioChannels: vi.fn(async () => [new Float32Array(0)]),
     loadAudioBuffer: vi.fn(async () => new Float32Array(0)),
@@ -39,7 +42,7 @@ vi.mock('@/services/projectService', () => ({
 }));
 vi.mock('@/services/historyService', () => ({
   historyManager: {
-    push: vi.fn(), pushCommand: vi.fn(), canUndo: vi.fn(() => false), canRedo: vi.fn(() => false),
+    push: mocks.push, pushCommand: mocks.push, canUndo: vi.fn(() => false), canRedo: vi.fn(() => false),
     loadForProject: vi.fn(async () => 0), flush: vi.fn(async () => undefined),
     undo: vi.fn(), redo: vi.fn(), getUndoStack: vi.fn(() => []), getRedoStack: vi.fn(() => []),
     getHistoryState: vi.fn(() => ({ canUndo: false, canRedo: false, undoLabel: '', redoLabel: '' })),
@@ -81,13 +84,20 @@ async function renameTrack(name: string): Promise<void> {
   fireEvent.click(await screen.findByTestId('track-rename-menu'));
   const input = await screen.findByLabelText('轨道名称');
   fireEvent.change(input, { target: { value: name } });
-  fireEvent.keyDown(input, { key: 'Enter' });
+  await act(async () => {
+    fireEvent.keyDown(input, { key: 'Enter' });
+  });
 }
 
 describe('AudioEditorPage track mutation rollback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockProject = makeProject();
+    mocks.addTrack.mockImplementation(async () => {
+      const newTrack = { ...mockProject.tracks[0]!, id: 'track-b', name: 'Beta' };
+      mockProject = { ...mockProject, tracks: [...mockProject.tracks, newTrack] };
+      return newTrack;
+    });
   });
 
   afterEach(() => cleanup());
@@ -118,5 +128,56 @@ describe('AudioEditorPage track mutation rollback', () => {
 
     expect(await screen.findByText('Committed rename')).toBeInTheDocument();
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument();
+  });
+
+  it('handles a rejected track update, preserves the visible track, and allows a retry', async () => {
+    mocks.updateTrack.mockRejectedValueOnce(new Error('update storage unavailable'));
+    render(<AudioEditorPage />);
+    expect(await screen.findByText('Track rollback integration')).toBeInTheDocument();
+
+    await renameTrack('Rejected rename');
+
+    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith(
+      '轨道更新失败：update storage unavailable',
+    ));
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(screen.queryByText('Rejected rename')).not.toBeInTheDocument();
+
+    mocks.updateTrack.mockImplementationOnce(async () => ({
+      ...mockProject,
+      tracks: [{ ...mockProject.tracks[0]!, name: 'Recovered rename' }],
+    }));
+    await renameTrack('Recovered rename');
+
+    expect(await screen.findByText('Recovered rename')).toBeInTheDocument();
+    expect(mocks.updateTrack).toHaveBeenCalledTimes(2);
+    expect(mocks.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles a rejected track addition without history and commits a later retry', async () => {
+    mocks.addTrack.mockRejectedValueOnce(new Error('add storage unavailable'));
+    render(<AudioEditorPage />);
+    expect(await screen.findByText('Track rollback integration')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '添加轨道' }));
+    });
+
+    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith(
+      '添加轨道失败：add storage unavailable',
+    ));
+    expect(screen.getByTestId('track-panel-row-track-a')).toBeInTheDocument();
+    expect(screen.queryByTestId('track-panel-row-track-b')).not.toBeInTheDocument();
+    expect(mocks.push).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '添加轨道' }));
+    });
+
+    expect(await screen.findByTestId('track-panel-row-track-b')).toBeInTheDocument();
+    expect(mocks.addTrack).toHaveBeenCalledTimes(2);
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push.mock.calls[0]![0].label).toBe('添加轨道');
+    expect(mocks.error).toHaveBeenCalledTimes(1);
   });
 });

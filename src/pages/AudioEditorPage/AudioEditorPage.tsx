@@ -1642,18 +1642,23 @@ function AudioEditorPageContent() {
   async function addTrack() {
     if (!project) return;
     const before = project;
-    const newTrack = await projectService.addTrack(project.id);
-    if (newTrack) {
-      const updated = await projectService.getProject(project.id);
-      if (updated) {
-        setProject(updated);
-        pushHistoryCmd({
-          id: generateId(),
-          label: '添加轨道',
-          execute: () => updated,
-          undo: () => before,
-        });
+    try {
+      const newTrack = await projectService.addTrack(project.id);
+      if (newTrack) {
+        const updated = await projectService.getProject(project.id);
+        if (updated) {
+          setProject(updated);
+          pushHistoryCmd({
+            id: generateId(),
+            label: '添加轨道',
+            execute: () => updated,
+            undo: () => before,
+          });
+        }
       }
+    } catch (error) {
+      logger.error('Add track failed', error);
+      toast.error(`添加轨道失败：${error instanceof Error ? error.message : '未知错误'}`);
     }
   }
 
@@ -2484,10 +2489,15 @@ function AudioEditorPageContent() {
 
   async function updateTrack(trackId: string, updates: Partial<ITrack>) {
     if (!project) return;
-    const updated = await projectService.updateTrack(project.id, trackId, updates);
-    // Render only the committed snapshot. A null result means the project was
-    // permanently deleted or the track disappeared before the write.
-    if (updated) setProject(updated);
+    try {
+      const updated = await projectService.updateTrack(project.id, trackId, updates);
+      // Render only the committed snapshot. A null result means the project was
+      // permanently deleted or the track disappeared before the write.
+      if (updated) setProject(updated);
+    } catch (error) {
+      logger.error('Update track failed', error);
+      toast.error(`轨道更新失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
   }
 
   function toggleMute(trackId: string) {
