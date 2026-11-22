@@ -722,11 +722,25 @@ class ProjectService {
       !project
       || deletionGeneration !== (this.permanentDeletionGenerations.get(id) ?? 0)
     ) return null;
-    if (activationGeneration === this.activationGeneration) {
-      this.currentProject = project;
-      this.currentProjectId = id;
-    }
-    return project;
+
+    // Deletion generations are local to this tab. Revalidate through IndexedDB
+    // so a permanent deletion committed by another tab also wins an in-flight
+    // open. Activation belongs to the same read transaction: if this read wins,
+    // the open linearizes before a later delete; if deletion wins, no stale
+    // project is returned or activated.
+    const valid = await audioDb.transaction('r', audioDb.projects, async () => {
+      const latest = await audioDb.projects.get(id);
+      if (
+        !latest
+        || deletionGeneration !== (this.permanentDeletionGenerations.get(id) ?? 0)
+      ) return false;
+      if (activationGeneration === this.activationGeneration) {
+        this.currentProject = project;
+        this.currentProjectId = id;
+      }
+      return true;
+    });
+    return valid ? project : null;
   }
 
   async renameProject(id: string, name: string): Promise<void> {

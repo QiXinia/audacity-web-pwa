@@ -213,6 +213,97 @@ describe('ProjectService cross-tab permanent deletion', () => {
       deletedAt: 90,
     });
   });
+
+  it('does not return or activate a project deleted by another tab during an open read', async () => {
+    const original = makeRecord('before');
+    records.set(original.id, original);
+    const readReached = deferred();
+    const releaseRead = deferred<ProjectRecord | undefined>();
+    let delayFirstRead = true;
+    vi.mocked(audioDb.projects.get).mockImplementation(((id: string) => {
+      if (delayFirstRead) {
+        delayFirstRead = false;
+        readReached.resolve();
+        return releaseRead.promise;
+      }
+      const record = records.get(id);
+      return Dexie.Promise.resolve(record ? { ...record } : undefined);
+    }) as never);
+
+    const opening = projectService.openProject(original.id);
+    await readReached.promise;
+
+    // This independent transaction represents another tab. It does not share
+    // this instance's deletion generations or save queue.
+    await audioDb.transaction('rw', audioDb.projects, async () => {
+      await audioDb.projects.delete(original.id);
+    });
+    releaseRead.resolve(original);
+
+    await expect(opening).resolves.toBeNull();
+    expect(projectService.getCurrentProject()).toBeNull();
+    expect(projectService.getCurrentProjectId()).toBeNull();
+  });
+
+  it('keeps a newer project active when another tab deletes an earlier open target', async () => {
+    const originalA = { ...makeRecord('project-a'), id: 'project-a' };
+    const originalB = { ...makeRecord('project-b'), id: 'project-b' };
+    records.set(originalA.id, originalA);
+    records.set(originalB.id, originalB);
+    const readReached = deferred();
+    const releaseRead = deferred<ProjectRecord | undefined>();
+    let delayProjectA = true;
+    vi.mocked(audioDb.projects.get).mockImplementation(((id: string) => {
+      if (id === 'project-a' && delayProjectA) {
+        delayProjectA = false;
+        readReached.resolve();
+        return releaseRead.promise;
+      }
+      const record = records.get(id);
+      return Dexie.Promise.resolve(record ? { ...record } : undefined);
+    }) as never);
+
+    const earlier = projectService.openProject('project-a');
+    await readReached.promise;
+    const latest = await projectService.openProject('project-b');
+    await audioDb.transaction('rw', audioDb.projects, async () => {
+      await audioDb.projects.delete('project-a');
+    });
+    releaseRead.resolve(originalA);
+
+    await expect(earlier).resolves.toBeNull();
+    expect(latest?.id).toBe('project-b');
+    expect(projectService.getCurrentProject()?.id).toBe('project-b');
+    expect(projectService.getCurrentProjectId()).toBe('project-b');
+  });
+
+  it('allows a pending open when another tab fails to delete the project', async () => {
+    const original = makeRecord('before');
+    records.set(original.id, original);
+    const readReached = deferred();
+    const releaseRead = deferred<ProjectRecord | undefined>();
+    let delayFirstRead = true;
+    vi.mocked(audioDb.projects.get).mockImplementation(((id: string) => {
+      if (delayFirstRead) {
+        delayFirstRead = false;
+        readReached.resolve();
+        return releaseRead.promise;
+      }
+      const record = records.get(id);
+      return Dexie.Promise.resolve(record ? { ...record } : undefined);
+    }) as never);
+
+    const opening = projectService.openProject(original.id);
+    await readReached.promise;
+    await expect(audioDb.transaction('rw', audioDb.projects, async () => {
+      throw new Error('other tab delete failed');
+    })).rejects.toThrow('other tab delete failed');
+    releaseRead.resolve(original);
+
+    await expect(opening).resolves.toMatchObject({ id: original.id });
+    expect(projectService.getCurrentProject()?.id).toBe(original.id);
+    expect(projectService.getCurrentProjectId()).toBe(original.id);
+  });
 });
 
 describe('ProjectService cross-tab lifecycle mutations', () => {
