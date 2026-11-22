@@ -24,7 +24,7 @@ describe('StaffPad deterministic extreme-parameter grid', () => {
               preserveFormants: true,
               fftSize: 64,
             });
-            const expectedFrames = Math.max(1, Math.round(frameCount * timeRatio));
+            const expectedFrames = Math.round(frameCount * timeRatio);
             expect(output, JSON.stringify({ frameCount, timeRatio, pitchRatio, sampleRate, channelCount })).toHaveLength(channelCount);
             for (const channel of output) {
               expect(channel, JSON.stringify({ frameCount, timeRatio, pitchRatio, sampleRate, channelCount })).toHaveLength(expectedFrames);

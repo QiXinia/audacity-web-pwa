@@ -206,11 +206,28 @@ describe('Audacity StaffPad boundary contracts', () => {
       preserveFormants: true,
       fftSize: 512,
     });
-    const expectedFrames = Math.max(1, Math.round(frames * timeRatio));
+    // ClipSegment constructs sampleCount from visibleSamples * stretchRatio + .5;
+    // sampleCount(double) truncates, so a non-empty source can produce zero frames.
+    const expectedFrames = Math.round(frames * timeRatio);
     expect(output).toHaveLength(channelCount);
     for (const channel of output) {
       expect(channel).toHaveLength(expectedFrames);
       expect(channel.every((sample) => Number.isFinite(sample))).toBe(true);
+    }
+  });
+
+  it('preserves the native zero-frame and half-frame output boundaries', () => {
+    const source = Float32Array.of(0.25);
+    for (const [timeRatio, expectedFrames] of [[0.1, 0], [0.5, 1]] as const) {
+      const output = processStaffPadTimeAndPitchChannels([source], {
+        sampleRate: 8000,
+        timeRatio,
+        pitchRatio: 2,
+        preserveFormants: true,
+        fftSize: 512,
+      });
+      expect(output).toHaveLength(1);
+      expect(output[0], `timeRatio=${timeRatio}`).toHaveLength(expectedFrames);
     }
   });
 

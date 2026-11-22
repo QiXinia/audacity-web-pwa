@@ -805,8 +805,12 @@ export function processStaffPadTimeAndPitchChannels(
     return channels.map((channel) => channel.slice());
   }
 
-  const outputFrames = Math.max(1, Math.round(inputFrames * options.timeRatio));
+  // ClipSegment constructs sampleCount from visibleSamples * stretchRatio + .5.
+  // Its explicit double constructor truncates, so positive sources can produce
+  // zero frames; do not invent one output sample at sub-half-frame durations.
+  const outputFrames = Math.round(inputFrames * options.timeRatio);
   const output = channels.map(() => new Float32Array(outputFrames));
+  if (outputFrames === 0) return output;
   // StaffPad is linear: silent input remains silent even after formant,
   // phase-randomization and overlap-add processing. This also preserves the
   // official extreme-ratio regression without millions of redundant FFTs.
