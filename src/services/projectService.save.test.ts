@@ -736,4 +736,30 @@ describe('ProjectService project activation races', () => {
     expect(projectService.getCurrentProject()?.id).toBe('project-a');
     expect(projectService.getCurrentProjectId()).toBe('project-a');
   });
+
+  it('returns and activates the newer record used by final revalidation', async () => {
+    const stale = {
+      ...makeRecord('stale-snapshot'),
+      id: 'project-a',
+      updatedAt: 100,
+    };
+    const latest = {
+      ...stale,
+      name: 'latest-snapshot',
+      updatedAt: 200,
+    };
+    vi.mocked(audioDb.projects.get)
+      .mockImplementationOnce(() => Dexie.Promise.resolve({ ...stale }))
+      .mockImplementationOnce(() => Dexie.Promise.resolve({ ...latest }));
+
+    const opened = await projectService.openProject('project-a');
+
+    expect(opened).toMatchObject({
+      id: 'project-a',
+      name: 'latest-snapshot',
+      updatedAt: 200,
+    });
+    expect(projectService.getCurrentProject()).toBe(opened);
+    expect(projectService.getCurrentProjectId()).toBe('project-a');
+  });
 });

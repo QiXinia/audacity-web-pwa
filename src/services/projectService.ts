@@ -727,20 +727,23 @@ class ProjectService {
     // so a permanent deletion committed by another tab also wins an in-flight
     // open. Activation belongs to the same read transaction: if this read wins,
     // the open linearizes before a later delete; if deletion wins, no stale
-    // project is returned or activated.
+    // project is returned or activated. Return and activate the exact record
+    // used by this final check rather than the potentially stale first read.
+    let validatedProject: IProject | null = null;
     const valid = await audioDb.transaction('r', audioDb.projects, async () => {
       const latest = await audioDb.projects.get(id);
       if (
         !latest
         || deletionGeneration !== (this.permanentDeletionGenerations.get(id) ?? 0)
       ) return false;
+      validatedProject = this.recordToProject(latest);
       if (activationGeneration === this.activationGeneration) {
-        this.currentProject = project;
+        this.currentProject = validatedProject;
         this.currentProjectId = id;
       }
       return true;
     });
-    return valid ? project : null;
+    return valid ? validatedProject : null;
   }
 
   async renameProject(id: string, name: string): Promise<void> {
