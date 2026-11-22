@@ -97,6 +97,14 @@ function mockDelayedFirstPut(initial: ProjectRecord) {
   return state;
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Dexie.Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function makeBuffer(id: string, projectId: string): AudioBufferRecord {
   return {
     id,
@@ -575,5 +583,99 @@ describe('ProjectService ordered project saves', () => {
     expect([...state.buffers.keys()]).toEqual(['buffer-c']);
     expect([...state.snapshots.keys()]).toEqual([3, 6]);
     expect(audioEngine.evictBuffer).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('ProjectService project activation races', () => {
+  function mockActivationRecords() {
+    const records = new Map<string, ProjectRecord>([
+      ['project-a', { ...makeRecord('project-a'), id: 'project-a' }],
+      ['project-b', { ...makeRecord('project-b'), id: 'project-b' }],
+    ]);
+    vi.mocked(audioDb.projects.get).mockImplementation((id) => {
+      const record = records.get(id as unknown as string);
+      return Dexie.Promise.resolve(record ? { ...record } : undefined);
+    });
+    return records;
+  }
+
+  it('does not replace a newly opened project when an older save finishes', async () => {
+    const records = mockActivationRecords();
+    const putReached = deferred();
+    const releasePut = deferred();
+    vi.mocked(audioDb.projects.put).mockImplementation((record) => {
+      if (record.id !== 'project-a') {
+        records.set(record.id, { ...record });
+        return Dexie.Promise.resolve(record.id);
+      }
+      putReached.resolve();
+      return releasePut.promise.then(() => {
+        records.set(record.id, { ...record });
+        return record.id;
+      });
+    });
+
+    const saving = projectService.saveProject({
+      ...makeProject('edited-project-a'),
+      id: 'project-a',
+    });
+    await putReached.promise;
+    const opened = await projectService.openProject('project-b');
+    releasePut.resolve();
+    await saving;
+
+    expect(opened?.id).toBe('project-b');
+    expect(projectService.getCurrentProject()?.id).toBe('project-b');
+    expect(projectService.getCurrentProjectId()).toBe('project-b');
+  });
+
+  it('does not replace a newly created project when an older save finishes', async () => {
+    const records = mockActivationRecords();
+    const putReached = deferred();
+    const releasePut = deferred();
+    vi.mocked(audioDb.projects.put).mockImplementation((record) => {
+      if (record.id !== 'project-a') {
+        records.set(record.id, { ...record });
+        return Dexie.Promise.resolve(record.id);
+      }
+      putReached.resolve();
+      return releasePut.promise.then(() => {
+        records.set(record.id, { ...record });
+        return record.id;
+      });
+    });
+
+    const saving = projectService.saveProject({
+      ...makeProject('edited-project-a'),
+      id: 'project-a',
+    });
+    await putReached.promise;
+    const created = await projectService.createProject('new-project');
+    releasePut.resolve();
+    await saving;
+
+    expect(projectService.getCurrentProject()).toBe(created);
+    expect(projectService.getCurrentProjectId()).toBe(created.id);
+  });
+
+  it('keeps the latest open request active when an earlier read resolves last', async () => {
+    const records = mockActivationRecords();
+    const releaseFirstRead = deferred<ProjectRecord | undefined>();
+    vi.mocked(audioDb.projects.get).mockImplementation((id) => {
+      const recordId = id as unknown as string;
+      if (recordId === 'project-a') return releaseFirstRead.promise;
+      const record = records.get(recordId);
+      return Dexie.Promise.resolve(record ? { ...record } : undefined);
+    });
+
+    const firstOpen = projectService.openProject('project-a');
+    const latest = await projectService.openProject('project-b');
+    releaseFirstRead.resolve(records.get('project-a'));
+    const earlier = await firstOpen;
+
+    expect(earlier?.id).toBe('project-a');
+    expect(latest?.id).toBe('project-b');
+    expect(projectService.getCurrentProject()?.id).toBe('project-b');
+    expect(projectService.getCurrentProjectId()).toBe('project-b');
   });
 });

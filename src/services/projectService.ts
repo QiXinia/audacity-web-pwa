@@ -433,6 +433,7 @@ export type TrackAppearanceChange =
 class ProjectService {
   private currentProject: IProject | null = null;
   private currentProjectId: string | null = null;
+  private activationGeneration = 0;
   private saveQueue: Promise<void> = Promise.resolve();
 
   constructor() {
@@ -490,6 +491,7 @@ class ProjectService {
   }
 
   async createProject(name: string, sampleRate = 44100): Promise<IProject> {
+    const activationGeneration = ++this.activationGeneration;
     const id = generateId();
     const now = Date.now();
     const track1 = this.createDefaultTrack(0);
@@ -516,8 +518,11 @@ class ProjectService {
     const record = this.projectToRecord(project);
     await audioDb.projects.put(record);
 
-    this.currentProject = project;
-    this.currentProjectId = id;
+    // A newer open/create request owns activation even if this write finishes later.
+    if (activationGeneration === this.activationGeneration) {
+      this.currentProject = project;
+      this.currentProjectId = id;
+    }
 
     return project;
   }
@@ -661,6 +666,7 @@ class ProjectService {
   }
 
   private async writeProjectRecord(project: IProject, record: ProjectRecord): Promise<boolean> {
+    const activationGeneration = this.activationGeneration;
     const saved = await audioDb.transaction(
       'rw',
       audioDb.projects,
@@ -678,8 +684,15 @@ class ProjectService {
         return true;
       },
     );
-    if (saved) {
+    // Saving belongs to the source project, not whichever project became active
+    // while IndexedDB was pending. Never restore that stale in-memory identity.
+    if (
+      saved
+      && activationGeneration === this.activationGeneration
+      && (this.currentProjectId === null || this.currentProjectId === project.id)
+    ) {
       this.currentProject = project;
+      this.currentProjectId = project.id;
     }
     return saved;
   }
@@ -699,8 +712,9 @@ class ProjectService {
   }
 
   async openProject(id: string): Promise<IProject | null> {
+    const activationGeneration = ++this.activationGeneration;
     const project = await this.getProject(id);
-    if (project) {
+    if (project && activationGeneration === this.activationGeneration) {
       this.currentProject = project;
       this.currentProjectId = id;
     }
