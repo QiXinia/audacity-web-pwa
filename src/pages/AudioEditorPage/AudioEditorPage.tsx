@@ -2234,11 +2234,16 @@ function AudioEditorPageContent() {
     const label = muted
       ? (selectedOnly ? 'Mute Tracks' : 'Mute All Tracks')
       : (selectedOnly ? 'Unmute Tracks' : 'Unmute All Tracks');
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsMutingTracks(true);
     try {
-      const result = await projectService.setTracksMute(project.id, targetTrackIds, muted);
+      const result = await projectService.setTracksMute(projectId, targetTrackIds, muted);
+      if (!isCurrentAction()) return;
       if (!result) return;
-      const persisted = await projectService.getProject(project.id);
+      const persisted = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!persisted) throw new Error('轨道状态保存后无法重新加载');
       setProject(persisted);
       pushHistoryCmd({
@@ -2250,6 +2255,7 @@ function AudioEditorPageContent() {
       const affectedCount = result.before.tracks.filter((track) => targets.has(track.id)).length;
       toast.success(`${muted ? '已静音' : '已取消静音'} ${affectedCount} 条${selectedOnly ? '选中' : ''}轨道`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Mute/Unmute tracks failed', error);
       toast.error(error instanceof Error ? error.message : '轨道静音状态保存失败');
     } finally {
@@ -2271,11 +2277,16 @@ function AudioEditorPageContent() {
 
     const targets = new Set(targetTrackIds);
     const label = pan < 0 ? 'Pan Left' : pan > 0 ? 'Pan Right' : 'Pan Center';
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsPanningTracks(true);
     try {
-      const result = await projectService.setTracksPan(project.id, targetTrackIds, pan);
+      const result = await projectService.setTracksPan(projectId, targetTrackIds, pan);
+      if (!isCurrentAction()) return;
       if (!result) return;
-      const persisted = await projectService.getProject(project.id);
+      const persisted = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!persisted) throw new Error('轨道声像保存后无法重新加载');
       setProject(persisted);
       pushHistoryCmd({
@@ -2287,6 +2298,7 @@ function AudioEditorPageContent() {
       const affectedCount = result.before.tracks.filter((track) => targets.has(track.id)).length;
       toast.success(`已将 ${affectedCount} 条选中轨道的声像设为${pan < 0 ? '左侧' : pan > 0 ? '右侧' : '中央'}`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Pan tracks failed', error);
       toast.error(error instanceof Error ? error.message : '轨道声像保存失败');
     } finally {
@@ -2311,13 +2323,18 @@ function AudioEditorPageContent() {
     }
 
     const targets = new Set(targetTrackIds);
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsRemovingTracks(true);
     try {
       // Resolve tracks, labels, and undo state inside the project write queue.
       // Saving this render's complete project would overwrite concurrent edits.
-      const result = await projectService.removeTracks(project.id, targetTrackIds);
+      const result = await projectService.removeTracks(projectId, targetTrackIds);
+      if (!isCurrentAction()) return;
       if (!result) return;
-      const persisted = await projectService.getProject(project.id);
+      const persisted = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!persisted) throw new Error('轨道移除后无法重新加载工程');
       const focusedTrackId = resolveRemoveTrackFocus(
         result.before.tracks.map((track) => track.id),
@@ -2340,6 +2357,7 @@ function AudioEditorPageContent() {
       const removedCount = result.before.tracks.length - result.after.tracks.length;
       toast.success(`已移除 ${removedCount} 条选中轨道`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Remove Tracks failed', error);
       toast.error(error instanceof Error ? error.message : '选中轨道移除失败');
     } finally {
@@ -2355,14 +2373,19 @@ function AudioEditorPageContent() {
     }
 
     const label = mode === 'time' ? 'Sort by Time' : 'Sort by Name';
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsSortingTracks(true);
     try {
       // Audacity sorts every track, independent of the current track selection.
       // Resolve the source inside ProjectService's queue instead of saving this
       // render's complete track array over concurrently committed mutations.
-      const result = await projectService.sortTracks(project.id, mode);
+      const result = await projectService.sortTracks(projectId, mode);
+      if (!isCurrentAction()) return;
       if (!result) return;
-      const persisted = await projectService.getProject(project.id);
+      const persisted = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!persisted) throw new Error('轨道排序后无法重新加载工程');
       setProject(persisted);
       pushHistoryCmd({
@@ -2373,6 +2396,7 @@ function AudioEditorPageContent() {
       });
       toast.success(`已按${mode === 'time' ? '开始时间' : '名称'}排序 ${result.after.tracks.length} 条轨道`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Sort Tracks failed', error);
       toast.error(error instanceof Error ? error.message : '轨道排序保存失败');
     } finally {
@@ -2385,11 +2409,16 @@ function AudioEditorPageContent() {
     const ordered = moveTrackInOrder(project.tracks, trackId, direction);
     if (ordered.every((track, index) => track.id === project.tracks[index]?.id)) return;
 
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsMovingTrack(true);
     try {
-      const result = await projectService.moveTrack(project.id, trackId, direction);
+      const result = await projectService.moveTrack(projectId, trackId, direction);
+      if (!isCurrentAction()) return;
       if (!result) return;
-      const persisted = await projectService.getProject(project.id);
+      const persisted = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!persisted) throw new Error('轨道移动后无法重新加载工程');
       setProject(persisted);
       setSelectedTrackId(trackId);
@@ -2400,6 +2429,7 @@ function AudioEditorPageContent() {
         undo: () => result.before,
       });
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Move track failed', error);
       toast.error(error instanceof Error ? error.message : '轨道移动保存失败');
     } finally {
@@ -2473,16 +2503,21 @@ function AudioEditorPageContent() {
     }
 
     const label = getTrackAlignLabel(mode, moveSelectionWithTracks);
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsAligningTracks(true);
     try {
-      const result = await projectService.alignTracks(project.id, targetTrackIds, mode, {
+      const result = await projectService.alignTracks(projectId, targetTrackIds, mode, {
         cursorPosition,
         selection,
         moveSelectionWithTracks,
         syncLockTracks,
       });
+      if (!isCurrentAction()) return;
       if (!result) return;
-      const persisted = await projectService.getProject(project.id);
+      const persisted = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!persisted) throw new Error('轨道对齐后无法重新加载工程');
       setProject(persisted);
       setSelection(persisted.selection);
@@ -2503,6 +2538,7 @@ function AudioEditorPageContent() {
       const affectedCount = result.before.tracks.filter((track) => targets.has(track.id)).length;
       toast.success(`已对齐 ${affectedCount} 条选中轨道`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Align Tracks failed', error);
       toast.error(error instanceof Error ? error.message : '轨道对齐保存失败');
     } finally {
@@ -2512,12 +2548,17 @@ function AudioEditorPageContent() {
 
   async function updateTrack(trackId: string, updates: Partial<ITrack>) {
     if (!project) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
-      const updated = await projectService.updateTrack(project.id, trackId, updates);
+      const updated = await projectService.updateTrack(projectId, trackId, updates);
+      if (!isCurrentAction()) return;
       // Render only the committed snapshot. A null result means the project was
       // permanently deleted or the track disappeared before the write.
       if (updated) setProject(updated);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Update track failed', error);
       toast.error(`轨道更新失败：${error instanceof Error ? error.message : '未知错误'}`);
     }
@@ -2826,12 +2867,17 @@ function AudioEditorPageContent() {
 
   async function changeTrackColor(trackId: string, colorIndex: number): Promise<void> {
     if (!project) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
-      const updated = await projectService.updateTrackAppearance(project.id, trackId, {
+      const updated = await projectService.updateTrackAppearance(projectId, trackId, {
         type: 'color', colorIndex,
       });
+      if (!isCurrentAction()) return;
       if (updated) setProject(updated);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Change track color failed', error);
       toast.error(error instanceof Error ? error.message : '轨道颜色保存失败');
     }
@@ -2839,12 +2885,17 @@ function AudioEditorPageContent() {
 
   async function changeTrackViewMode(trackId: string, mode: ViewMode): Promise<void> {
     if (!project) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
-      const updated = await projectService.updateTrackAppearance(project.id, trackId, {
+      const updated = await projectService.updateTrackAppearance(projectId, trackId, {
         type: 'viewMode', viewMode: mode,
       });
+      if (!isCurrentAction()) return;
       if (updated) setProject(updated);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Change track visualization failed', error);
       toast.error(error instanceof Error ? error.message : '轨道视图保存失败');
     }
@@ -2852,12 +2903,17 @@ function AudioEditorPageContent() {
 
   async function changeTrackHalfWave(trackId: string, value: boolean): Promise<void> {
     if (!project) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
-      const updated = await projectService.updateTrackAppearance(project.id, trackId, {
+      const updated = await projectService.updateTrackAppearance(projectId, trackId, {
         type: 'halfWave', halfWave: value,
       });
+      if (!isCurrentAction()) return;
       if (updated) setProject(updated);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Change track Half-wave failed', error);
       toast.error(error instanceof Error ? error.message : 'Half-wave 保存失败');
     }

@@ -13,6 +13,14 @@ const mocks = vi.hoisted(() => ({
   addTrack: vi.fn(),
   removeTrack: vi.fn(),
   duplicateTrack: vi.fn(),
+  setTracksMute: vi.fn(),
+  setTracksPan: vi.fn(),
+  removeTracks: vi.fn(),
+  sortTracks: vi.fn(),
+  moveTrack: vi.fn(),
+  alignTracks: vi.fn(),
+  updateTrack: vi.fn(),
+  updateTrackAppearance: vi.fn(),
   push: vi.fn(),
   success: vi.fn(),
   error: vi.fn(),
@@ -63,6 +71,14 @@ vi.mock('@/services/projectService', () => ({
     addTrack: mocks.addTrack,
     removeTrack: mocks.removeTrack,
     duplicateTrack: mocks.duplicateTrack,
+    setTracksMute: mocks.setTracksMute,
+    setTracksPan: mocks.setTracksPan,
+    removeTracks: mocks.removeTracks,
+    sortTracks: mocks.sortTracks,
+    moveTrack: mocks.moveTrack,
+    alignTracks: mocks.alignTracks,
+    updateTrack: mocks.updateTrack,
+    updateTrackAppearance: mocks.updateTrackAppearance,
     loadAudioChannels: vi.fn(async () => [new Float32Array(0)]),
     loadAudioBuffer: vi.fn(async () => new Float32Array(0)),
   },
@@ -158,6 +174,35 @@ async function settleDeferred(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+}
+
+function mutationResult(afterTracks: ITrack[]): { before: IProject; after: IProject } {
+  const before = projects[OLD_PROJECT_ID]!;
+  const after = { ...before, tracks: afterTracks };
+  projects[OLD_PROJECT_ID] = after;
+  return { before, after };
+}
+
+function expectNextProjectIsolated(): void {
+  expect(screen.getByText('Next project')).toBeInTheDocument();
+  expect(screen.getByTestId('track-panel-row-next-track')).toBeInTheDocument();
+  expect(screen.queryByText('Old project')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('track-panel-row-old-track')).not.toBeInTheDocument();
+  expect(mocks.push).not.toHaveBeenCalled();
+  expect(mocks.success).not.toHaveBeenCalled();
+  expect(mocks.error).not.toHaveBeenCalled();
+}
+
+async function openTracksSubmenu(name: string): Promise<void> {
+  fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
+  const trigger = await screen.findByText(name);
+  fireEvent.pointerMove(trigger);
+  fireEvent.keyDown(trigger, { key: 'ArrowRight' });
+}
+
+async function openMoveMenu(trackId: string): Promise<void> {
+  fireEvent.contextMenu(screen.getByTestId(`track-panel-row-${trackId}`));
+  fireEvent.keyDown(await screen.findByTestId('track-move-submenu'), { key: 'ArrowRight' });
 }
 
 describe('AudioEditorPage track mutation project isolation', () => {
@@ -311,5 +356,250 @@ describe('AudioEditorPage track mutation project isolation', () => {
     expect(screen.getByTestId('track-panel-row-next-track')).toBeInTheDocument();
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('discards a late track move after projectId changes', async () => {
+    const oldA = projects[OLD_PROJECT_ID]!.tracks[0]!;
+    const oldB = makeTrack('old-track-b', 'Old Beta');
+    projects[OLD_PROJECT_ID] = { ...projects[OLD_PROJECT_ID]!, tracks: [oldA, oldB] };
+    const pending = deferred<{ before: IProject; after: IProject } | null>();
+    mocks.moveTrack.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    await openMoveMenu('old-track');
+    fireEvent.click(await screen.findByTestId('track-move-down-menu'));
+    await waitFor(() => expect(mocks.moveTrack).toHaveBeenCalledWith(OLD_PROJECT_ID, 'old-track', 'down'));
+    await switchToNextProject(rerender);
+
+    const result = mutationResult([oldB, oldA]);
+    await act(async () => {
+      pending.resolve(result);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late track sort after projectId changes', async () => {
+    const oldA = projects[OLD_PROJECT_ID]!.tracks[0]!;
+    const oldB = makeTrack('old-track-b', 'Old Beta');
+    projects[OLD_PROJECT_ID] = { ...projects[OLD_PROJECT_ID]!, tracks: [oldA, oldB] };
+    const pending = deferred<{ before: IProject; after: IProject } | null>();
+    mocks.sortTracks.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    await openTracksSubmenu('Sort Tracks 轨道排序');
+    fireEvent.click(await screen.findByText('By Name 按名称'));
+    await waitFor(() => expect(mocks.sortTracks).toHaveBeenCalledWith(OLD_PROJECT_ID, 'name'));
+    await switchToNextProject(rerender);
+
+    const result = mutationResult([oldB, oldA]);
+    await act(async () => {
+      pending.resolve(result);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late track alignment after projectId changes', async () => {
+    const pending = deferred<{ before: IProject; after: IProject } | null>();
+    mocks.alignTracks.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    await openTracksSubmenu('Align Tracks 对齐轨道');
+    fireEvent.click(await screen.findByText('Align Together 对齐到一起'));
+    await waitFor(() => expect(mocks.alignTracks).toHaveBeenCalledWith(
+      OLD_PROJECT_ID, ['old-track'], 'together', expect.any(Object),
+    ));
+    await switchToNextProject(rerender);
+
+    const result = mutationResult(projects[OLD_PROJECT_ID]!.tracks);
+    await act(async () => {
+      pending.resolve(result);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late selected-track removal after projectId changes', async () => {
+    const pending = deferred<{ before: IProject; after: IProject } | null>();
+    mocks.removeTracks.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
+    fireEvent.click(await screen.findByText('Remove Tracks 移除轨道'));
+    await waitFor(() => expect(mocks.removeTracks).toHaveBeenCalledWith(OLD_PROJECT_ID, ['old-track']));
+    await switchToNextProject(rerender);
+
+    const result = mutationResult([]);
+    await act(async () => {
+      pending.resolve(result);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late bulk mute after projectId changes', async () => {
+    const pending = deferred<{ before: IProject; after: IProject } | null>();
+    mocks.setTracksMute.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.keyDown(window, { key: 'u', ctrlKey: true });
+    await waitFor(() => expect(mocks.setTracksMute).toHaveBeenCalledWith(OLD_PROJECT_ID, ['old-track'], true));
+    await switchToNextProject(rerender);
+
+    const result = mutationResult([{ ...projects[OLD_PROJECT_ID]!.tracks[0]!, muted: true }]);
+    await act(async () => {
+      pending.resolve(result);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late bulk pan after projectId changes', async () => {
+    const pending = deferred<{ before: IProject; after: IProject } | null>();
+    mocks.setTracksPan.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    await openTracksSubmenu('Pan 声像');
+    fireEvent.click(await screen.findByText('Left 左侧'));
+    await waitFor(() => expect(mocks.setTracksPan).toHaveBeenCalledWith(OLD_PROJECT_ID, ['old-track'], -1));
+    await switchToNextProject(rerender);
+
+    const result = mutationResult([{ ...projects[OLD_PROJECT_ID]!.tracks[0]!, pan: -1 }]);
+    await act(async () => {
+      pending.resolve(result);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late track rename after projectId changes', async () => {
+    const pending = deferred<IProject | null>();
+    mocks.updateTrack.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.click(await screen.findByTestId('track-rename-menu'));
+    const input = await screen.findByLabelText('轨道名称');
+    fireEvent.change(input, { target: { value: 'Late old rename' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(mocks.updateTrack).toHaveBeenCalledWith(
+      OLD_PROJECT_ID, 'old-track', { name: 'Late old rename' },
+    ));
+    await switchToNextProject(rerender);
+
+    const updated = {
+      ...projects[OLD_PROJECT_ID]!,
+      tracks: [{ ...projects[OLD_PROJECT_ID]!.tracks[0]!, name: 'Late old rename' }],
+    };
+    projects[OLD_PROJECT_ID] = updated;
+    await act(async () => {
+      pending.resolve(updated);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late track color update after projectId changes', async () => {
+    const pending = deferred<IProject | null>();
+    mocks.updateTrackAppearance.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.keyDown(await screen.findByTestId('track-color-submenu'), { key: 'ArrowRight' });
+    fireEvent.click(await screen.findByTestId('track-color-1'));
+    await waitFor(() => expect(mocks.updateTrackAppearance).toHaveBeenCalledWith(
+      OLD_PROJECT_ID, 'old-track', { type: 'color', colorIndex: 1 },
+    ));
+    await switchToNextProject(rerender);
+
+    const updated = {
+      ...projects[OLD_PROJECT_ID]!,
+      tracks: [{ ...projects[OLD_PROJECT_ID]!.tracks[0]!, color: '#66A3FF' }],
+    };
+    projects[OLD_PROJECT_ID] = updated;
+    await act(async () => {
+      pending.resolve(updated);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late track visualization update after projectId changes', async () => {
+    const pending = deferred<IProject | null>();
+    mocks.updateTrackAppearance.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.keyDown(await screen.findByTestId('track-visualization-submenu'), { key: 'ArrowRight' });
+    fireEvent.click(await screen.findByTestId('track-view-spectrogram'));
+    await waitFor(() => expect(mocks.updateTrackAppearance).toHaveBeenCalledWith(
+      OLD_PROJECT_ID, 'old-track', { type: 'viewMode', viewMode: 'spectrum' },
+    ));
+    await switchToNextProject(rerender);
+
+    const updated = {
+      ...projects[OLD_PROJECT_ID]!,
+      tracks: [{ ...projects[OLD_PROJECT_ID]!.tracks[0]!, viewMode: 'spectrum' as const }],
+    };
+    projects[OLD_PROJECT_ID] = updated;
+    await act(async () => {
+      pending.resolve(updated);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late bulk-mute reload after projectId changes', async () => {
+    const before = projects[OLD_PROJECT_ID]!;
+    const after = { ...before, tracks: [{ ...before.tracks[0]!, muted: true }] };
+    mocks.setTracksMute.mockResolvedValue({ before, after });
+    const pendingReload = deferred<IProject | null>();
+    mocks.getProject.mockImplementation(async (projectId: string) => {
+      if (projectId === OLD_PROJECT_ID) return pendingReload.promise;
+      return projects[projectId] ?? null;
+    });
+    const { rerender } = await renderOldProject();
+
+    fireEvent.keyDown(window, { key: 'u', ctrlKey: true });
+    await waitFor(() => expect(mocks.getProject).toHaveBeenCalledWith(OLD_PROJECT_ID));
+    await switchToNextProject(rerender);
+
+    projects[OLD_PROJECT_ID] = after;
+    await act(async () => {
+      pendingReload.resolve(after);
+      await pendingReload.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('suppresses a late track-command failure after projectId changes', async () => {
+    const oldA = projects[OLD_PROJECT_ID]!.tracks[0]!;
+    const oldB = makeTrack('old-track-b', 'Old Beta');
+    projects[OLD_PROJECT_ID] = { ...projects[OLD_PROJECT_ID]!, tracks: [oldA, oldB] };
+    const pending = deferred<{ before: IProject; after: IProject } | null>();
+    mocks.moveTrack.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    await openMoveMenu('old-track');
+    fireEvent.click(await screen.findByTestId('track-move-down-menu'));
+    await waitFor(() => expect(mocks.moveTrack).toHaveBeenCalledTimes(1));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.reject(new Error('late old move failure'));
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
   });
 });
