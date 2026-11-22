@@ -678,4 +678,62 @@ describe('ProjectService project activation races', () => {
     expect(projectService.getCurrentProject()?.id).toBe('project-b');
     expect(projectService.getCurrentProjectId()).toBe('project-b');
   });
+
+  it('discards an open read that resolves after its project is permanently deleted', async () => {
+    const originalA = { ...makeRecord('project-a'), id: 'project-a' };
+    const originalB = { ...makeRecord('project-b'), id: 'project-b' };
+    const state = mockPermanentDeleteState([originalA, originalB], []);
+    const releaseFirstRead = deferred<ProjectRecord | undefined>();
+    vi.mocked(audioDb.projects.get).mockImplementation((id) => {
+      const recordId = id as unknown as string;
+      if (recordId === 'project-a') return releaseFirstRead.promise;
+      const record = state.records.get(recordId);
+      return Dexie.Promise.resolve(record ? { ...record } : undefined);
+    });
+
+    const firstOpen = projectService.openProject('project-a');
+    const latest = await projectService.openProject('project-b');
+    await projectService.permanentlyDeleteProject('project-a');
+    releaseFirstRead.resolve(originalA);
+
+    await expect(firstOpen).resolves.toBeNull();
+    expect(latest?.id).toBe('project-b');
+    expect(projectService.getCurrentProject()?.id).toBe('project-b');
+    expect(projectService.getCurrentProjectId()).toBe('project-b');
+  });
+
+  it('discards an open read that resolves after clearing the trash', async () => {
+    const original = { ...makeRecord('project-a', 'deleted'), id: 'project-a' };
+    const state = mockPermanentDeleteState([original], []);
+    const releaseOpenRead = deferred<ProjectRecord | undefined>();
+    vi.mocked(audioDb.projects.get).mockImplementation(() => releaseOpenRead.promise);
+
+    const opening = projectService.openProject('project-a');
+    await projectService.clearDeletedProjects();
+    releaseOpenRead.resolve(original);
+
+    await expect(opening).resolves.toBeNull();
+    expect(state.records.size).toBe(0);
+    expect(projectService.getCurrentProject()).toBeNull();
+    expect(projectService.getCurrentProjectId()).toBeNull();
+  });
+
+  it('allows a pending open to finish when permanent deletion fails', async () => {
+    const original = { ...makeRecord('project-a'), id: 'project-a' };
+    mockPermanentDeleteState([original], []);
+    const releaseOpenRead = deferred<ProjectRecord | undefined>();
+    vi.mocked(audioDb.projects.get).mockImplementation(() => releaseOpenRead.promise);
+    vi.mocked(audioDb.projects.delete).mockImplementation(() => (
+      Dexie.Promise.reject(new Error('delete failed'))
+    ));
+
+    const opening = projectService.openProject('project-a');
+    await expect(projectService.permanentlyDeleteProject('project-a'))
+      .rejects.toThrow('delete failed');
+    releaseOpenRead.resolve(original);
+
+    await expect(opening).resolves.toMatchObject({ id: 'project-a' });
+    expect(projectService.getCurrentProject()?.id).toBe('project-a');
+    expect(projectService.getCurrentProjectId()).toBe('project-a');
+  });
 });

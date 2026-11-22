@@ -434,6 +434,7 @@ class ProjectService {
   private currentProject: IProject | null = null;
   private currentProjectId: string | null = null;
   private activationGeneration = 0;
+  private permanentDeletionGenerations = new Map<string, number>();
   private saveQueue: Promise<void> = Promise.resolve();
 
   constructor() {
@@ -713,8 +714,15 @@ class ProjectService {
 
   async openProject(id: string): Promise<IProject | null> {
     const activationGeneration = ++this.activationGeneration;
+    const deletionGeneration = this.permanentDeletionGenerations.get(id) ?? 0;
     const project = await this.getProject(id);
-    if (project && activationGeneration === this.activationGeneration) {
+    // A read that began before permanent deletion must not hand the closed
+    // project back to the page or make it active after the delete commits.
+    if (
+      !project
+      || deletionGeneration !== (this.permanentDeletionGenerations.get(id) ?? 0)
+    ) return null;
+    if (activationGeneration === this.activationGeneration) {
       this.currentProject = project;
       this.currentProjectId = id;
     }
@@ -789,13 +797,19 @@ class ProjectService {
         return projectBuffers;
       },
     );
+    // Invalidate pending opens only after the transaction commits. A failed
+    // deletion leaves the project readable and must not cancel a valid open.
+    this.permanentDeletionGenerations.set(
+      id,
+      (this.permanentDeletionGenerations.get(id) ?? 0) + 1,
+    );
+    if (this.currentProject?.id === id || this.currentProjectId === id) {
+      this.currentProject = null;
+      this.currentProjectId = null;
+    }
     // Evict only after the transaction commits so failed deletions remain readable.
     for (const buf of buffers) {
       audioEngine.evictBuffer(buf.id);
-    }
-    if (this.currentProject?.id === id) {
-      this.currentProject = null;
-      this.currentProjectId = null;
     }
   }
 
