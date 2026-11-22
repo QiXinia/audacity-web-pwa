@@ -21,6 +21,17 @@ const mocks = vi.hoisted(() => ({
   alignTracks: vi.fn(),
   updateTrack: vi.fn(),
   updateTrackAppearance: vi.fn(),
+  changeFormat: vi.fn(),
+  changeRate: vi.fn(),
+  resampleTracks: vi.fn(),
+  mixAndRender: vi.fn(),
+  stereoToMono: vi.fn(),
+  splitStereoToMono: vi.fn(),
+  swapStereo: vi.fn(),
+  splitStereo: vi.fn(),
+  makeStereo: vi.fn(),
+  loadMetadata: vi.fn(),
+  loadChannels: vi.fn(),
   push: vi.fn(),
   success: vi.fn(),
   error: vi.fn(),
@@ -79,7 +90,17 @@ vi.mock('@/services/projectService', () => ({
     alignTracks: mocks.alignTracks,
     updateTrack: mocks.updateTrack,
     updateTrackAppearance: mocks.updateTrackAppearance,
-    loadAudioChannels: vi.fn(async () => [new Float32Array(0)]),
+    changeTrackFormatOnTracks: mocks.changeFormat,
+    changeTrackRateOnTracks: mocks.changeRate,
+    resampleTracksOnTracks: mocks.resampleTracks,
+    mixAndRenderOnTracks: mocks.mixAndRender,
+    stereoToMonoOnTracks: mocks.stereoToMono,
+    splitStereoToMonoTracks: mocks.splitStereoToMono,
+    swapStereoChannelsOnTrack: mocks.swapStereo,
+    splitStereoTrackOnTrack: mocks.splitStereo,
+    makeStereoTrackFromMono: mocks.makeStereo,
+    loadAudioBufferMetadata: mocks.loadMetadata,
+    loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(0)),
   },
 }));
@@ -215,6 +236,10 @@ describe('AudioEditorPage track mutation project isolation', () => {
     };
     mocks.getProject.mockImplementation(async (projectId: string) => projects[projectId] ?? null);
     mocks.openProject.mockImplementation(async (projectId: string) => projects[projectId] ?? null);
+    mocks.loadChannels.mockResolvedValue([new Float32Array(0)]);
+    mocks.loadMetadata.mockImplementation(async (id: string) => ({
+      id, sampleRate: 44100, channels: 1, length: 0, duration: 0,
+    }));
   });
 
   afterEach(() => cleanup());
@@ -601,5 +626,252 @@ describe('AudioEditorPage track mutation project isolation', () => {
       await settleDeferred();
     });
     expectNextProjectIsolated();
+  });
+
+  it('discards a late track format conversion after projectId changes', async () => {
+    const pending = deferred<{ trackCount: number; clipCount: number }>();
+    mocks.changeFormat.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.keyDown(await screen.findByTestId('track-format-submenu'), { key: 'ArrowRight' });
+    fireEvent.click(await screen.findByTestId('track-format-int16'));
+    await waitFor(() => expect(mocks.changeFormat).toHaveBeenCalledWith(OLD_PROJECT_ID, ['old-track'], 'int16'));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.resolve({ trackCount: 1, clipCount: 0 });
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late track rate change after projectId changes', async () => {
+    const pending = deferred<{ trackCount: number; clipCount: number }>();
+    mocks.changeRate.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.keyDown(await screen.findByTestId('track-rate-submenu'), { key: 'ArrowRight' });
+    fireEvent.click(await screen.findByTestId('track-rate-48000'));
+    await waitFor(() => expect(mocks.changeRate).toHaveBeenCalledWith(OLD_PROJECT_ID, ['old-track'], 48000));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.resolve({ trackCount: 1, clipCount: 0 });
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late context-track resample after projectId changes', async () => {
+    const pending = deferred<{ trackCount: number; clipCount: number }>();
+    mocks.resampleTracks.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.click(await screen.findByTestId('track-resample'));
+    fireEvent.change(await screen.findByTestId('resample-input'), { target: { value: '22050' } });
+    fireEvent.click(screen.getByTestId('resample-confirm'));
+    await waitFor(() => expect(mocks.resampleTracks).toHaveBeenCalledWith(OLD_PROJECT_ID, ['old-track'], 22050));
+    await switchToNextProject(rerender);
+    expect(screen.queryByTestId('resample-dialog')).not.toBeInTheDocument();
+
+    await act(async () => {
+      pending.resolve({ trackCount: 1, clipCount: 0 });
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late selected-tracks resample after projectId changes', async () => {
+    const pending = deferred<{ trackCount: number; clipCount: number }>();
+    mocks.resampleTracks.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
+    fireEvent.click(await screen.findByText('Resample… 重采样…'));
+    fireEvent.change(await screen.findByTestId('resample-input'), { target: { value: '22050' } });
+    fireEvent.click(screen.getByTestId('resample-confirm'));
+    await waitFor(() => expect(mocks.resampleTracks).toHaveBeenCalledWith(OLD_PROJECT_ID, ['old-track'], 22050));
+    await switchToNextProject(rerender);
+    expect(screen.queryByTestId('resample-dialog')).not.toBeInTheDocument();
+
+    await act(async () => {
+      pending.resolve({ trackCount: 1, clipCount: 0 });
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late mix and render after projectId changes', async () => {
+    const pending = deferred<{ trackId: string; clipId: string; trackName: string; inputTrackCount: number }>();
+    mocks.mixAndRender.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    await openTracksSubmenu('Mix 混音');
+    fireEvent.click(await screen.findByText('Mix and Render 混音并渲染'));
+    await waitFor(() => expect(mocks.mixAndRender).toHaveBeenCalledWith(OLD_PROJECT_ID, [{ trackId: 'old-track', clips: [] }], false));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.resolve({ trackId: 'old-track', clipId: 'old-clip', trackName: 'Old Alpha', inputTrackCount: 1 });
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late Stereo To Mono after projectId changes', async () => {
+    const oldTrack = projects[OLD_PROJECT_ID]!.tracks[0]!;
+    oldTrack.channelCount = 2;
+    oldTrack.clips = [{
+      id: 'old-clip', audioBufferId: 'old-buffer', startTime: 0, offset: 0,
+      duration: 0.01, originalDuration: 0.01, stretchRatio: 1, gain: 0,
+      fadeIn: 0, fadeOut: 0, name: 'Old clip',
+    }];
+    mocks.loadChannels.mockResolvedValue([new Float32Array(4), new Float32Array(4)]);
+    const pending = deferred<number>();
+    mocks.stereoToMono.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
+    fireEvent.click(await screen.findByText('Stereo To Mono 立体声转单声道'));
+    await waitFor(() => expect(mocks.stereoToMono).toHaveBeenCalledWith(OLD_PROJECT_ID, expect.any(Array)));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.resolve(1);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late Split Stereo To Mono after projectId changes', async () => {
+    const oldTrack = projects[OLD_PROJECT_ID]!.tracks[0]!;
+    oldTrack.channelCount = 2;
+    oldTrack.clips = [{
+      id: 'old-clip', audioBufferId: 'old-buffer', startTime: 0, offset: 0,
+      duration: 0.01, originalDuration: 0.01, stretchRatio: 1, gain: 0,
+      fadeIn: 0, fadeOut: 0, name: 'Old clip',
+    }];
+    mocks.loadChannels.mockResolvedValue([new Float32Array(4), new Float32Array(4)]);
+    const pending = deferred<number>();
+    mocks.splitStereoToMono.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '轨道' }));
+    fireEvent.click(await screen.findByText('Split Stereo To Mono 立体声拆分为单声道'));
+    await waitFor(() => expect(mocks.splitStereoToMono).toHaveBeenCalledWith(OLD_PROJECT_ID, expect.any(Array)));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.resolve(2);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late stereo channel swap after projectId changes', async () => {
+    projects[OLD_PROJECT_ID]!.tracks[0]!.channelCount = 2;
+    const pending = deferred<number>();
+    mocks.swapStereo.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.click(await screen.findByTestId('track-swap-stereo-channels'));
+    await waitFor(() => expect(mocks.swapStereo).toHaveBeenCalledWith(OLD_PROJECT_ID, 'old-track'));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.resolve(1);
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late context stereo split after projectId changes', async () => {
+    projects[OLD_PROJECT_ID]!.tracks[0]!.channelCount = 2;
+    const pending = deferred<{ leftTrackId: string; rightTrackId: string; leftClipIds: Record<string, string>; rightClipIds: Record<string, string> }>();
+    mocks.splitStereo.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.click(await screen.findByTestId('track-split-stereo-lr'));
+    await waitFor(() => expect(mocks.splitStereo).toHaveBeenCalledWith(OLD_PROJECT_ID, 'old-track', 'lr'));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.resolve({ leftTrackId: 'old-left', rightTrackId: 'old-right', leftClipIds: {}, rightClipIds: {} });
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards a late Make Stereo after projectId changes', async () => {
+    const oldA = projects[OLD_PROJECT_ID]!.tracks[0]!;
+    const oldB = makeTrack('old-track-b', 'Old Beta');
+    oldA.channelCount = 1;
+    oldB.channelCount = 1;
+    projects[OLD_PROJECT_ID] = { ...projects[OLD_PROJECT_ID]!, tracks: [oldA, oldB] };
+    const pending = deferred<{ trackId: string; clipId: string | null }>();
+    mocks.makeStereo.mockReturnValue(pending.promise);
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    fireEvent.click(await screen.findByTestId('track-make-stereo'));
+    await waitFor(() => expect(mocks.makeStereo).toHaveBeenCalledWith(OLD_PROJECT_ID, 'old-track', 'old-track-b', expect.any(Array)));
+    await switchToNextProject(rerender);
+
+    await act(async () => {
+      pending.resolve({ trackId: 'old-stereo', clipId: null });
+      await pending.promise;
+      await settleDeferred();
+    });
+    expectNextProjectIsolated();
+  });
+
+  it('discards late media metadata for a reused track id after projectId changes', async () => {
+    const oldTrack = projects[OLD_PROJECT_ID]!.tracks[0]!;
+    oldTrack.clips = [{
+      id: 'old-clip', audioBufferId: 'old-buffer', startTime: 0, offset: 0,
+      duration: 0.01, originalDuration: 0.01, stretchRatio: 1, gain: 0,
+      fadeIn: 0, fadeOut: 0, name: 'Old clip',
+    }];
+    const pending = deferred<{ id: string; sampleRate: number; channels: number; length: number; duration: number }>();
+    mocks.loadMetadata.mockImplementation((id: string) => id === 'old-buffer'
+      ? pending.promise
+      : Promise.resolve({ id, sampleRate: 48000, channels: 1, length: 0, duration: 0 }));
+    const { rerender } = await renderOldProject();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    await waitFor(() => expect(mocks.loadMetadata).toHaveBeenCalledWith('old-buffer'));
+
+    const nextTrack = makeTrack('old-track', 'Next shared track');
+    nextTrack.channelCount = 1;
+    nextTrack.sampleRate = 48000;
+    projects[NEXT_PROJECT_ID] = { ...projects[NEXT_PROJECT_ID]!, tracks: [nextTrack] };
+    mocks.projectId = NEXT_PROJECT_ID;
+    rerender(<AudioEditorPage />);
+    expect(await screen.findByText('Next project')).toBeInTheDocument();
+    expect(await screen.findByTestId('track-panel-row-old-track')).toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-old-track'));
+    expect(await screen.findByTestId('track-rate-submenu')).toHaveTextContent('Rate: 48000 Hz');
+    await act(async () => {
+      pending.resolve({ id: 'old-buffer', sampleRate: 22050, channels: 2, length: 4, duration: 0.01 });
+      await pending.promise;
+      await settleDeferred();
+    });
+
+    expect(screen.getByTestId('track-rate-submenu')).toHaveTextContent('Rate: 48000 Hz');
   });
 });

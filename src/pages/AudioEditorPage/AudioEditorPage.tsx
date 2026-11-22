@@ -1719,6 +1719,9 @@ function AudioEditorPageContent() {
     }
 
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsMixingAndRendering(true);
     try {
       const targets: MixAndRenderTrackAudio[] = [];
@@ -1727,6 +1730,7 @@ function AudioEditorPageContent() {
         const clips: MixAndRenderTrackAudio['clips'] = [];
         for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
           const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!isCurrentAction()) return;
           if (!effective) throw new Error(`无法读取片段“${clip.name ?? clip.id}”`);
           clips.push({
             clipId: clip.id,
@@ -1737,8 +1741,10 @@ function AudioEditorPageContent() {
         targets.push({ trackId: track.id, clips });
       }
 
-      const result = await projectService.mixAndRenderOnTracks(project.id, targets, toNewTrack);
-      const updated = await projectService.getProject(project.id);
+      const result = await projectService.mixAndRenderOnTracks(projectId, targets, toNewTrack);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('混音结果不可用');
       setProject(updated);
       if (!toNewTrack) {
@@ -1755,6 +1761,7 @@ function AudioEditorPageContent() {
         ? `已混音渲染到新轨道「${result.trackName}」`
         : `已混音渲染为「${result.trackName}」`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Mix and Render failed', error);
       toast.error(error instanceof Error ? error.message : '混音渲染失败');
     } finally {
@@ -1774,19 +1781,24 @@ function AudioEditorPageContent() {
     }
 
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsResampling(true);
     try {
       const result = await projectService.resampleTracksOnTracks(
-        project.id,
+        projectId,
         mixAndRenderTrackIds,
         newRate,
       );
+      if (!isCurrentAction()) return;
       if (result.trackCount === 0) {
         setResampleDialogOpen(false);
         toast.success(`选中轨道已经是 ${newRate} Hz`);
         return;
       }
-      const updated = await projectService.getProject(project.id);
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('重采样结果不可用');
       setProject(updated);
       pushHistoryCmd({
@@ -1801,6 +1813,7 @@ function AudioEditorPageContent() {
         : `已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段重采样为 ${newRate} Hz`);
       if (result.fallbackWarning) toast.warning(result.fallbackWarning);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Resample failed', error);
       toast.error(error instanceof Error ? error.message : '重采样失败');
     } finally {
@@ -1811,6 +1824,9 @@ function AudioEditorPageContent() {
   async function convertStereoTracksToMono() {
     if (!project) return;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
       const targets: EchoTrackAudio[] = [];
       for (const track of project.tracks) {
@@ -1818,6 +1834,7 @@ function AudioEditorPageContent() {
         let hasStereo = false;
         for (const clip of track.clips) {
           const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!isCurrentAction()) return;
           if (!effective) throw new Error(`无法读取片段“${clip.name ?? clip.id}”`);
           if (effective.channels.length === 2) hasStereo = true;
           clips.push({
@@ -1828,12 +1845,15 @@ function AudioEditorPageContent() {
         }
         if (hasStereo) targets.push({ trackId: track.id, clips });
       }
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.warning('当前没有立体声轨道');
         return;
       }
-      await projectService.stereoToMonoOnTracks(project.id, targets);
-      const updated = await projectService.getProject(project.id);
+      await projectService.stereoToMonoOnTracks(projectId, targets);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (updated) {
         setProject(updated);
         pushHistoryCmd({
@@ -1844,6 +1864,7 @@ function AudioEditorPageContent() {
         });
       }
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Stereo To Mono failed', error);
       toast.error(error instanceof Error ? error.message : '立体声转单声道失败');
     }
@@ -1852,6 +1873,9 @@ function AudioEditorPageContent() {
   async function splitStereoTracksToMono() {
     if (!project) return;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
       const targets: EchoTrackAudio[] = [];
       for (const track of project.tracks) {
@@ -1859,6 +1883,7 @@ function AudioEditorPageContent() {
         let hasStereo = false;
         for (const clip of track.clips) {
           const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!isCurrentAction()) return;
           if (!effective) throw new Error(`无法读取片段“${clip.name ?? clip.id}”`);
           if (effective.channels.length === 2) hasStereo = true;
           clips.push({
@@ -1869,12 +1894,15 @@ function AudioEditorPageContent() {
         }
         if (hasStereo) targets.push({ trackId: track.id, clips });
       }
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.warning('当前没有立体声轨道');
         return;
       }
-      await projectService.splitStereoToMonoTracks(project.id, targets);
-      const updated = await projectService.getProject(project.id);
+      await projectService.splitStereoToMonoTracks(projectId, targets);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (updated) {
         setProject(updated);
         pushHistoryCmd({
@@ -1885,6 +1913,7 @@ function AudioEditorPageContent() {
         });
       }
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Split Stereo To Mono failed', error);
       toast.error(error instanceof Error ? error.message : '立体声拆分失败');
     }
@@ -1922,7 +1951,10 @@ function AudioEditorPageContent() {
 
   async function ensureTrackChannelCount(track: ITrack): Promise<void> {
     if (trackChannelCounts[track.id] !== undefined && trackSampleRates[track.id] !== undefined) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     if (track.clips.length === 0) {
+      if (!isCurrentAction()) return;
       setTrackChannelCounts((current) => ({ ...current, [track.id]: track.channelCount ?? 1 }));
       setTrackSampleRates((current) => ({
         ...current,
@@ -1934,6 +1966,7 @@ function AudioEditorPageContent() {
     try {
       const sourceIds = [...new Set(track.clips.map((clip) => clip.audioBufferId))];
       const metadata = await Promise.all(sourceIds.map((id) => projectService.loadAudioBufferMetadata(id)));
+      if (!isCurrentAction()) return;
       if (metadata.some((record) => !record)) throw new Error('audio metadata unavailable');
       const count = metadata.every((record) => record!.channels === 1)
         ? 1
@@ -1945,6 +1978,7 @@ function AudioEditorPageContent() {
         [track.id]: rates.length === 1 ? rates[0]! : 'mixed',
       }));
     } catch (error) {
+      if (!isCurrentAction()) return;
       // Keep the entry retryable instead of guessing channel or rate metadata.
       logger.warn('Unable to inspect track media metadata', error);
     }
@@ -1991,14 +2025,19 @@ function AudioEditorPageContent() {
     if (!prepareTrackChannelOperation()) return;
     const trackIds = getTrackContextTargetIds(trackId);
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsTrackChannelOperation(true);
     try {
-      const result = await projectService.changeTrackFormatOnTracks(project.id, trackIds, format);
+      const result = await projectService.changeTrackFormatOnTracks(projectId, trackIds, format);
+      if (!isCurrentAction()) return;
       if (result.trackCount === 0) {
         toast.success(`选中轨道已经是 ${getTrackSampleFormatLabel(format)}`);
         return;
       }
-      const updated = await projectService.getProject(project.id);
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('Track format 结果不可用');
       setProject(updated);
       pushHistoryCmd({
@@ -2009,6 +2048,7 @@ function AudioEditorPageContent() {
       });
       toast.success(`已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段转换为 ${getTrackSampleFormatLabel(format)}`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Change track format failed', error);
       toast.error(error instanceof Error ? error.message : '轨道格式转换失败');
     } finally {
@@ -2021,15 +2061,20 @@ function AudioEditorPageContent() {
     if (!project || !trackIds || isTrackChannelOperation || isResampling) return;
     if (!prepareTrackChannelOperation()) return;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsTrackChannelOperation(true);
     try {
-      const result = await projectService.changeTrackRateOnTracks(project.id, trackIds, newRate);
+      const result = await projectService.changeTrackRateOnTracks(projectId, trackIds, newRate);
+      if (!isCurrentAction()) return;
       if (result.trackCount === 0) {
         setTrackRateTargets(null);
         toast.success(`选中轨道已经是 ${newRate} Hz`);
         return;
       }
-      const updated = await projectService.getProject(project.id);
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('Track rate 结果不可用');
       setProject(updated);
       setTrackSampleRates((current) => {
@@ -2046,6 +2091,7 @@ function AudioEditorPageContent() {
       setTrackRateTargets(null);
       toast.success(`已更改 ${result.trackCount} 条轨道的速率；${result.clipCount} 个片段保留原始 PCM`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Change track rate failed', error);
       toast.error(error instanceof Error ? error.message : '轨道速率更改失败');
     } finally {
@@ -2058,15 +2104,20 @@ function AudioEditorPageContent() {
     if (!prepareTrackChannelOperation()) return;
     const trackIds = trackResampleTargets;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsResampling(true);
     try {
-      const result = await projectService.resampleTracksOnTracks(project.id, trackIds, newRate);
+      const result = await projectService.resampleTracksOnTracks(projectId, trackIds, newRate);
+      if (!isCurrentAction()) return;
       if (result.trackCount === 0) {
         setTrackResampleTargets(null);
         toast.success(`选中轨道已经是 ${newRate} Hz`);
         return;
       }
-      const updated = await projectService.getProject(project.id);
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('Resample track 结果不可用');
       setProject(updated);
       setTrackSampleRates((current) => {
@@ -2086,6 +2137,7 @@ function AudioEditorPageContent() {
         : `已将 ${result.trackCount} 条轨道的 ${result.clipCount} 个片段重采样为 ${newRate} Hz`);
       if (result.fallbackWarning) toast.warning(result.fallbackWarning);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Resample track context failed', error);
       toast.error(error instanceof Error ? error.message : '轨道重采样失败');
     } finally {
@@ -2097,14 +2149,19 @@ function AudioEditorPageContent() {
     if (!project || isTrackChannelOperation) return;
     if (!prepareTrackChannelOperation()) return;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsTrackChannelOperation(true);
     try {
-      const changed = await projectService.swapStereoChannelsOnTrack(project.id, trackId);
+      const changed = await projectService.swapStereoChannelsOnTrack(projectId, trackId);
+      if (!isCurrentAction()) return;
       if (changed === 0) {
         toast.success('空立体声轨道无需交换声道');
         return;
       }
-      const updated = await projectService.getProject(project.id);
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('声道交换结果不可用');
       setProject(updated);
       pushHistoryCmd({
@@ -2115,6 +2172,7 @@ function AudioEditorPageContent() {
       });
       toast.success(`已交换 ${changed} 个片段的左右声道`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Swap stereo channels failed', error);
       toast.error(error instanceof Error ? error.message : '声道交换失败');
     } finally {
@@ -2126,10 +2184,15 @@ function AudioEditorPageContent() {
     if (!project || isTrackChannelOperation) return;
     if (!prepareTrackChannelOperation()) return;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsTrackChannelOperation(true);
     try {
-      const result = await projectService.splitStereoTrackOnTrack(project.id, trackId, mode);
-      const updated = await projectService.getProject(project.id);
+      const result = await projectService.splitStereoTrackOnTrack(projectId, trackId, mode);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('立体声拆分结果不可用');
       setProject(updated);
       setSelectedTrackId(result.leftTrackId);
@@ -2143,6 +2206,7 @@ function AudioEditorPageContent() {
       });
       toast.success(mode === 'lr' ? '已拆分为左右声像单声道轨道' : '已拆分为居中单声道轨道');
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Split stereo track failed', error);
       toast.error(error instanceof Error ? error.message : '立体声拆分失败');
     } finally {
@@ -2155,6 +2219,9 @@ function AudioEditorPageContent() {
     setMakeStereoConfirmation(null);
     if (!prepareTrackChannelOperation()) return;
     const before = project;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsTrackChannelOperation(true);
     try {
       const targets: EchoTrackAudio[] = [];
@@ -2164,6 +2231,7 @@ function AudioEditorPageContent() {
         const clips: EchoTrackAudio['clips'] = [];
         for (const clip of [...track.clips].sort((left, right) => left.startTime - right.startTime)) {
           const effective = await loadEffectiveClipChannels(clip, project.sampleRate);
+          if (!isCurrentAction()) return;
           if (!effective) throw new Error(`无法读取片段“${clip.name ?? clip.id}”`);
           clips.push({
             clipId: clip.id,
@@ -2174,12 +2242,14 @@ function AudioEditorPageContent() {
         targets.push({ trackId, clips });
       }
       const result = await projectService.makeStereoTrackFromMono(
-        project.id,
+        projectId,
         leftTrackId,
         rightTrackId,
         targets,
       );
-      const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('Make stereo 结果不可用');
       setProject(updated);
       setSelectedTrackId(result.trackId);
@@ -2193,6 +2263,7 @@ function AudioEditorPageContent() {
       });
       toast.success('已将相邻单声道轨道合并为立体声');
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Make stereo track failed', error);
       toast.error(error instanceof Error ? error.message : '合并立体声失败');
     } finally {
