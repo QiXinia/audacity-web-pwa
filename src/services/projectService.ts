@@ -715,25 +715,27 @@ class ProjectService {
   async openProject(id: string): Promise<IProject | null> {
     const activationGeneration = ++this.activationGeneration;
     const deletionGeneration = this.permanentDeletionGenerations.get(id) ?? 0;
-    const project = await this.getProject(id);
-    // A read that began before permanent deletion must not hand the closed
-    // project back to the page or make it active after the delete commits.
+    const record = await audioDb.projects.get(id);
+    const project = record?.status === 'active' ? this.recordToProject(record) : null;
+    // A recycle-bin record is not an editable open target. A read that began
+    // before permanent deletion must not hand the closed project back either.
     if (
       !project
       || deletionGeneration !== (this.permanentDeletionGenerations.get(id) ?? 0)
     ) return null;
 
     // Deletion generations are local to this tab. Revalidate through IndexedDB
-    // so a permanent deletion committed by another tab also wins an in-flight
-    // open. Activation belongs to the same read transaction: if this read wins,
-    // the open linearizes before a later delete; if deletion wins, no stale
-    // project is returned or activated. Return and activate the exact record
-    // used by this final check rather than the potentially stale first read.
+    // so a soft or permanent deletion committed by another tab also wins an
+    // in-flight open. Activation belongs to the same read transaction: if this
+    // read wins, the open linearizes before a later delete; if deletion wins,
+    // no stale project is returned or activated. Return and activate the exact
+    // record used by this final check rather than the potentially stale first read.
     let validatedProject: IProject | null = null;
     const valid = await audioDb.transaction('r', audioDb.projects, async () => {
       const latest = await audioDb.projects.get(id);
       if (
         !latest
+        || latest.status !== 'active'
         || deletionGeneration !== (this.permanentDeletionGenerations.get(id) ?? 0)
       ) return false;
       validatedProject = this.recordToProject(latest);

@@ -762,4 +762,39 @@ describe('ProjectService project activation races', () => {
     expect(projectService.getCurrentProject()).toBe(opened);
     expect(projectService.getCurrentProjectId()).toBe('project-a');
   });
+
+  it('rejects a soft-deleted project instead of opening it from the recycle bin', async () => {
+    const deleted = {
+      ...makeRecord('trashed-project', 'deleted'),
+      id: 'project-a',
+    };
+    vi.mocked(audioDb.projects.get).mockImplementation(() => (
+      Dexie.Promise.resolve({ ...deleted })
+    ));
+
+    await expect(projectService.openProject('project-a')).resolves.toBeNull();
+    expect(projectService.getCurrentProject()).toBeNull();
+    expect(projectService.getCurrentProjectId()).toBeNull();
+  });
+
+  it('discards an open when soft deletion wins before final revalidation', async () => {
+    const active = {
+      ...makeRecord('active-before-open'),
+      id: 'project-a',
+      updatedAt: 100,
+    };
+    const deleted = {
+      ...active,
+      status: 'deleted' as const,
+      deletedAt: 150,
+      updatedAt: 200,
+    };
+    vi.mocked(audioDb.projects.get)
+      .mockImplementationOnce(() => Dexie.Promise.resolve({ ...active }))
+      .mockImplementationOnce(() => Dexie.Promise.resolve({ ...deleted }));
+
+    await expect(projectService.openProject('project-a')).resolves.toBeNull();
+    expect(projectService.getCurrentProject()).toBeNull();
+    expect(projectService.getCurrentProjectId()).toBeNull();
+  });
 });
