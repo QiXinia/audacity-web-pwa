@@ -1665,23 +1665,28 @@ function AudioEditorPageContent() {
   async function deleteTrack(trackId: string) {
     if (!project) return;
     const before = project;
-    await projectService.removeTrack(project.id, trackId);
-    const updated = await projectService.getProject(project.id);
-    if (updated) {
-      const fallbackTrackId = updated.tracks[0]?.id ?? null;
-      setProject(updated);
-      setSelectedTrackId((current) => current && updated.tracks.some((track) => track.id === current)
-        ? current
-        : fallbackTrackId);
-      setEffectsPanelTrackId((current) => current && updated.tracks.some((track) => track.id === current)
-        ? current
-        : fallbackTrackId);
-      pushHistoryCmd({
-        id: generateId(),
-        label: '删除轨道',
-        execute: () => updated,
-        undo: () => before,
-      });
+    try {
+      await projectService.removeTrack(project.id, trackId);
+      const updated = await projectService.getProject(project.id);
+      if (updated) {
+        const fallbackTrackId = updated.tracks[0]?.id ?? null;
+        setProject(updated);
+        setSelectedTrackId((current) => current && updated.tracks.some((track) => track.id === current)
+          ? current
+          : fallbackTrackId);
+        setEffectsPanelTrackId((current) => current && updated.tracks.some((track) => track.id === current)
+          ? current
+          : fallbackTrackId);
+        pushHistoryCmd({
+          id: generateId(),
+          label: '删除轨道',
+          execute: () => updated,
+          undo: () => before,
+        });
+      }
+    } catch (error) {
+      logger.error('Delete track failed', error);
+      toast.error(`删除轨道失败：${error instanceof Error ? error.message : '未知错误'}`);
     }
   }
 

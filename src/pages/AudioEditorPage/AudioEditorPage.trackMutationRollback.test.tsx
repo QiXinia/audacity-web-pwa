@@ -5,6 +5,7 @@ import type { IProject } from '@/types/project';
 const mocks = vi.hoisted(() => ({
   addTrack: vi.fn(),
   updateTrack: vi.fn(),
+  removeTrack: vi.fn(),
   push: vi.fn(),
   error: vi.fn(),
 }));
@@ -36,6 +37,7 @@ vi.mock('@/services/projectService', () => ({
     openProject: vi.fn(async () => mockProject),
     addTrack: mocks.addTrack,
     updateTrack: mocks.updateTrack,
+    removeTrack: mocks.removeTrack,
     loadAudioChannels: vi.fn(async () => [new Float32Array(0)]),
     loadAudioBuffer: vi.fn(async () => new Float32Array(0)),
   },
@@ -97,6 +99,12 @@ describe('AudioEditorPage track mutation rollback', () => {
       const newTrack = { ...mockProject.tracks[0]!, id: 'track-b', name: 'Beta' };
       mockProject = { ...mockProject, tracks: [...mockProject.tracks, newTrack] };
       return newTrack;
+    });
+    mocks.removeTrack.mockImplementation(async (_projectId: string, trackId: string) => {
+      mockProject = {
+        ...mockProject,
+        tracks: mockProject.tracks.filter((track) => track.id !== trackId),
+      };
     });
   });
 
@@ -178,6 +186,35 @@ describe('AudioEditorPage track mutation rollback', () => {
     expect(mocks.addTrack).toHaveBeenCalledTimes(2);
     expect(mocks.push).toHaveBeenCalledTimes(1);
     expect(mocks.push.mock.calls[0]![0].label).toBe('添加轨道');
+    expect(mocks.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles a rejected track deletion without history and commits a later retry', async () => {
+    mocks.removeTrack.mockRejectedValueOnce(new Error('delete storage unavailable'));
+    render(<AudioEditorPage />);
+    expect(await screen.findByText('Track rollback integration')).toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-track-a'));
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId('track-delete-menu'));
+    });
+
+    await waitFor(() => expect(mocks.error).toHaveBeenCalledWith(
+      '删除轨道失败：delete storage unavailable',
+    ));
+    expect(screen.getByTestId('track-panel-row-track-a')).toBeInTheDocument();
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(mocks.push).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-track-a'));
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId('track-delete-menu'));
+    });
+
+    expect(await screen.findByText('空工程')).toBeInTheDocument();
+    expect(mocks.removeTrack).toHaveBeenCalledTimes(2);
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push.mock.calls[0]![0].label).toBe('删除轨道');
     expect(mocks.error).toHaveBeenCalledTimes(1);
   });
 });
