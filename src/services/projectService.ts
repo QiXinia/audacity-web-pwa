@@ -517,7 +517,9 @@ class ProjectService {
     };
 
     const record = this.projectToRecord(project);
-    await audioDb.projects.put(record);
+    // Serialize the initial put with lifecycle mutations. Otherwise permanent
+    // deletion can commit first and this older create write can recreate it.
+    await this.enqueueProjectWrite(() => audioDb.projects.put(record));
 
     // A newer open/create request owns activation even if this write finishes later.
     if (activationGeneration === this.activationGeneration) {

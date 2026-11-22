@@ -351,6 +351,35 @@ describe('ProjectService ordered project saves', () => {
     expect(audioEngine.evictBuffer).toHaveBeenCalledWith('buffer-to-delete');
   });
 
+  it('does not let a pending new-project write recreate a permanently deleted project', async () => {
+    const state = mockPermanentDeleteState([], []);
+    const putReached = deferred();
+    const releasePut = deferred();
+    let pendingRecord: ProjectRecord | undefined;
+    vi.mocked(audioDb.projects.put).mockImplementation((record) => {
+      pendingRecord = record;
+      putReached.resolve();
+      return releasePut.promise.then(() => {
+        state.records.set(record.id, { ...record });
+        return record.id;
+      });
+    });
+
+    const creating = projectService.createProject('pending-create');
+    await putReached.promise;
+    const id = pendingRecord!.id;
+    const deleting = projectService.permanentlyDeleteProject(id);
+    // Let the unqueued legacy deletion run before the stalled creation write.
+    await Promise.resolve();
+    releasePut.resolve();
+    const [created] = await Promise.all([creating, deleting]);
+
+    expect(created.id).toBe(id);
+    expect(state.records.has(id)).toBe(false);
+    expect(mutableService.currentProject).toBeNull();
+    expect(mutableService.currentProjectId).toBeNull();
+  });
+
   it('does not resurrect projects while clearing the trash behind an older save', async () => {
     const state = mockPermanentDeleteState(
       [
@@ -650,9 +679,10 @@ describe('ProjectService project activation races', () => {
       id: 'project-a',
     });
     await putReached.promise;
-    const created = await projectService.createProject('new-project');
+    const creating = projectService.createProject('new-project');
     releasePut.resolve();
     await saving;
+    const created = await creating;
 
     expect(projectService.getCurrentProject()).toBe(created);
     expect(projectService.getCurrentProjectId()).toBe(created.id);
