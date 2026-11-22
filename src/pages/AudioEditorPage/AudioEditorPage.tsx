@@ -1658,10 +1658,7 @@ function AudioEditorPageContent() {
   }
 
   async function deleteTrack(trackId: string) {
-    if (!project || project.tracks.length <= 1) {
-      toast.warning('至少需要保留一条轨道');
-      return;
-    }
+    if (!project) return;
     const before = project;
     await projectService.removeTrack(project.id, trackId);
     const updated = await projectService.getProject(project.id);

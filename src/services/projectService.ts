@@ -1100,11 +1100,12 @@ class ProjectService {
       const project = this.currentProject?.id === projectId
         ? this.currentProject
         : await this.getProject(projectId);
-      if (!project || project.tracks.length <= 1) return;
+      if (!project) return;
       if (!project.tracks.some((track) => track.id === trackId)) return;
 
-      // Audacity keeps removed tracks alive through undo history. Remaining clips
-      // can also share a buffer with the removed track, so PCM cleanup belongs to
+      // Audacity permits an empty project after removing its only track. Keep
+      // removed tracks alive through undo history. Remaining clips can also
+      // share a buffer with the removed track, so PCM cleanup belongs to
       // permanent project deletion rather than this reversible track operation.
       const updatedProject: IProject = {
         ...project,

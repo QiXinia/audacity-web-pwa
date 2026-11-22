@@ -283,17 +283,19 @@ describe('ProjectService safe track removal', () => {
     expect(persistedTrackIds()).toEqual(['track-remove', 'track-keep']);
   });
 
-  it('keeps the last track and its audio untouched', async () => {
+  it('removes the only track while preserving every PCM buffer for undo', async () => {
     const before = installProject();
     before.tracks = [before.tracks[0]!];
     records.set(before.id, mutableService.projectToRecord(before));
 
     await projectService.removeTrack(before.id, 'track-remove');
 
-    expect(audioDb.projects.put).not.toHaveBeenCalled();
+    expect(persistedTrackIds()).toEqual([]);
+    expect(mutableService.currentProject?.tracks).toEqual([]);
+    expect(before.tracks.map((track) => track.id)).toEqual(['track-remove']);
+    expect([...buffers.keys()]).toEqual(['buffer-shared', 'buffer-unique', 'buffer-keep']);
     expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
-    expect(before.tracks).toHaveLength(1);
-    expect(buffers.size).toBe(3);
+    expect(audioEngine.evictBuffer).not.toHaveBeenCalled();
   });
 
   it('bulk-removes every selected track and label with independent undo snapshots', async () => {

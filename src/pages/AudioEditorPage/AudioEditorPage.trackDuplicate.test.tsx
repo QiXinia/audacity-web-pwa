@@ -169,6 +169,24 @@ describe('AudioEditorPage Track context Duplicate track', () => {
     expect(screen.queryByText('应用遇到错误')).not.toBeInTheDocument();
   });
 
+  it('deletes the only track into the official empty state with one undo step', async () => {
+    mockProject = { ...mockProject, tracks: [mockProject.tracks[0]!] };
+    await renderEditor();
+
+    fireEvent.contextMenu(screen.getByTestId('track-panel-row-a'));
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId('track-delete-menu'));
+    });
+
+    expect(await screen.findByText('空工程')).toBeInTheDocument();
+    expect(mocks.removeTrack).toHaveBeenCalledWith('track-duplicate-project', 'a');
+    expect(mockProject.tracks).toEqual([]);
+    expect(mocks.warning).not.toHaveBeenCalledWith('至少需要保留一条轨道');
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push.mock.calls[0]![0].label).toBe('删除轨道');
+    expect(mocks.push.mock.calls[0]![0].undo().tracks.map((track: ITrack) => track.id)).toEqual(['a']);
+  });
+
   it('disables the entry while a duplicate is already pending', async () => {
     let resolveDuplicate!: (track: ITrack) => void;
     mocks.duplicateTrack.mockImplementation(() => new Promise<ITrack>((resolve) => {
