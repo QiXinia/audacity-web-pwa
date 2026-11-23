@@ -340,6 +340,29 @@ describe('EffectPanel Audacity replacement controls', () => {
     await waitFor(() => expect(screen.getAllByRole('slider')[0]).toHaveFocus());
   });
 
+  it.each([
+    { outcome: 'null', result: null },
+    { outcome: 'void', result: undefined },
+  ])('restores the original effect-row focus when replacement returns $outcome', async ({ result }) => {
+    let finish!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<null | undefined>((resolve) => {
+      finish = () => resolve(result);
+    }));
+    renderPanel({ onReplaceEffect });
+    const menu = screen.getByRole('combobox', { name: '替换高通滤波' });
+    menu.focus();
+    fireEvent.change(menu, { target: { value: 'lowPass' } });
+    expect(onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'lowPass');
+    expect(menu).toBeDisabled();
+
+    await act(async () => { finish(); });
+    // jsdom retains focus on a disabled select; reproduce Chromium's dropped focus explicitly.
+    menu.blur();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开高通滤波参数' })).toHaveFocus());
+    expect(menu).toBeEnabled();
+  });
+
   it('displays persisted frequency values instead of falling back to zero', () => {
     renderPanel();
     fireEvent.click(screen.getByTestId('realtime-effect-fx-high-pass'));

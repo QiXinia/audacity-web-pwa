@@ -230,6 +230,8 @@ export default function EffectPanel({
       if (replacement) {
         pendingParameterFocusEffectId.current = replacement.id;
         setSelectedEffectId(replacement.id);
+      } else {
+        effectNameElements.current.get(effectId)?.focus();
       }
     } finally {
       effectMoveInFlight.current = false;
