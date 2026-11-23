@@ -196,7 +196,7 @@ export default function EffectPanel({
   } | null>(null);
   const addEffectButton = useRef<HTMLButtonElement>(null);
   const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
-  const restoreAddEffectButtonFocus = useRef(false);
+  const restoreAddEffectButtonFocus = useRef<string | null>(null);
   const parameterPanel = useRef<HTMLDivElement>(null);
   const pendingParameterFocus = useRef<{ trackId: string; effectId: string } | null>(null);
 
@@ -253,7 +253,7 @@ export default function EffectPanel({
         pendingParameterFocus.current = { trackId: track.id, effectId: added.id };
         setSelectedEffectId(added.id);
       } else {
-        restoreAddEffectButtonFocus.current = true;
+        restoreAddEffectButtonFocus.current = track.id;
       }
       setShowAddMenu(false);
     } finally {
@@ -263,7 +263,7 @@ export default function EffectPanel({
   }
 
   function closeAddMenu() {
-    restoreAddEffectButtonFocus.current = true;
+    restoreAddEffectButtonFocus.current = track.id;
     setShowAddMenu(false);
   }
 
@@ -319,10 +319,13 @@ export default function EffectPanel({
       addEffectOptions.current[0]?.focus();
       return;
     }
-    if (!restoreAddEffectButtonFocus.current) return;
-    restoreAddEffectButtonFocus.current = false;
-    addEffectButton.current?.focus();
-  }, [showAddMenu]);
+    const focusTrackId = restoreAddEffectButtonFocus.current;
+    if (focusTrackId === null) return;
+    restoreAddEffectButtonFocus.current = null;
+    if (focusTrackId === track.id) {
+      addEffectButton.current?.focus();
+    }
+  }, [showAddMenu, track.id]);
 
   useEffect(() => {
     if (isMovingEffect || !pendingGripFocusId.current) return;

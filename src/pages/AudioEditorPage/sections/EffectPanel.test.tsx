@@ -184,6 +184,48 @@ describe('EffectPanel parameter edits and newly added effects', () => {
   it.each([
     { outcome: 'null', result: null },
     { outcome: 'void', result: undefined },
+  ])('discards add-button focus restoration when an asynchronous $outcome result finishes on another track', async ({ result }) => {
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<null | undefined>((resolve) => {
+      finish = () => resolve(result);
+    }));
+    const emptyTrack = { ...track, effects: [] };
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-low-pass-b', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    const props = {
+      track: emptyTrack,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    expect(onAddEffect).toHaveBeenCalledWith('lowPass');
+
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.queryByText('选择效果类型')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+
+    view.rerender(<EffectPanel {...props} track={emptyTrack} />);
+    expect(document.body).toHaveFocus();
+  });
+
+  it.each([
+    { outcome: 'null', result: null },
+    { outcome: 'void', result: undefined },
   ])('restores the add button focus when adding returns $outcome without an effect', async ({ result }) => {
     const onAddEffect = vi.fn(async () => result);
     const props = renderPanel({ onAddEffect });
