@@ -483,4 +483,59 @@ describe('EffectPanel Audacity reorder controls', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: '拖动排序增益' })).toHaveFocus());
   });
+
+  it('restores effect-row focus after an asynchronous arrow-button reorder', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const down = screen.getByRole('button', { name: '下移增益' });
+    down.focus();
+    fireEvent.click(down);
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+    />);
+    // Chromium drops focus when the activated command becomes disabled during saving.
+    screen.getByRole('button', { name: '下移增益' }).blur();
+    finish();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+  });
+
+  it('restores effect-row focus after an asynchronous native drag reorder', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    const dataTransfer = {
+      effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn(() => 'fx-gain'),
+    };
+    grip.focus();
+    fireEvent.dragStart(grip, { dataTransfer });
+    fireEvent.drop(screen.getByTestId('realtime-effect-fx-reverb'), { dataTransfer });
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 2);
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[2]!, track.effects[0]!] }}
+    />);
+    screen.getByRole('button', { name: '拖动排序增益' }).blur();
+    finish();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+  });
 });

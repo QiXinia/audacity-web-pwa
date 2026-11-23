@@ -182,7 +182,9 @@ export default function EffectPanel({
   const [isMovingEffect, setIsMovingEffect] = useState(false);
   const effectMoveInFlight = useRef(false);
   const gripElements = useRef(new Map<string, HTMLButtonElement>());
+  const effectNameElements = useRef(new Map<string, HTMLButtonElement>());
   const pendingGripFocusId = useRef<string | null>(null);
+  const pendingEffectFocusId = useRef<string | null>(null);
   const addEffectButton = useRef<HTMLButtonElement>(null);
   const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
   const restoreAddEffectButtonFocus = useRef(false);
@@ -199,7 +201,11 @@ export default function EffectPanel({
       || toIndex >= track.effects.length
       || toIndex === fromIndex
     ) return;
-    if (restoreGripFocus) pendingGripFocusId.current = effectId;
+    if (restoreGripFocus) {
+      pendingGripFocusId.current = effectId;
+    } else {
+      pendingEffectFocusId.current = effectId;
+    }
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -305,6 +311,15 @@ export default function EffectPanel({
     const effectId = pendingGripFocusId.current;
     pendingGripFocusId.current = null;
     gripElements.current.get(effectId)?.focus();
+  }, [activeEffects, isMovingEffect]);
+
+  useEffect(() => {
+    if (isMovingEffect || !pendingEffectFocusId.current) return;
+    const effectId = pendingEffectFocusId.current;
+    const effectName = effectNameElements.current.get(effectId);
+    if (!effectName) return;
+    pendingEffectFocusId.current = null;
+    effectName.focus();
   }, [activeEffects, isMovingEffect]);
 
   const resolvedSelectedEffectId = activeEffects.some((effect) => effect.id === selectedEffectId)
@@ -486,6 +501,10 @@ export default function EffectPanel({
                     if (node) gripElements.current.set(effect.id, node);
                     else gripElements.current.delete(effect.id);
                   }}
+                  nameRef={(node) => {
+                    if (node) effectNameElements.current.set(effect.id, node);
+                    else effectNameElements.current.delete(effect.id);
+                  }}
                 />
               ))}
             </div>
@@ -564,6 +583,7 @@ function EffectChainItem({
   onDropEffect,
   onReplace,
   gripRef,
+  nameRef,
 }: {
   effect: IEffect;
   index: number;
@@ -578,6 +598,7 @@ function EffectChainItem({
   onDropEffect: (effectId: string, toIndex: number) => void;
   onReplace: (type: EffectType) => void;
   gripRef: (node: HTMLButtonElement | null) => void;
+  nameRef: (node: HTMLButtonElement | null) => void;
 }) {
   const icon = EFFECT_CATALOG.find((e) => e.type === effect.type)?.icon ?? <Sliders className="size-3.5" />;
 
@@ -635,6 +656,7 @@ function EffectChainItem({
         <GripVertical className="size-3 text-muted-foreground/70" />
       </Button>
       <button
+        ref={nameRef}
         type="button"
         aria-label={`打开${label}参数`}
         title={`打开${label}参数`}
