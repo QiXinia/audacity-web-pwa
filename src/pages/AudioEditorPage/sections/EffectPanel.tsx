@@ -42,7 +42,7 @@ import type { ITrack, IEffect, EffectType } from '@/types/project';
 interface EffectPanelProps {
   track: ITrack;
   onClose: () => void;
-  onAddEffect: (type: EffectType) => void | Promise<void>;
+  onAddEffect: (type: EffectType) => IEffect | null | void | Promise<IEffect | null | void>;
   onUpdateEffect: (effectId: string, params: Record<string, number>) => void;
   onToggleBypass: (effectId: string) => void | Promise<void>;
   onRemoveEffect: (effectId: string) => void | Promise<void>;
@@ -209,7 +209,8 @@ export default function EffectPanel({
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
-      await onAddEffect(type);
+      const added = await onAddEffect(type);
+      if (added) setSelectedEffectId(added.id);
       setShowAddMenu(false);
     } finally {
       effectMoveInFlight.current = false;
@@ -260,8 +261,7 @@ export default function EffectPanel({
 
   function handleParamChange(key: string, value: number) {
     if (!selectedEffect) return;
-    const newParams = { ...selectedEffect.params, [key]: value };
-    onUpdateEffect(selectedEffect.id, newParams);
+    onUpdateEffect(selectedEffect.id, { [key]: value });
   }
 
   return (

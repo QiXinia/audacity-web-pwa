@@ -7234,14 +7234,14 @@ function AudioEditorPageContent() {
   }
 
   // Effect operations
-  async function addEffect(trackId: string, type: EffectType) {
-    if (!project) return;
+  async function addEffect(trackId: string, type: EffectType): Promise<IEffect | null> {
+    if (!project) return null;
     const projectId = project.id;
     const generation = projectLoadGenerationRef.current;
     const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
       const result = await projectService.addEffectToTrack(projectId, trackId, type);
-      if (!result || !isCurrentAction()) return;
+      if (!result || !isCurrentAction()) return null;
       setProject(result.after);
       pushHistoryCmd({
         id: generateId(),
@@ -7249,10 +7249,12 @@ function AudioEditorPageContent() {
         execute: () => result.after,
         undo: () => result.before,
       }, result.before);
+      return result.effect;
     } catch (error) {
-      if (!isCurrentAction()) return;
+      if (!isCurrentAction()) return null;
       logger.error('Add realtime effect failed', error);
       toast.error(`添加效果失败：${error instanceof Error ? error.message : '未知错误'}`);
+      return null;
     }
   }
 

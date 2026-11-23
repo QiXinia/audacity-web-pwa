@@ -31,6 +31,56 @@ function renderPanel(overrides: Partial<Parameters<typeof EffectPanel>[0]> = {})
   return props;
 }
 
+describe('EffectPanel parameter edits and newly added effects', () => {
+  it('keeps independent rapid parameter edits instead of restoring stale sibling values', () => {
+    const twoParamTrack: ITrack = {
+      ...track,
+      effects: [
+        { id: 'fx-high-pass', type: 'highPass', bypassed: false, params: { frequency: 80, q: 0.707 } },
+      ],
+    };
+    let persisted = { frequency: 80, q: 0.707 };
+    const onUpdateEffect = vi.fn((_effectId: string, params: Record<string, number>) => {
+      persisted = { ...persisted, ...params };
+    });
+    renderPanel({ track: twoParamTrack, onUpdateEffect });
+
+    const sliders = screen.getAllByRole('slider');
+    expect(sliders).toHaveLength(2);
+    fireEvent.keyDown(sliders[0]!, { key: 'ArrowRight' });
+    expect(persisted.frequency).toBe(81);
+    fireEvent.keyDown(sliders[1]!, { key: 'End' });
+
+    expect(onUpdateEffect).toHaveBeenNthCalledWith(1, 'fx-high-pass', { frequency: 81 });
+    expect(onUpdateEffect).toHaveBeenNthCalledWith(2, 'fx-high-pass', { q: 10 });
+    expect(persisted).toEqual({ frequency: 81, q: 10 });
+  });
+
+  it('selects the effect returned by a successful add so its parameters open immediately', async () => {
+    const added = {
+      id: 'fx-low-pass-new', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    const emptyTrack = { ...track, effects: [] };
+    const onAddEffect = vi.fn();
+    onAddEffect.mockResolvedValue(added);
+    const props = {
+      track: emptyTrack,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    await waitFor(() => expect(onAddEffect).toHaveBeenCalledWith('lowPass'));
+
+    view.rerender(<EffectPanel {...props} track={{ ...emptyTrack, effects: [added] }} />);
+    expect(await screen.findByText('8000Hz')).toBeInTheDocument();
+    expect(screen.getByTestId('realtime-effect-fx-low-pass-new')).toHaveClass('border-primary');
+  });
+});
+
 describe('EffectPanel Audacity replacement controls', () => {
   it('replaces an effect from its accessible dropdown and selects the returned effect', async () => {
     const replacement = { id: 'fx-low-pass-new', type: 'lowPass' as const, bypassed: false, params: { frequency: 8000, q: 0.7 } };
