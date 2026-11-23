@@ -138,6 +138,49 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     await waitFor(() => expect(screen.getAllByRole('slider')[0]).toHaveFocus());
   });
 
+  it('discards pending add-parameter focus when the asynchronous add finishes on another track', async () => {
+    const added = {
+      id: 'fx-low-pass-cross-track', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<typeof added>((resolve) => {
+      finish = () => resolve(added);
+    }));
+    const emptyTrack = { ...track, effects: [] };
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-low-pass-b', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    const props = {
+      track: emptyTrack,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    expect(onAddEffect).toHaveBeenCalledWith('lowPass');
+
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+
+    view.rerender(<EffectPanel {...props} track={{ ...emptyTrack, effects: [added] }} />);
+
+    expect(document.body).toHaveFocus();
+  });
+
   it.each([
     { outcome: 'null', result: null },
     { outcome: 'void', result: undefined },
@@ -442,6 +485,50 @@ describe('EffectPanel Audacity replacement controls', () => {
     />);
     expect(await screen.findByText('0.30s')).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByRole('slider')[0]).toHaveFocus());
+  });
+
+  it('discards pending replacement-parameter focus when replacement finishes on another track', async () => {
+    const replacement = {
+      id: 'fx-delay-cross-track', type: 'delay' as const, bypassed: false,
+      params: { time: 0.3, feedback: 0.4, wet: 0.3 },
+    };
+    let finish!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<typeof replacement>((resolve) => {
+      finish = () => resolve(replacement);
+    }));
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-low-pass-b', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect,
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'delay' } });
+    expect(onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'delay');
+
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[0]!, replacement, track.effects[2]!] }}
+    />);
+
+    expect(document.body).toHaveFocus();
   });
 
   it.each([

@@ -198,7 +198,7 @@ export default function EffectPanel({
   const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
   const restoreAddEffectButtonFocus = useRef(false);
   const parameterPanel = useRef<HTMLDivElement>(null);
-  const pendingParameterFocusEffectId = useRef<string | null>(null);
+  const pendingParameterFocus = useRef<{ trackId: string; effectId: string } | null>(null);
 
   async function handleMoveEffect(effectId: string, toIndex: number, restoreGripFocus = false) {
     if (effectMoveInFlight.current) return;
@@ -232,7 +232,7 @@ export default function EffectPanel({
     try {
       const replacement = await onReplaceEffect(effectId, type);
       if (replacement) {
-        pendingParameterFocusEffectId.current = replacement.id;
+        pendingParameterFocus.current = { trackId: track.id, effectId: replacement.id };
         setSelectedEffectId(replacement.id);
       } else {
         effectNameElements.current.get(effectId)?.focus();
@@ -250,7 +250,7 @@ export default function EffectPanel({
     try {
       const added = await onAddEffect(type);
       if (added) {
-        pendingParameterFocusEffectId.current = added.id;
+        pendingParameterFocus.current = { trackId: track.id, effectId: added.id };
         setSelectedEffectId(added.id);
       } else {
         restoreAddEffectButtonFocus.current = true;
@@ -411,13 +411,18 @@ export default function EffectPanel({
   }, [selectedEffect]);
 
   useEffect(() => {
-    const effectId = pendingParameterFocusEffectId.current;
-    if (!effectId || isMovingEffect || resolvedSelectedEffectId !== effectId) return;
+    const pending = pendingParameterFocus.current;
+    if (!pending || isMovingEffect) return;
+    if (pending.trackId !== track.id) {
+      pendingParameterFocus.current = null;
+      return;
+    }
+    if (resolvedSelectedEffectId !== pending.effectId) return;
     const firstSlider = parameterPanel.current?.querySelector<HTMLElement>('[role="slider"]');
     if (!firstSlider) return;
-    pendingParameterFocusEffectId.current = null;
+    pendingParameterFocus.current = null;
     firstSlider.focus();
-  }, [activeEffects, effectDef, isMovingEffect, resolvedSelectedEffectId]);
+  }, [activeEffects, effectDef, isMovingEffect, resolvedSelectedEffectId, track.id]);
 
   function getEffectLabel(type: EffectType): string {
     return EFFECT_CATALOG.find((e) => e.type === type)?.label || type;
