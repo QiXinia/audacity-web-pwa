@@ -154,6 +154,25 @@ describe('EffectPanel Audacity track effects power', () => {
   });
 });
 
+describe('EffectPanel Audacity empty effect guidance', () => {
+  it('shows non-destructive guidance and the official video link for an empty chain', () => {
+    renderPanel({ track: { ...track, effects: [] } });
+
+    expect(screen.getByText('实时效果为非破坏性处理，可随时更改。')).toBeInTheDocument();
+    const video = screen.getByRole('link', { name: '观看介绍视频' });
+    expect(video).toHaveAttribute('href', 'https://www.audacityteam.org/realtime-video');
+    expect(video).toHaveAttribute('target', '_blank');
+    expect(video).toHaveAttribute('rel', expect.stringContaining('noreferrer'));
+  });
+
+  it('hides the empty-chain guidance as soon as effects exist', () => {
+    renderPanel();
+
+    expect(screen.queryByText('实时效果为非破坏性处理，可随时更改。')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '观看介绍视频' })).not.toBeInTheDocument();
+  });
+});
+
 describe('EffectPanel Audacity replacement controls', () => {
   it('replaces an effect from its accessible dropdown and selects the returned effect', async () => {
     const replacement = { id: 'fx-low-pass-new', type: 'lowPass' as const, bypassed: false, params: { frequency: 8000, q: 0.7 } };

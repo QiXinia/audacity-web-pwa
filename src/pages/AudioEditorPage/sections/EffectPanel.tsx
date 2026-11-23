@@ -363,9 +363,23 @@ export default function EffectPanel({
         {/* Effect Chain */}
         <div className="flex-1 overflow-y-auto p-2">
           {activeEffects.length === 0 ? (
-            <div className="py-8 text-center text-xs text-muted-foreground">
-              <div className="mb-2">暂无效果器</div>
-              <div className="text-[10px]">点击上方按钮添加音频效果</div>
+            <div className="space-y-4 px-2 py-8 text-xs text-muted-foreground">
+              <div className="text-center">
+                <div className="mb-2">暂无效果器</div>
+                <div className="text-[10px]">点击上方按钮添加音频效果</div>
+              </div>
+              <p className="text-[11px] leading-5 text-foreground/80">
+                实时效果为非破坏性处理，可随时更改。
+              </p>
+              <a
+                href="https://www.audacityteam.org/realtime-video"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex rounded-sm text-[11px] text-primary underline underline-offset-4 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                title="在新标签页观看 Audacity 实时效果介绍视频"
+              >
+                观看介绍视频
+              </a>
             </div>
           ) : (
             <div className="space-y-1.5">
