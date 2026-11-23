@@ -564,20 +564,30 @@ function EffectChainItem({
       </button>
       <select
         aria-label={`替换${label}`}
-        title={`将${label}替换为其他效果；选择当前类型会重置参数`}
+        title={`将${label}替换为其他效果或将其移除；选择当前类型会重置参数`}
         className="h-6 w-6 shrink-0 cursor-pointer rounded bg-muted text-[9px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
         value=""
         disabled={isMoving}
         onClick={(event) => event.stopPropagation()}
         onChange={(event) => {
           event.stopPropagation();
-          if (event.target.value) onReplace(event.target.value as EffectType);
+          const value = event.target.value;
+          if (value === '__remove__') {
+            onRemove();
+          } else if (value) {
+            onReplace(value as EffectType);
+          }
         }}
       >
         <option value="" disabled>▼</option>
-        {EFFECT_CATALOG.map((definition) => (
-          <option key={definition.type} value={definition.type}>{definition.label}</option>
-        ))}
+        <option value="__remove__">移除效果</option>
+        <optgroup label="替换为">
+          {EFFECT_CATALOG.map((definition) => (
+            <option key={definition.type} value={definition.type}>
+              {definition.type === effect.type ? `✓ ${definition.label}` : definition.label}
+            </option>
+          ))}
+        </optgroup>
       </select>
       <Tooltip>
         <TooltipTrigger asChild>

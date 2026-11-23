@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import EffectPanel from '@/pages/AudioEditorPage/sections/EffectPanel';
 import type { ITrack } from '@/types/project';
@@ -170,6 +170,27 @@ describe('EffectPanel Audacity empty effect guidance', () => {
 
     expect(screen.queryByText('实时效果为非破坏性处理，可随时更改。')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '观看介绍视频' })).not.toBeInTheDocument();
+  });
+});
+
+describe('EffectPanel Audacity replacement menu commands', () => {
+  it('marks the current effect in the replacement menu', () => {
+    renderPanel();
+
+    const menu = screen.getByRole('combobox', { name: '替换高通滤波' });
+    expect(within(menu).getByRole('option', { name: '✓ 高通滤波' })).toBeInTheDocument();
+    expect(within(menu).getByRole('option', { name: '增益' })).toBeInTheDocument();
+  });
+
+  it('removes the effect from the same dropdown without invoking replacement', async () => {
+    const props = renderPanel();
+
+    const menu = screen.getByRole('combobox', { name: '替换高通滤波' });
+    expect(within(menu).getByRole('option', { name: '移除效果' })).toBeInTheDocument();
+    fireEvent.change(menu, { target: { value: '__remove__' } });
+
+    await waitFor(() => expect(props.onRemoveEffect).toHaveBeenCalledWith('fx-high-pass'));
+    expect(props.onReplaceEffect).not.toHaveBeenCalled();
   });
 });
 
