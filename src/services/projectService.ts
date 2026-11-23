@@ -7446,6 +7446,38 @@ class ProjectService {
     return result ? { ...result, fromIndex, toIndex } : null;
   }
 
+  /** Audacity ReplaceState: create a fresh active state in the same chain slot. */
+  async replaceEffectOnTrack(
+    projectId: string,
+    trackId: string,
+    effectId: string,
+    type: EffectType,
+  ): Promise<{ before: IProject; after: IProject; index: number; replacement: IEffect } | null> {
+    let index = -1;
+    let replacement: IEffect | null = null;
+    const result = await this.editLatestProject(projectId, (project) => {
+      const track = project.tracks.find((candidate) => candidate.id === trackId);
+      if (!track) return project;
+      index = track.effects.findIndex((effect) => effect.id === effectId);
+      if (index < 0) return project;
+      replacement = {
+        id: generateId(),
+        type,
+        bypassed: false,
+        params: this.getDefaultEffectParams(type),
+      };
+      const effects = [...track.effects];
+      effects[index] = replacement;
+      return {
+        ...project,
+        tracks: project.tracks.map((candidate) => (
+          candidate.id === trackId ? { ...candidate, effects } : candidate
+        )),
+      };
+    });
+    return result && replacement ? { ...result, index, replacement } : null;
+  }
+
   async addEffectToTrack(
     projectId: string,
     trackId: string,

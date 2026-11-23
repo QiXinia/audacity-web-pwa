@@ -7307,6 +7307,33 @@ function AudioEditorPageContent() {
     }
   }
 
+  async function replaceEffect(trackId: string, effectId: string, type: EffectType): Promise<IEffect | null> {
+    if (!project) return null;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
+    try {
+      const result = await projectService.replaceEffectOnTrack(projectId, trackId, effectId, type);
+      if (!result || !isCurrentAction()) return null;
+      const previousType = result.before.tracks
+        .find((track) => track.id === trackId)?.effects
+        .find((effect) => effect.id === effectId)?.type;
+      setProject(result.after);
+      pushHistoryCmd({
+        id: generateId(),
+        label: `将${previousType ? getEffectLabel(previousType) : '效果'}替换为${getEffectLabel(type)}`,
+        execute: () => result.after,
+        undo: () => result.before,
+      }, result.before);
+      return result.replacement;
+    } catch (error) {
+      if (!isCurrentAction()) return null;
+      logger.error('Replace realtime effect failed', error);
+      toast.error(`替换效果失败：${error instanceof Error ? error.message : '未知错误'}`);
+      return null;
+    }
+  }
+
   // Selection handling from canvas
   function handleSelectionChange(start: number, end: number, trackId?: string) {
     if (trackId) setSelectedTrackId(trackId);
@@ -10250,6 +10277,9 @@ function AudioEditorPageContent() {
               }
               onMoveEffect={(effectId, toIndex) =>
                 moveEffect(effectsPanelTrackId, effectId, toIndex)
+              }
+              onReplaceEffect={(effectId, type) =>
+                replaceEffect(effectsPanelTrackId, effectId, type)
               }
             />
           )}

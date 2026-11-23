@@ -24,11 +24,55 @@ function renderPanel(overrides: Partial<Parameters<typeof EffectPanel>[0]> = {})
     onToggleBypass: vi.fn(),
     onRemoveEffect: vi.fn(),
     onMoveEffect: vi.fn(),
+    onReplaceEffect: vi.fn(),
     ...overrides,
   };
   render(<EffectPanel {...props} />);
   return props;
 }
+
+describe('EffectPanel Audacity replacement controls', () => {
+  it('replaces an effect from its accessible dropdown and selects the returned effect', async () => {
+    const replacement = { id: 'fx-low-pass-new', type: 'lowPass' as const, bypassed: false, params: { frequency: 8000, q: 0.7 } };
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(async () => replacement),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'lowPass' } });
+    expect(props.onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'lowPass');
+
+    const updatedTrack = {
+      ...track,
+      effects: [track.effects[0]!, replacement, track.effects[2]!],
+    };
+    await waitFor(() => expect(props.onReplaceEffect).toHaveBeenCalledTimes(1));
+    view.rerender(<EffectPanel {...props} track={updatedTrack} />);
+    expect(await screen.findByText('8000Hz')).toBeInTheDocument();
+  });
+
+  it('displays persisted frequency values instead of falling back to zero', () => {
+    renderPanel();
+    fireEvent.click(screen.getByTestId('realtime-effect-fx-high-pass'));
+    expect(screen.getByText('80Hz')).toBeInTheDocument();
+    expect(screen.queryByText('0Hz')).not.toBeInTheDocument();
+  });
+
+  it('locks replacement while an asynchronous chain mutation is saving', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = renderPanel({ onMoveEffect });
+    fireEvent.click(screen.getByRole('button', { name: '下移增益' }));
+    const replacement = screen.getByRole('combobox', { name: '替换高通滤波' });
+    expect(replacement).toBeDisabled();
+    fireEvent.change(replacement, { target: { value: 'lowPass' } });
+    expect(props.onReplaceEffect).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(replacement).toBeEnabled());
+  });
+});
 
 describe('EffectPanel Audacity reorder controls', () => {
   it('moves effects with accessible up/down commands and disables list boundaries', async () => {

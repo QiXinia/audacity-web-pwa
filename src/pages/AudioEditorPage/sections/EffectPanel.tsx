@@ -47,6 +47,7 @@ interface EffectPanelProps {
   onToggleBypass: (effectId: string) => void;
   onRemoveEffect: (effectId: string) => void;
   onMoveEffect: (effectId: string, toIndex: number) => void | Promise<void>;
+  onReplaceEffect: (effectId: string, type: EffectType) => IEffect | null | void | Promise<IEffect | null | void>;
 }
 
 const EFFECT_CATALOG: Array<{
@@ -79,9 +80,9 @@ const EFFECT_CATALOG: Array<{
     label: '高通滤波',
     icon: <Waves className="size-4" />,
     description: '去除低频部分',
-    defaultParams: { cutoff: 80, q: 0.707 },
+    defaultParams: { frequency: 80, q: 0.707 },
     paramDefs: [
-      { key: 'cutoff', label: '截止频率', min: 20, max: 20000, step: 1, unit: 'Hz' },
+      { key: 'frequency', label: '截止频率', min: 20, max: 20000, step: 1, unit: 'Hz' },
       { key: 'q', label: 'Q值', min: 0.1, max: 10, step: 0.1 },
     ],
   },
@@ -90,9 +91,9 @@ const EFFECT_CATALOG: Array<{
     label: '低通滤波',
     icon: <BarChart3 className="size-4" />,
     description: '去除高频部分',
-    defaultParams: { cutoff: 8000, q: 0.707 },
+    defaultParams: { frequency: 8000, q: 0.707 },
     paramDefs: [
-      { key: 'cutoff', label: '截止频率', min: 20, max: 20000, step: 1, unit: 'Hz' },
+      { key: 'frequency', label: '截止频率', min: 20, max: 20000, step: 1, unit: 'Hz' },
       { key: 'q', label: 'Q值', min: 0.1, max: 10, step: 0.1 },
     ],
   },
@@ -169,6 +170,7 @@ export default function EffectPanel({
   onToggleBypass,
   onRemoveEffect,
   onMoveEffect,
+  onReplaceEffect,
 }: EffectPanelProps) {
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [selectedEffectId, setSelectedEffectId] = useState<string | null>(
@@ -183,6 +185,19 @@ export default function EffectPanel({
     setIsMovingEffect(true);
     try {
       await onMoveEffect(effectId, toIndex);
+    } finally {
+      effectMoveInFlight.current = false;
+      setIsMovingEffect(false);
+    }
+  }
+
+  async function handleReplaceEffect(effectId: string, type: EffectType) {
+    if (effectMoveInFlight.current) return;
+    effectMoveInFlight.current = true;
+    setIsMovingEffect(true);
+    try {
+      const replacement = await onReplaceEffect(effectId, type);
+      if (replacement) setSelectedEffectId(replacement.id);
     } finally {
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
@@ -290,6 +305,7 @@ export default function EffectPanel({
                   onRemove={() => onRemoveEffect(effect.id)}
                   onMove={(toIndex) => handleMoveEffect(effect.id, toIndex)}
                   onDropEffect={(effectId, toIndex) => handleMoveEffect(effectId, toIndex)}
+                  onReplace={(type) => handleReplaceEffect(effect.id, type)}
                 />
               ))}
             </div>
@@ -365,6 +381,7 @@ function EffectChainItem({
   onRemove,
   onMove,
   onDropEffect,
+  onReplace,
 }: {
   effect: IEffect;
   index: number;
@@ -377,6 +394,7 @@ function EffectChainItem({
   onRemove: () => void;
   onMove: (toIndex: number) => void;
   onDropEffect: (effectId: string, toIndex: number) => void;
+  onReplace: (type: EffectType) => void;
 }) {
   const icon = EFFECT_CATALOG.find((e) => e.type === effect.type)?.icon ?? <Sliders className="size-3.5" />;
 
@@ -440,6 +458,23 @@ function EffectChainItem({
         <div className="text-xs font-medium truncate">{label}</div>
         <div className="text-[10px] text-muted-foreground">#{index + 1}</div>
       </div>
+      <select
+        aria-label={`替换${label}`}
+        title={`将${label}替换为其他效果；选择当前类型会重置参数`}
+        className="h-6 w-6 shrink-0 cursor-pointer rounded bg-muted text-[9px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        value=""
+        disabled={isMoving}
+        onClick={(event) => event.stopPropagation()}
+        onChange={(event) => {
+          event.stopPropagation();
+          if (event.target.value) onReplace(event.target.value as EffectType);
+        }}
+      >
+        <option value="" disabled>▼</option>
+        {EFFECT_CATALOG.map((definition) => (
+          <option key={definition.type} value={definition.type}>{definition.label}</option>
+        ))}
+      </select>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
