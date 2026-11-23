@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import EffectPanel from '@/pages/AudioEditorPage/sections/EffectPanel';
 import type { ITrack } from '@/types/project';
@@ -537,5 +537,99 @@ describe('EffectPanel Audacity reorder controls', () => {
     finish();
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+  });
+});
+
+describe('EffectPanel realtime effect removal focus', () => {
+  it('focuses the effect now at the removed index after an asynchronous remove-button command', async () => {
+    let finish!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect, onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const remove = screen.getByRole('button', { name: '移除高通滤波' });
+    await act(async () => {
+      remove.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
+    fireEvent.click(remove);
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-high-pass');
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[0]!, track.effects[2]!] }}
+    />);
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开混响参数' })).toHaveFocus());
+  });
+
+  it('returns focus to Add effect after the replacement menu removes the only effect', async () => {
+    let finish!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const singleEffectTrack = { ...track, effects: [track.effects[0]!] };
+    const props = {
+      track: singleEffectTrack,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect, onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const menu = screen.getByRole('combobox', { name: '替换增益' });
+    menu.focus();
+    fireEvent.change(menu, { target: { value: '__remove__' } });
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-gain');
+
+    view.rerender(<EffectPanel {...props} track={{ ...singleEffectTrack, effects: [] }} />);
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toHaveFocus());
+  });
+
+  it('falls back to the previous effect when the asynchronous command removes the last effect', async () => {
+    let finish!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect, onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const remove = screen.getByRole('button', { name: '移除混响' });
+    await act(async () => {
+      remove.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
+    fireEvent.click(remove);
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-reverb');
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[0]!, track.effects[1]!] }}
+    />);
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开高通滤波参数' })).toHaveFocus());
+  });
+
+  it('restores the original effect-row focus when the remove command completes without a commit', async () => {
+    let finish!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = renderPanel({ onRemoveEffect });
+    const menu = screen.getByRole('combobox', { name: '替换增益' });
+    menu.focus();
+    fireEvent.change(menu, { target: { value: '__remove__' } });
+    expect(props.onRemoveEffect).toHaveBeenCalledWith('fx-gain');
+    menu.blur();
+
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+    expect(menu).toBeEnabled();
   });
 });

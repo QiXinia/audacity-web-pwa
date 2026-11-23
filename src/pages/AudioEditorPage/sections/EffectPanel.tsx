@@ -185,6 +185,11 @@ export default function EffectPanel({
   const effectNameElements = useRef(new Map<string, HTMLButtonElement>());
   const pendingGripFocusId = useRef<string | null>(null);
   const pendingEffectFocusId = useRef<string | null>(null);
+  const pendingRemovalFocus = useRef<{
+    trackId: string;
+    effectId: string;
+    index: number;
+  } | null>(null);
   const addEffectButton = useRef<HTMLButtonElement>(null);
   const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
   const restoreAddEffectButtonFocus = useRef(false);
@@ -280,6 +285,9 @@ export default function EffectPanel({
 
   async function handleRemoveEffect(effectId: string) {
     if (effectMoveInFlight.current) return;
+    const index = track.effects.findIndex((effect) => effect.id === effectId);
+    if (index < 0) return;
+    pendingRemovalFocus.current = { trackId: track.id, effectId, index };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -321,6 +329,36 @@ export default function EffectPanel({
     pendingEffectFocusId.current = null;
     effectName.focus();
   }, [activeEffects, isMovingEffect]);
+
+  useEffect(() => {
+    const pending = pendingRemovalFocus.current;
+    if (!pending || isMovingEffect) return;
+    if (pending.trackId !== track.id) {
+      pendingRemovalFocus.current = null;
+      return;
+    }
+
+    const removedEffect = activeEffects.find((effect) => effect.id === pending.effectId);
+    if (removedEffect) {
+      const originalEffectName = effectNameElements.current.get(removedEffect.id);
+      if (!originalEffectName) return;
+      pendingRemovalFocus.current = null;
+      originalEffectName.focus();
+      return;
+    }
+
+    const targetEffect = activeEffects[Math.min(pending.index, activeEffects.length - 1)];
+    if (!targetEffect) {
+      pendingRemovalFocus.current = null;
+      addEffectButton.current?.focus();
+      return;
+    }
+
+    const targetEffectName = effectNameElements.current.get(targetEffect.id);
+    if (!targetEffectName) return;
+    pendingRemovalFocus.current = null;
+    targetEffectName.focus();
+  }, [activeEffects, isMovingEffect, track.id]);
 
   const resolvedSelectedEffectId = activeEffects.some((effect) => effect.id === selectedEffectId)
     ? selectedEffectId
