@@ -186,6 +186,8 @@ export default function EffectPanel({
   const addEffectButton = useRef<HTMLButtonElement>(null);
   const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
   const restoreAddEffectButtonFocus = useRef(false);
+  const parameterPanel = useRef<HTMLDivElement>(null);
+  const pendingParameterFocusEffectId = useRef<string | null>(null);
 
   async function handleMoveEffect(effectId: string, toIndex: number, restoreGripFocus = false) {
     if (effectMoveInFlight.current) return;
@@ -214,7 +216,10 @@ export default function EffectPanel({
     setIsMovingEffect(true);
     try {
       const replacement = await onReplaceEffect(effectId, type);
-      if (replacement) setSelectedEffectId(replacement.id);
+      if (replacement) {
+        pendingParameterFocusEffectId.current = replacement.id;
+        setSelectedEffectId(replacement.id);
+      }
     } finally {
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
@@ -227,7 +232,10 @@ export default function EffectPanel({
     setIsMovingEffect(true);
     try {
       const added = await onAddEffect(type);
-      if (added) setSelectedEffectId(added.id);
+      if (added) {
+        pendingParameterFocusEffectId.current = added.id;
+        setSelectedEffectId(added.id);
+      }
       setShowAddMenu(false);
     } finally {
       effectMoveInFlight.current = false;
@@ -311,6 +319,15 @@ export default function EffectPanel({
     if (!selectedEffect) return null;
     return EFFECT_CATALOG.find((e) => e.type === selectedEffect.type) ?? null;
   }, [selectedEffect]);
+
+  useEffect(() => {
+    const effectId = pendingParameterFocusEffectId.current;
+    if (!effectId || isMovingEffect || resolvedSelectedEffectId !== effectId) return;
+    const firstSlider = parameterPanel.current?.querySelector<HTMLElement>('[role="slider"]');
+    if (!firstSlider) return;
+    pendingParameterFocusEffectId.current = null;
+    firstSlider.focus();
+  }, [activeEffects, effectDef, isMovingEffect, resolvedSelectedEffectId]);
 
   function getEffectLabel(type: EffectType): string {
     return EFFECT_CATALOG.find((e) => e.type === type)?.label || type;
@@ -484,7 +501,7 @@ export default function EffectPanel({
               exit={{ height: 0, opacity: 0 }}
               className="shrink-0 overflow-hidden border-t border-border"
             >
-              <div className="p-3">
+              <div ref={parameterPanel} className="p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     {effectDef.icon}

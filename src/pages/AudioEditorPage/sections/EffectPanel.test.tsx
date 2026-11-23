@@ -106,6 +106,37 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(await screen.findByText('8000Hz')).toBeInTheDocument();
     expect(screen.getByTestId('realtime-effect-fx-low-pass-new')).toHaveClass('border-primary');
   });
+
+  it('moves focus from the keyboard-navigated add menu to the new effect parameters', async () => {
+    const added = {
+      id: 'fx-low-pass-keyboard', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    const emptyTrack = { ...track, effects: [] };
+    const onAddEffect = vi.fn(async () => added);
+    const props = {
+      track: emptyTrack,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const add = screen.getByRole('button', { name: '添加效果' });
+    add.focus();
+    fireEvent.click(add);
+
+    const gain = screen.getByRole('button', { name: '增益' });
+    fireEvent.keyDown(gain, { key: 'ArrowDown' });
+    const lowPass = screen.getByRole('button', { name: '低通滤波' });
+    fireEvent.keyDown(screen.getByRole('button', { name: '高通滤波' }), { key: 'ArrowDown' });
+    expect(lowPass).toHaveFocus();
+    fireEvent.click(lowPass);
+    await waitFor(() => expect(onAddEffect).toHaveBeenCalledWith('lowPass'));
+
+    view.rerender(<EffectPanel {...props} track={{ ...emptyTrack, effects: [added] }} />);
+    expect(await screen.findByText('8000Hz')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByRole('slider')[0]).toHaveFocus());
+  });
 });
 
 describe('EffectPanel Audacity effect name controls', () => {
@@ -262,6 +293,31 @@ describe('EffectPanel Audacity replacement controls', () => {
     await waitFor(() => expect(props.onReplaceEffect).toHaveBeenCalledTimes(1));
     view.rerender(<EffectPanel {...props} track={updatedTrack} />);
     expect(await screen.findByText('8000Hz')).toBeInTheDocument();
+  });
+
+  it('moves focus to the replacement parameters after the old effect menu unmounts', async () => {
+    const replacement = {
+      id: 'fx-delay-replacement', type: 'delay' as const, bypassed: false,
+      params: { time: 0.3, feedback: 0.4, wet: 0.3 },
+    };
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(async () => replacement),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const menu = screen.getByRole('combobox', { name: '替换高通滤波' });
+    menu.focus();
+    fireEvent.change(menu, { target: { value: 'delay' } });
+    await waitFor(() => expect(props.onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'delay'));
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[0]!, replacement, track.effects[2]!] }}
+    />);
+    expect(await screen.findByText('0.30s')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByRole('slider')[0]).toHaveFocus());
   });
 
   it('displays persisted frequency values instead of falling back to zero', () => {
