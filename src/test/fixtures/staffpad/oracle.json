@@ -156,6 +156,126 @@
       "fftSize": 512,
       "nativeFrames": 1700,
       "nativePeak": 0.0
+    },
+    {
+      "name": "voice-combined-above-one-stereo",
+      "input": "r325-short-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 257,
+      "timeRatio": 0.8,
+      "pitchRatio": 1.2500001,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 206
+    },
+    {
+      "name": "voice-near-neutral-mono",
+      "input": "r325-short-mono",
+      "channels": 1,
+      "sampleRate": 8000,
+      "inputFrames": 257,
+      "timeRatio": 0.999999,
+      "pitchRatio": 1.000001,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 257
+    },
+    {
+      "name": "voice-hop-two-above-stereo",
+      "input": "r325-short-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 257,
+      "timeRatio": 32.01,
+      "pitchRatio": 2.0,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 8227
+    },
+    {
+      "name": "voice-hop-one-exact-mono",
+      "input": "r325-short-mono",
+      "channels": 1,
+      "sampleRate": 8000,
+      "inputFrames": 257,
+      "timeRatio": 64.0,
+      "pitchRatio": 2.0,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 16448
+    },
+    {
+      "name": "voice-slow-cliff-below-stereo",
+      "input": "r325-short-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 257,
+      "timeRatio": 99.99,
+      "pitchRatio": 1.28,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 25697
+    },
+    {
+      "name": "voice-slow-cliff-above-stereo",
+      "input": "r325-short-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 257,
+      "timeRatio": 100.0,
+      "pitchRatio": 1.280001,
+      "preserveFormants": true,
+      "fftSize": 512,
+      "nativeFrames": 25700
+    },
+    {
+      "name": "no-formant-combined-one-stereo",
+      "input": "r325-short-stereo",
+      "channels": 2,
+      "sampleRate": 8000,
+      "inputFrames": 257,
+      "timeRatio": 0.8,
+      "pitchRatio": 1.25,
+      "preserveFormants": false,
+      "fftSize": 1024,
+      "nativeFrames": 206
+    },
+    {
+      "name": "no-formant-hop-two-mono",
+      "input": "r325-short-mono",
+      "channels": 1,
+      "sampleRate": 8000,
+      "inputFrames": 257,
+      "timeRatio": 32.0,
+      "pitchRatio": 2.0,
+      "preserveFormants": false,
+      "fftSize": 1024,
+      "nativeFrames": 8224
+    },
+    {
+      "name": "voice-small-fft-hop-two-mono",
+      "input": "r325-short-mono",
+      "channels": 1,
+      "sampleRate": 1000,
+      "inputFrames": 257,
+      "timeRatio": 32.01,
+      "pitchRatio": 2.0,
+      "preserveFormants": true,
+      "fftSize": 64,
+      "nativeFrames": 8227
+    },
+    {
+      "name": "voice-long-44k-combined-one-stereo",
+      "input": "r325-long-stereo",
+      "channels": 2,
+      "sampleRate": 44100,
+      "inputFrames": 2049,
+      "timeRatio": 0.8,
+      "pitchRatio": 1.25,
+      "preserveFormants": true,
+      "fftSize": 2048,
+      "nativeFrames": 1639
     }
   ]
 }

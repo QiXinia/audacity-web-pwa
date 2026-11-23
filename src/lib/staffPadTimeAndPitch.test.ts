@@ -132,8 +132,8 @@ describe('Audacity 4.0.2 native StaffPad oracle', () => {
     console.log(caseData.name, comparisons);
     for (const comparison of comparisons) {
       expect(Number.isFinite(comparison.nrmse)).toBe(true);
-      expect(comparison.nrmse).toBeLessThan(0.011);
-      expect(comparison.correlation).toBeGreaterThan(0.9999);
+      expect(comparison.nrmse).toBeLessThan(0.0001);
+      expect(comparison.correlation).toBeGreaterThan(0.99999);
     }
   });
 
@@ -268,6 +268,32 @@ describe('Audacity StaffPad boundary contracts', () => {
       expect(channel.every((sample) => Number.isFinite(sample))).toBe(true);
       // Native StaffPad reaches IllState for exactHopA=512/(4*100*2)=0.64.
       // StaffPadTimeAndPitch::GetSamples consequently leaves the output zeroed.
+      expect(channel.every((sample) => sample === 0)).toBe(true);
+    }
+  }, 30_000);
+
+  it('zero-fills instead of leaking NaN when the integer analysis hop collapses', () => {
+    const source = Array.from({ length: 2 }, (_, channel) => (
+      Float32Array.from({ length: 257 }, (_, index) => (
+        0.23 * Math.sin(index * 0.371 + channel * 0.73)
+        + 0.17 * Math.cos(index * 0.117 + channel * 0.21)
+        + 0.09 * Math.sin(index * 0.019 + channel * 0.47)
+        + ((index + channel) % 11 === 0 ? 0.06 : -0.012)
+      ))
+    ));
+    const output = processStaffPadTimeAndPitchChannels(source, {
+      sampleRate: 8000,
+      timeRatio: 64.01,
+      pitchRatio: 2,
+      preserveFormants: true,
+      fftSize: 512,
+    });
+    expect(output).toHaveLength(2);
+    for (const channel of output) {
+      expect(channel).toHaveLength(16451);
+      // Native exactHopA=0.9998047 truncates hopA to zero and currently leaks
+      // NaN. Do not reproduce invalid PCM: use the same zero-fill failure
+      // contract that Audacity applies when StaffPad reaches IllState.
       expect(channel.every((sample) => sample === 0)).toBe(true);
     }
   }, 30_000);

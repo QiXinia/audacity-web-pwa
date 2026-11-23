@@ -364,6 +364,7 @@ class StaffPadProcessor {
   private hopAErr = 0;
   private hopSErr = 0;
   private analysisHopCounter = 0;
+  private collapsedAnalysisHop = false;
   private resampleReadPos = 0;
   private overlapA = 4;
   private readonly combinedTimeStretch: number;
@@ -439,7 +440,8 @@ class StaffPadProcessor {
   }
 
   illState(): boolean {
-    return this.getSamplesToNextHop() <= 0 && this.getAvailableOutputSamples() <= 0;
+    return this.collapsedAnalysisHop
+      || (this.getSamplesToNextHop() <= 0 && this.getAvailableOutputSamples() <= 0);
   }
 
   feedNextHop(): void {
@@ -540,6 +542,13 @@ class StaffPadProcessor {
   }
 
   private processHop(hopA: number, hopS: number): void {
+    if (hopA <= 0) {
+      // The native code divides by hopA in _time_stretch and can leak NaN when
+      // exact_hop_a is just below one. Treat the collapsed hop as IllState so
+      // the public processing path zero-fills instead of exporting invalid PCM.
+      this.collapsedAnalysisHop = true;
+      return;
+    }
     if (this.exactHopA !== this.exactHopS) {
       if (this.channels === 2) this.lrToMs();
       for (let channel = 0; channel < this.channels; channel += 1) {
