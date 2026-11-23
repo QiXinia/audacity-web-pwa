@@ -333,4 +333,30 @@ describe('EffectPanel Audacity reorder controls', () => {
     expect(props.onMoveEffect).toHaveBeenCalledWith('fx-gain', 2);
     await waitFor(() => expect(grip).toBeEnabled());
   });
+
+  it('restores grip focus at the target index after an asynchronous keyboard reorder', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    grip.focus();
+    fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+    />);
+    // Chromium can drop focus when the active grip becomes disabled during saving.
+    screen.getByRole('button', { name: '拖动排序增益' }).blur();
+    finish();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '拖动排序增益' })).toHaveFocus());
+  });
 });

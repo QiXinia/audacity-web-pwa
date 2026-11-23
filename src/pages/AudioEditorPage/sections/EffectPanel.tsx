@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -181,9 +181,12 @@ export default function EffectPanel({
   );
   const [isMovingEffect, setIsMovingEffect] = useState(false);
   const effectMoveInFlight = useRef(false);
+  const gripElements = useRef(new Map<string, HTMLButtonElement>());
+  const pendingGripFocusId = useRef<string | null>(null);
 
-  async function handleMoveEffect(effectId: string, toIndex: number) {
+  async function handleMoveEffect(effectId: string, toIndex: number, restoreGripFocus = false) {
     if (effectMoveInFlight.current) return;
+    if (restoreGripFocus) pendingGripFocusId.current = effectId;
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -262,6 +265,13 @@ export default function EffectPanel({
   const activeEffects = useMemo(() => {
     return track.effects;
   }, [track.effects]);
+
+  useEffect(() => {
+    if (isMovingEffect || !pendingGripFocusId.current) return;
+    const effectId = pendingGripFocusId.current;
+    pendingGripFocusId.current = null;
+    gripElements.current.get(effectId)?.focus();
+  }, [activeEffects, isMovingEffect]);
 
   const resolvedSelectedEffectId = activeEffects.some((effect) => effect.id === selectedEffectId)
     ? selectedEffectId
@@ -395,9 +405,13 @@ export default function EffectPanel({
                   onSelect={() => setSelectedEffectId(effect.id)}
                   onToggleBypass={() => void handleToggleBypass(effect.id)}
                   onRemove={() => void handleRemoveEffect(effect.id)}
-                  onMove={(toIndex) => handleMoveEffect(effect.id, toIndex)}
+                  onMove={(toIndex, restoreGripFocus) => handleMoveEffect(effect.id, toIndex, restoreGripFocus)}
                   onDropEffect={(effectId, toIndex) => handleMoveEffect(effectId, toIndex)}
                   onReplace={(type) => handleReplaceEffect(effect.id, type)}
+                  gripRef={(node) => {
+                    if (node) gripElements.current.set(effect.id, node);
+                    else gripElements.current.delete(effect.id);
+                  }}
                 />
               ))}
             </div>
@@ -475,6 +489,7 @@ function EffectChainItem({
   onMove,
   onDropEffect,
   onReplace,
+  gripRef,
 }: {
   effect: IEffect;
   index: number;
@@ -485,9 +500,10 @@ function EffectChainItem({
   onSelect: () => void;
   onToggleBypass: () => void;
   onRemove: () => void;
-  onMove: (toIndex: number) => void;
+  onMove: (toIndex: number, restoreGripFocus?: boolean) => void;
   onDropEffect: (effectId: string, toIndex: number) => void;
   onReplace: (type: EffectType) => void;
+  gripRef: (node: HTMLButtonElement | null) => void;
 }) {
   const icon = EFFECT_CATALOG.find((e) => e.type === effect.type)?.icon ?? <Sliders className="size-3.5" />;
 
@@ -514,6 +530,7 @@ function EffectChainItem({
       }}
     >
       <Button
+        ref={gripRef}
         variant="ghost"
         size="icon"
         draggable={!isMoving}
@@ -529,7 +546,7 @@ function EffectChainItem({
           if (isMoving) return;
           const toIndex = event.key === 'ArrowUp' ? index - 1 : index + 1;
           if (toIndex < 0 || toIndex >= effectCount) return;
-          onMove(toIndex);
+          onMove(toIndex, true);
         }}
         onDragStart={(event) => {
           event.stopPropagation();
