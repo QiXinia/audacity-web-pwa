@@ -523,13 +523,12 @@ function EffectChainItem({
         className="size-5 shrink-0 cursor-grab active:cursor-grabbing"
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
-          if (isMoving) return;
-          const toIndex = event.key === 'ArrowUp'
-            ? index - 1
-            : event.key === 'ArrowDown' ? index + 1 : index;
-          if (toIndex === index || toIndex < 0 || toIndex >= effectCount) return;
+          if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
           event.preventDefault();
           event.stopPropagation();
+          if (isMoving) return;
+          const toIndex = event.key === 'ArrowUp' ? index - 1 : index + 1;
+          if (toIndex < 0 || toIndex >= effectCount) return;
           onMove(toIndex);
         }}
         onDragStart={(event) => {

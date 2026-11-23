@@ -277,6 +277,17 @@ describe('EffectPanel Audacity replacement controls', () => {
 });
 
 describe('EffectPanel Audacity reorder controls', () => {
+  it('consumes boundary arrow keys without no-op moves or page scrolling', () => {
+    const props = renderPanel();
+    const firstGrip = screen.getByRole('button', { name: '拖动排序增益' });
+    const lastGrip = screen.getByRole('button', { name: '拖动排序混响' });
+
+    expect(fireEvent.keyDown(firstGrip, { key: 'ArrowUp' })).toBe(false);
+    expect(fireEvent.keyDown(lastGrip, { key: 'ArrowDown' })).toBe(false);
+    expect(props.onMoveEffect).not.toHaveBeenCalled();
+    expect(fireEvent.keyDown(firstGrip, { key: 'ArrowLeft' })).toBe(true);
+  });
+
   it('moves effects with accessible up/down commands and disables list boundaries', async () => {
     const props = renderPanel();
     expect(screen.getByRole('button', { name: '上移增益' })).toBeDisabled();
