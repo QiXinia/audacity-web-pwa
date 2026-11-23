@@ -277,7 +277,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/services/workspaceService.test.ts` | 内置工作区、自定义布局、自动更新与旧数据迁移 | 9 |
 | `src/services/projectService.test.ts` | 循环启用状态、独立循环区、BPM／拍号及旧工程持久化 | 4 |
 | `src/services/projectService.effectMutations.test.ts` | 实时效果添加、部分参数合并、连续旁路、移除、最新排队工程、无效目标及保存失败原子性 | 9 |
-| `src/pages/AudioEditorPage/sections/EffectPanel.test.tsx` | 排序、替换、独立参数增量、快速编辑防旧快照覆盖、新增效果自动定位、跨轨选择解析、参数显示、链操作互斥及重复添加防护 | 11 |
+| `src/pages/AudioEditorPage/sections/EffectPanel.test.tsx` | 排序、替换、独立参数增量、快速编辑防旧快照覆盖、新增效果自动定位、跨轨选择解析、可聚焦效果名称参数入口、参数显示、链操作互斥及重复添加防护 | 12 |
 | `src/services/projectService.silence.test.ts` | 选区清零、共享源写时复制、多声道与片段边界保持 | 6 |
 | `src/services/projectService.generation.test.ts` | 严格及可变长生成替换、Repeat 多轨共享缓冲、失败清理与非法输入 | 13 |
 | `src/services/projectService.import.test.ts` | 导入提交、失败回滚与孤儿缓冲清理 | 2 |

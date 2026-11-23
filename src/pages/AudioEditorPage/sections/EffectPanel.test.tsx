@@ -107,6 +107,21 @@ describe('EffectPanel parameter edits and newly added effects', () => {
   });
 });
 
+describe('EffectPanel Audacity effect name controls', () => {
+  it('exposes each effect name as a focusable button that opens its parameters', () => {
+    renderPanel();
+    const openHighPass = screen.getByRole('button', { name: '打开高通滤波参数' });
+
+    openHighPass.focus();
+    expect(openHighPass).toHaveFocus();
+    fireEvent.click(openHighPass);
+
+    expect(screen.getByText('80Hz')).toBeInTheDocument();
+    expect(screen.getByTestId('realtime-effect-fx-high-pass')).toHaveClass('border-primary');
+    expect(screen.queryByText('0.00dB')).not.toBeInTheDocument();
+  });
+});
+
 describe('EffectPanel Audacity replacement controls', () => {
   it('replaces an effect from its accessible dropdown and selects the returned effect', async () => {
     const replacement = { id: 'fx-low-pass-new', type: 'lowPass' as const, bypassed: false, params: { frequency: 8000, q: 0.7 } };

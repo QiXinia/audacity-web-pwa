@@ -493,13 +493,24 @@ function EffectChainItem({
       >
         <GripVertical className="size-3 text-muted-foreground/70" />
       </Button>
-      <div className="flex size-6 shrink-0 items-center justify-center rounded bg-muted">
-        {icon}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-xs font-medium truncate">{label}</div>
-        <div className="text-[10px] text-muted-foreground">#{index + 1}</div>
-      </div>
+      <button
+        type="button"
+        aria-label={`打开${label}参数`}
+        title={`打开${label}参数`}
+        className="flex min-w-0 flex-1 items-center gap-1 rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect();
+        }}
+      >
+        <span className="flex size-6 shrink-0 items-center justify-center rounded bg-muted">
+          {icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium">{label}</span>
+          <span className="block text-[10px] text-muted-foreground">#{index + 1}</span>
+        </span>
+      </button>
       <select
         aria-label={`替换${label}`}
         title={`将${label}替换为其他效果；选择当前类型会重置参数`}
