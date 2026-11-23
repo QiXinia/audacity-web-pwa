@@ -334,6 +334,26 @@ describe('EffectPanel Audacity reorder controls', () => {
     await waitFor(() => expect(grip).toBeEnabled());
   });
 
+  it('ignores no-op and stale drop commits before entering the asynchronous mutation lock', () => {
+    const props = renderPanel();
+    const ownRow = screen.getByTestId('realtime-effect-fx-gain');
+    const dataTransfer = {
+      effectAllowed: '',
+      dropEffect: '',
+      setData: vi.fn(),
+      getData: vi.fn(() => 'fx-gain'),
+    };
+
+    fireEvent.drop(ownRow, { dataTransfer });
+    expect(props.onMoveEffect).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '拖动排序增益' })).toBeEnabled();
+
+    dataTransfer.getData.mockReturnValue('missing-effect');
+    fireEvent.drop(ownRow, { dataTransfer });
+    expect(props.onMoveEffect).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '拖动排序增益' })).toBeEnabled();
+  });
+
   it('restores grip focus at the target index after an asynchronous keyboard reorder', async () => {
     let finish!: () => void;
     const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));

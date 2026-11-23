@@ -186,6 +186,14 @@ export default function EffectPanel({
 
   async function handleMoveEffect(effectId: string, toIndex: number, restoreGripFocus = false) {
     if (effectMoveInFlight.current) return;
+    const fromIndex = track.effects.findIndex((effect) => effect.id === effectId);
+    if (
+      fromIndex < 0
+      || !Number.isInteger(toIndex)
+      || toIndex < 0
+      || toIndex >= track.effects.length
+      || toIndex === fromIndex
+    ) return;
     if (restoreGripFocus) pendingGripFocusId.current = effectId;
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
