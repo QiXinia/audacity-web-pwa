@@ -205,4 +205,30 @@ describe('ProjectService realtime effect mutations', () => {
     expect(persistedTrack().name).toBe('Renamed track');
     expect(persistedTrack().effects).toHaveLength(3);
   });
+
+  it('persists the track-level effects power without rewriting individual bypass states', async () => {
+    const project = installProject();
+    const originalEffects = structuredClone(project.tracks[0]!.effects);
+    const result = await projectService.setTrackEffectsActive(project.id, 'track-a', false);
+
+    expect(result?.before.tracks[0]?.effectsActive).toBeUndefined();
+    expect(result?.after.tracks[0]?.effectsActive).toBe(false);
+    expect(result?.after.tracks[0]?.effects).toEqual(originalEffects);
+    expect(project.tracks[0]?.effectsActive).toBeUndefined();
+    expect(project.tracks[0]?.effects).toEqual(originalEffects);
+    expect(persistedTrack().effectsActive).toBe(false);
+    expect(persistedTrack().effects).toEqual(originalEffects);
+  });
+
+  it('keeps the track effects power and storage unchanged when saving fails', async () => {
+    const project = installProject();
+    vi.mocked(audioDb.projects.put).mockRejectedValue(new Error('storage unavailable'));
+
+    await expect(projectService.setTrackEffectsActive(project.id, 'track-a', false))
+      .rejects.toThrow('storage unavailable');
+    expect(mutableService.currentProject).toBe(project);
+    expect(project.tracks[0]?.effectsActive).toBeUndefined();
+    expect(persistedTrack().effectsActive).toBeUndefined();
+    expect(project.tracks[0]?.effects.map((effect) => effect.bypassed)).toEqual([false, false]);
+  });
 });

@@ -317,6 +317,33 @@ describe('projectService Audacity 4 track channel operations', () => {
     expect(projectService.saveProject).toHaveBeenCalledTimes(1);
   });
 
+  it('skips offline effect rendering while the track-level power is off', async () => {
+    const left = makeTrack('left', 1, [makeClip('left-clip', 'left-buffer')]);
+    const right = makeTrack('right', 1, [makeClip('right-clip', 'right-buffer')]);
+    for (const track of [left, right]) {
+      track.gain = 0;
+      track.clips[0]!.gain = 0;
+      track.clips[0]!.fadeIn = 0;
+      track.clips[0]!.fadeOut = 0;
+      track.clips[0]!.offset = 0;
+      track.effectsActive = false;
+      track.effects = [{ id: `gain-${track.id}`, type: 'gain', bypassed: false, params: { gain: 20 } }];
+    }
+    mutableService.currentProject = makeProject([left, right]);
+
+    await projectService.makeStereoTrackFromMono('channel-project', 'left', 'right', [
+      monoTarget(left, [1, 1]), monoTarget(right, [2, 2]),
+    ]);
+
+    const output = mutableService.currentProject!.tracks[0]!;
+    const rendered = buffers.get(output.clips[0]!.audioBufferId)!;
+    expect(Array.from(new Float32Array(rendered.channelData[0]!))).toEqual([1, 1]);
+    expect(Array.from(new Float32Array(rendered.channelData[1]!))).toEqual([2, 2]);
+    expect(audioEngine.renderRealtimeEffects).not.toHaveBeenCalled();
+    expect(left.effects[0]?.bypassed).toBe(false);
+    expect(right.effects[0]?.bypassed).toBe(false);
+  });
+
   it('keeps the original project untouched when offline effect rendering fails', async () => {
     const left = makeTrack('left', 1, [makeClip('left-clip', 'left-buffer')]);
     const right = makeTrack('right', 1, [makeClip('right-clip', 'right-buffer')]);

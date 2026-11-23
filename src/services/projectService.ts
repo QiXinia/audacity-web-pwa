@@ -3896,7 +3896,7 @@ class ProjectService {
     let rendered: ReturnType<typeof renderMixAndRenderTracks> | null = null;
     if (hasClips) {
       const hasEnabledEffects = [leftTrack, rightTrack].some((track) => (
-        track.effects.some((effect) => !effect.bypassed)
+        track.effectsActive !== false && track.effects.some((effect) => !effect.bypassed)
       ));
       if (!hasEnabledEffects) {
         rendered = renderMixAndRenderTracks(renderInputs, project.sampleRate);
@@ -3916,10 +3916,11 @@ class ProjectService {
         const channels = [new Float32Array(outputLength), new Float32Array(outputLength)];
         for (const [index, input] of renderInputs.entries()) {
           const dry = renderMixAndRenderTracks([input], project.sampleRate, { startTime, endTime });
+          const sourceTrack = [leftTrack, rightTrack][index]!;
           const effected = await audioEngine.renderRealtimeEffects(
             dry.channels,
             project.sampleRate,
-            [leftTrack, rightTrack][index]!.effects,
+            sourceTrack.effectsActive === false ? [] : sourceTrack.effects,
           );
           for (let channelIndex = 0; channelIndex < 2; channelIndex += 1) {
             const output = channels[channelIndex]!;
@@ -7476,6 +7477,25 @@ class ProjectService {
       };
     });
     return result && replacement ? { ...result, index, replacement } : null;
+  }
+
+  /** Set Audacity's track-level realtime power without changing per-effect bypass states. */
+  async setTrackEffectsActive(
+    projectId: string,
+    trackId: string,
+    active: boolean,
+  ): Promise<{ before: IProject; after: IProject; active: boolean } | null> {
+    const result = await this.editLatestProject(projectId, (project) => {
+      const track = project.tracks.find((candidate) => candidate.id === trackId);
+      if (!track || (track.effectsActive ?? true) === active) return project;
+      return {
+        ...project,
+        tracks: project.tracks.map((candidate) => (
+          candidate.id === trackId ? { ...candidate, effectsActive: active } : candidate
+        )),
+      };
+    });
+    return result ? { ...result, active } : null;
   }
 
   /** Add a realtime effect only after earlier project writes have committed. */

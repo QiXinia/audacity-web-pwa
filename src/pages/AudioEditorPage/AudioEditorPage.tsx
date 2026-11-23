@@ -7310,6 +7310,28 @@ function AudioEditorPageContent() {
     }
   }
 
+  async function toggleAllEffects(trackId: string, active: boolean) {
+    if (!project) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
+    try {
+      const result = await projectService.setTrackEffectsActive(projectId, trackId, active);
+      if (!result || !isCurrentAction()) return;
+      setProject(result.after);
+      pushHistoryCmd({
+        id: generateId(),
+        label: active ? '启用全部轨道效果' : '关闭全部轨道效果',
+        execute: () => result.after,
+        undo: () => result.before,
+      }, result.before);
+    } catch (error) {
+      if (!isCurrentAction()) return;
+      logger.error('Toggle all track effects failed', error);
+      toast.error(`切换全部效果失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }
+
   async function moveEffect(trackId: string, effectId: string, toIndex: number) {
     if (!project) return;
     const projectId = project.id;
@@ -10297,6 +10319,7 @@ function AudioEditorPageContent() {
               onToggleBypass={(effectId) =>
                 toggleEffectBypass(effectsPanelTrackId, effectId)
               }
+              onToggleAllEffects={(trackId, active) => toggleAllEffects(trackId, active)}
               onRemoveEffect={(effectId) =>
                 removeEffect(effectsPanelTrackId, effectId)
               }

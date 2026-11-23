@@ -5,6 +5,7 @@ import {
   Plus,
   Trash2,
   Power,
+  PowerOff,
   GripVertical,
   Volume2,
   Sliders,
@@ -45,6 +46,7 @@ interface EffectPanelProps {
   onAddEffect: (type: EffectType) => IEffect | null | void | Promise<IEffect | null | void>;
   onUpdateEffect: (effectId: string, params: Record<string, number>) => void;
   onToggleBypass: (effectId: string) => void | Promise<void>;
+  onToggleAllEffects?: (trackId: string, active: boolean) => void | Promise<void>;
   onRemoveEffect: (effectId: string) => void | Promise<void>;
   onMoveEffect: (effectId: string, toIndex: number) => void | Promise<void>;
   onReplaceEffect: (effectId: string, type: EffectType) => IEffect | null | void | Promise<IEffect | null | void>;
@@ -168,6 +170,7 @@ export default function EffectPanel({
   onAddEffect,
   onUpdateEffect,
   onToggleBypass,
+  onToggleAllEffects,
   onRemoveEffect,
   onMoveEffect,
   onReplaceEffect,
@@ -230,6 +233,18 @@ export default function EffectPanel({
     }
   }
 
+  async function handleToggleAllEffects() {
+    if (effectMoveInFlight.current || !onToggleAllEffects) return;
+    effectMoveInFlight.current = true;
+    setIsMovingEffect(true);
+    try {
+      await onToggleAllEffects(track.id, !(track.effectsActive ?? true));
+    } finally {
+      effectMoveInFlight.current = false;
+      setIsMovingEffect(false);
+    }
+  }
+
   async function handleRemoveEffect(effectId: string) {
     if (effectMoveInFlight.current) return;
     effectMoveInFlight.current = true;
@@ -241,6 +256,8 @@ export default function EffectPanel({
       setIsMovingEffect(false);
     }
   }
+
+  const effectsActive = track.effectsActive ?? true;
 
   const activeEffects = useMemo(() => {
     return track.effects;
@@ -274,9 +291,29 @@ export default function EffectPanel({
         {/* Header */}
         <div className="flex h-9 items-center justify-between border-b border-border px-2">
           <span className="text-xs font-medium">效果器 - {track.name}</span>
-          <Button variant="ghost" size="icon" className="size-7" onClick={onClose}>
-            <X className="size-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={`size-7 ${effectsActive ? 'text-primary' : 'text-muted-foreground'}`}
+                  aria-label="切换全部效果"
+                  aria-pressed={effectsActive}
+                  title="切换全部效果；保留各效果自己的旁路状态"
+                  disabled={isMovingEffect || !onToggleAllEffects}
+                  onClick={() => void handleToggleAllEffects()}
+                >
+                  {effectsActive ? <Power className="size-4" /> : <PowerOff className="size-4" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{effectsActive ? '关闭全部实时效果' : '启用全部实时效果'}</TooltipContent>
+            </Tooltip>
+            <Button variant="ghost" size="icon" className="size-7" onClick={onClose}>
+              <X className="size-4" />
+            </Button>
+          </div>
         </div>
 
         {/* Add Effect Button */}

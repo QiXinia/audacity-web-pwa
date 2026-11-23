@@ -95,6 +95,8 @@ export interface ITrack {
   color: string;
   clips: IClip[];
   effects: IEffect[];
+  /** Audacity RealtimeEffectList master active state; legacy projects default to true. */
+  effectsActive?: boolean;
   /** Persistent channel layout, including empty tracks; legacy tracks infer it from PCM metadata. */
   channelCount?: 1 | 2;
   /** Audacity stored sample format; decoded browser PCM is float32 until explicitly narrowed. */

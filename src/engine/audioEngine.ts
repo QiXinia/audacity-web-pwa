@@ -502,12 +502,14 @@ export class AudioEngine {
       const chainInput: AudioNode = panNode;
       let chainOutput: AudioNode = panNode;
 
-      for (const effect of track.effects) {
-        if (effect.bypassed) continue;
-        const pair = this.createEffectNode(ctx, effect);
-        if (pair) {
-          chainOutput.connect(pair.input);
-          chainOutput = pair.output;
+      if (track.effectsActive !== false) {
+        for (const effect of track.effects) {
+          if (effect.bypassed) continue;
+          const pair = this.createEffectNode(ctx, effect);
+          if (pair) {
+            chainOutput.connect(pair.input);
+            chainOutput = pair.output;
+          }
         }
       }
 

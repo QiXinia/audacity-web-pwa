@@ -22,6 +22,7 @@ function renderPanel(overrides: Partial<Parameters<typeof EffectPanel>[0]> = {})
     onAddEffect: vi.fn(),
     onUpdateEffect: vi.fn(),
     onToggleBypass: vi.fn(),
+    onToggleAllEffects: vi.fn(),
     onRemoveEffect: vi.fn(),
     onMoveEffect: vi.fn(),
     onReplaceEffect: vi.fn(),
@@ -60,7 +61,7 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     const props = {
       track,
       onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
-      onToggleBypass: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
       onReplaceEffect: vi.fn(),
     };
     const view = render(<EffectPanel {...props} />);
@@ -93,7 +94,7 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     const props = {
       track: emptyTrack,
       onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
-      onToggleBypass: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
       onReplaceEffect: vi.fn(),
     };
     const view = render(<EffectPanel {...props} />);
@@ -122,13 +123,44 @@ describe('EffectPanel Audacity effect name controls', () => {
   });
 });
 
+describe('EffectPanel Audacity track effects power', () => {
+  it('exposes Toggle all effects independently from individual bypass states', async () => {
+    const onToggleAllEffects = vi.fn(async () => {});
+    const props = renderPanel({ onToggleAllEffects });
+    const toggle = screen.getByRole('button', { name: '切换全部效果' });
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(onToggleAllEffects).toHaveBeenCalledTimes(1));
+    expect(props.onToggleBypass).not.toHaveBeenCalled();
+  });
+
+  it('reflects a persistently inactive track chain and locks duplicate commands', async () => {
+    let finish!: () => void;
+    const onToggleAllEffects = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    renderPanel({
+      track: { ...track, effectsActive: false },
+      onToggleAllEffects,
+    });
+    const toggle = screen.getByRole('button', { name: '切换全部效果' });
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(toggle);
+    expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    expect(onToggleAllEffects).toHaveBeenCalledTimes(1);
+    finish();
+    await waitFor(() => expect(toggle).toBeEnabled());
+  });
+});
+
 describe('EffectPanel Audacity replacement controls', () => {
   it('replaces an effect from its accessible dropdown and selects the returned effect', async () => {
     const replacement = { id: 'fx-low-pass-new', type: 'lowPass' as const, bypassed: false, params: { frequency: 8000, q: 0.7 } };
     const props = {
       track,
       onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
-      onToggleBypass: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
       onReplaceEffect: vi.fn(async () => replacement),
     };
     const view = render(<EffectPanel {...props} />);

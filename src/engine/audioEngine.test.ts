@@ -177,6 +177,34 @@ describe('loop playback scheduling', () => {
     }
   });
 
+  it('skips the whole realtime chain when track effects are powered off', async () => {
+    const engine = new AudioEngine();
+    engine.cacheBuffer('stereo', [new Float32Array([1, 2])], 2);
+    const { context, sources } = makePlaybackContext();
+    const masterGain = { connect: vi.fn() };
+    vi.spyOn(engine, 'ensureContext').mockImplementation(async () => {
+      (engine as any).audioContext = context;
+      (engine as any).masterGain = masterGain;
+      return context;
+    });
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const effect: IEffect = { id: 'gain', type: 'gain', bypassed: false, params: { gain: 20 } };
+    const track = makeTrack(0, { effectsActive: false, effects: [effect] });
+
+    try {
+      await engine.play([track], 0, false);
+      expect(sources).toHaveLength(1);
+      expect(context.createGain).toHaveBeenCalledTimes(2);
+      expect(track.effectsActive).toBe(false);
+      expect(track.effects[0]?.bypassed).toBe(false);
+    } finally {
+      engine.stopPlayback();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
+
   it('rejects an invalid loop before opening an AudioContext', async () => {
     const engine = new AudioEngine();
     const ensure = vi.spyOn(engine, 'ensureContext');
