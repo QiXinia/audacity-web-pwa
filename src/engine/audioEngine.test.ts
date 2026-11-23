@@ -446,6 +446,45 @@ describe('realtime effect offline rendering boundaries', () => {
     expect(output[0]).not.toBe(input[0]);
   });
 
+  it('connects enabled realtime nodes in the persisted chain order', async () => {
+    const engine = new AudioEngine();
+    const input = [Float32Array.from([0.25, -0.5])];
+    const destination = {};
+    const gains: Array<{ gain: { value: number }; connect: ReturnType<typeof vi.fn> }> = [];
+    const buffer = {
+      numberOfChannels: 1,
+      getChannelData: vi.fn(() => Float32Array.from([0.25, -0.5])),
+    };
+    const source = { connect: vi.fn(), start: vi.fn(), buffer: null };
+    const context = {
+      destination,
+      createBuffer: vi.fn(() => buffer),
+      createBufferSource: vi.fn(() => source),
+      createGain: vi.fn(() => {
+        const node = { gain: { value: 0 }, connect: vi.fn() };
+        gains.push(node);
+        return node;
+      }),
+      startRendering: vi.fn(async () => buffer),
+    };
+    vi.stubGlobal('OfflineAudioContext', vi.fn(function OfflineAudioContext() { return context; }));
+
+    try {
+      await engine.renderRealtimeEffects(input, 48000, [
+        { id: 'first', type: 'gain', bypassed: false, params: { gain: 0 } },
+        { id: 'second', type: 'gain', bypassed: false, params: { gain: -6 } },
+      ]);
+      expect(gains).toHaveLength(2);
+      expect(gains[0]!.gain.value).toBe(1);
+      expect(gains[1]!.gain.value).toBeCloseTo(10 ** (-6 / 20), 8);
+      expect(source.connect).toHaveBeenCalledWith(gains[0]);
+      expect(gains[0]!.connect).toHaveBeenCalledWith(gains[1]);
+      expect(gains[1]!.connect).toHaveBeenCalledWith(destination);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('rejects invalid channel layouts and rates before allocation', async () => {
     const engine = new AudioEngine();
     await expect(engine.renderRealtimeEffects([], 48000, [])).rejects.toThrow(/单声道或立体声/);

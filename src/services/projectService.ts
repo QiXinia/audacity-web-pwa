@@ -25,6 +25,7 @@ import { sortTracks as sortTrackList, type TrackSortMode } from '@/lib/trackSort
 import { alignProjectTracks, type TrackAlignMode } from '@/lib/trackAlignment';
 import { setTrackColor } from '@/lib/clipColor';
 import { setTrackHalfWave, setTrackViewMode } from '@/lib/trackVisualization';
+import { moveEffectInList } from '@/lib/realtimeEffectOrder';
 import { validateTempo, validateTimeSignature } from '@/lib/musicalTiming';
 import { audioEngine } from '@/engine/audioEngine';
 import { wasmProcessor } from '@/wasm/processor';
@@ -7420,6 +7421,31 @@ class ProjectService {
   }
 
   // Effect operations
+  /** Audacity Change effect order: move against the latest committed chain. */
+  async moveEffectToIndex(
+    projectId: string,
+    trackId: string,
+    effectId: string,
+    toIndex: number,
+  ): Promise<{ before: IProject; after: IProject; fromIndex: number; toIndex: number } | null> {
+    if (!Number.isInteger(toIndex)) return null;
+    let fromIndex = -1;
+    const result = await this.editLatestProject(projectId, (project) => {
+      const track = project.tracks.find((candidate) => candidate.id === trackId);
+      if (!track) return project;
+      fromIndex = track.effects.findIndex((effect) => effect.id === effectId);
+      const effects = moveEffectInList(track.effects, fromIndex, toIndex);
+      if (!effects) return project;
+      return {
+        ...project,
+        tracks: project.tracks.map((candidate) => (
+          candidate.id === trackId ? { ...candidate, effects } : candidate
+        )),
+      };
+    });
+    return result ? { ...result, fromIndex, toIndex } : null;
+  }
+
   async addEffectToTrack(
     projectId: string,
     trackId: string,

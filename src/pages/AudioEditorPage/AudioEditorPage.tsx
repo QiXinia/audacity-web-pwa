@@ -7285,6 +7285,28 @@ function AudioEditorPageContent() {
   }
   }
 
+  async function moveEffect(trackId: string, effectId: string, toIndex: number) {
+    if (!project) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
+    try {
+      const result = await projectService.moveEffectToIndex(projectId, trackId, effectId, toIndex);
+      if (!result || !isCurrentAction()) return;
+      setProject(result.after);
+      pushHistoryCmd({
+        id: generateId(),
+        label: '调整效果顺序',
+        execute: () => result.after,
+        undo: () => result.before,
+      }, result.before);
+    } catch (error) {
+      if (!isCurrentAction()) return;
+      logger.error('Move realtime effect failed', error);
+      toast.error(`调整效果顺序失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }
+
   // Selection handling from canvas
   function handleSelectionChange(start: number, end: number, trackId?: string) {
     if (trackId) setSelectedTrackId(trackId);
@@ -10225,6 +10247,9 @@ function AudioEditorPageContent() {
               }
               onRemoveEffect={(effectId) =>
                 removeEffect(effectsPanelTrackId, effectId)
+              }
+              onMoveEffect={(effectId, toIndex) =>
+                moveEffect(effectsPanelTrackId, effectId, toIndex)
               }
             />
           )}

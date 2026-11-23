@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -13,6 +13,8 @@ import {
   Speaker,
   Wind,
   Zap,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -44,6 +46,7 @@ interface EffectPanelProps {
   onUpdateEffect: (effectId: string, params: Record<string, number>) => void;
   onToggleBypass: (effectId: string) => void;
   onRemoveEffect: (effectId: string) => void;
+  onMoveEffect: (effectId: string, toIndex: number) => void | Promise<void>;
 }
 
 const EFFECT_CATALOG: Array<{
@@ -165,11 +168,26 @@ export default function EffectPanel({
   onUpdateEffect,
   onToggleBypass,
   onRemoveEffect,
+  onMoveEffect,
 }: EffectPanelProps) {
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [selectedEffectId, setSelectedEffectId] = useState<string | null>(
     track.effects[0]?.id ?? null,
   );
+  const [isMovingEffect, setIsMovingEffect] = useState(false);
+  const effectMoveInFlight = useRef(false);
+
+  async function handleMoveEffect(effectId: string, toIndex: number) {
+    if (effectMoveInFlight.current) return;
+    effectMoveInFlight.current = true;
+    setIsMovingEffect(true);
+    try {
+      await onMoveEffect(effectId, toIndex);
+    } finally {
+      effectMoveInFlight.current = false;
+      setIsMovingEffect(false);
+    }
+  }
 
   const activeEffects = useMemo(() => {
     return track.effects;
@@ -263,11 +281,15 @@ export default function EffectPanel({
                   key={effect.id}
                   effect={effect}
                   index={index}
+                  effectCount={activeEffects.length}
+                  isMoving={isMovingEffect}
                   label={getEffectLabel(effect.type)}
                   isSelected={selectedEffectId === effect.id}
                   onSelect={() => setSelectedEffectId(effect.id)}
                   onToggleBypass={() => onToggleBypass(effect.id)}
                   onRemove={() => onRemoveEffect(effect.id)}
+                  onMove={(toIndex) => handleMoveEffect(effect.id, toIndex)}
+                  onDropEffect={(effectId, toIndex) => handleMoveEffect(effectId, toIndex)}
                 />
               ))}
             </div>
@@ -334,32 +356,83 @@ export default function EffectPanel({
 function EffectChainItem({
   effect,
   index,
+  effectCount,
+  isMoving,
   label,
   isSelected,
   onSelect,
   onToggleBypass,
   onRemove,
+  onMove,
+  onDropEffect,
 }: {
   effect: IEffect;
   index: number;
+  effectCount: number;
+  isMoving: boolean;
   label: string;
   isSelected: boolean;
   onSelect: () => void;
   onToggleBypass: () => void;
   onRemove: () => void;
+  onMove: (toIndex: number) => void;
+  onDropEffect: (effectId: string, toIndex: number) => void;
 }) {
   const icon = EFFECT_CATALOG.find((e) => e.type === effect.type)?.icon ?? <Sliders className="size-3.5" />;
 
   return (
     <div
-      className={`group flex items-center gap-1.5 rounded-md border p-1.5 transition-colors cursor-pointer ${
+      data-testid={`realtime-effect-${effect.id}`}
+      className={`group flex items-center gap-1 rounded-md border p-1.5 transition-colors cursor-pointer ${
         isSelected
           ? 'border-primary bg-primary/10'
           : 'border-border/50 hover:border-border bg-background/50'
       } ${effect.bypassed ? 'opacity-50' : ''}`}
       onClick={onSelect}
+      onDragOver={(event) => {
+        if (isMoving) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isMoving) return;
+        const effectId = event.dataTransfer.getData('application/x-audacity-effect-id');
+        if (effectId) onDropEffect(effectId, index);
+      }}
     >
-      <GripVertical className="size-3 text-muted-foreground/50" />
+      <Button
+        variant="ghost"
+        size="icon"
+        draggable={!isMoving}
+        disabled={isMoving}
+        aria-label={`拖动排序${label}`}
+        title="拖动排序；聚焦后可用上下方向键移动"
+        className="size-5 shrink-0 cursor-grab active:cursor-grabbing"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (isMoving) return;
+          const toIndex = event.key === 'ArrowUp'
+            ? index - 1
+            : event.key === 'ArrowDown' ? index + 1 : index;
+          if (toIndex === index || toIndex < 0 || toIndex >= effectCount) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onMove(toIndex);
+        }}
+        onDragStart={(event) => {
+          event.stopPropagation();
+          if (isMoving) {
+            event.preventDefault();
+            return;
+          }
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('application/x-audacity-effect-id', effect.id);
+        }}
+      >
+        <GripVertical className="size-3 text-muted-foreground/70" />
+      </Button>
       <div className="flex size-6 shrink-0 items-center justify-center rounded bg-muted">
         {icon}
       </div>
@@ -383,12 +456,41 @@ function EffectChainItem({
         </TooltipTrigger>
         <TooltipContent>{effect.bypassed ? '启用' : '旁路'}</TooltipContent>
       </Tooltip>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={`上移${label}`}
+        title={`上移${label}`}
+        disabled={isMoving || index === 0}
+        className="size-5 shrink-0"
+        onClick={(event) => {
+          event.stopPropagation();
+          onMove(index - 1);
+        }}
+      >
+        <ArrowUp className="size-3" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={`下移${label}`}
+        title={`下移${label}`}
+        disabled={isMoving || index === effectCount - 1}
+        className="size-5 shrink-0"
+        onClick={(event) => {
+          event.stopPropagation();
+          onMove(index + 1);
+        }}
+      >
+        <ArrowDown className="size-3" />
+      </Button>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
             variant="ghost"
             size="icon"
-            className="size-6 text-muted-foreground hover:text-destructive opacity-70 hover:opacity-100"
+            aria-label={`移除${label}`}
+            className="size-5 shrink-0 text-muted-foreground hover:text-destructive opacity-70 hover:opacity-100"
             onClick={(e) => {
               e.stopPropagation();
               onRemove();
