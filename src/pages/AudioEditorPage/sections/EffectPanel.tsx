@@ -42,10 +42,10 @@ import type { ITrack, IEffect, EffectType } from '@/types/project';
 interface EffectPanelProps {
   track: ITrack;
   onClose: () => void;
-  onAddEffect: (type: EffectType) => void;
+  onAddEffect: (type: EffectType) => void | Promise<void>;
   onUpdateEffect: (effectId: string, params: Record<string, number>) => void;
-  onToggleBypass: (effectId: string) => void;
-  onRemoveEffect: (effectId: string) => void;
+  onToggleBypass: (effectId: string) => void | Promise<void>;
+  onRemoveEffect: (effectId: string) => void | Promise<void>;
   onMoveEffect: (effectId: string, toIndex: number) => void | Promise<void>;
   onReplaceEffect: (effectId: string, type: EffectType) => IEffect | null | void | Promise<IEffect | null | void>;
 }
@@ -204,6 +204,43 @@ export default function EffectPanel({
     }
   }
 
+  async function handleAddEffect(type: EffectType) {
+    if (effectMoveInFlight.current) return;
+    effectMoveInFlight.current = true;
+    setIsMovingEffect(true);
+    try {
+      await onAddEffect(type);
+      setShowAddMenu(false);
+    } finally {
+      effectMoveInFlight.current = false;
+      setIsMovingEffect(false);
+    }
+  }
+
+  async function handleToggleBypass(effectId: string) {
+    if (effectMoveInFlight.current) return;
+    effectMoveInFlight.current = true;
+    setIsMovingEffect(true);
+    try {
+      await onToggleBypass(effectId);
+    } finally {
+      effectMoveInFlight.current = false;
+      setIsMovingEffect(false);
+    }
+  }
+
+  async function handleRemoveEffect(effectId: string) {
+    if (effectMoveInFlight.current) return;
+    effectMoveInFlight.current = true;
+    setIsMovingEffect(true);
+    try {
+      await onRemoveEffect(effectId);
+    } finally {
+      effectMoveInFlight.current = false;
+      setIsMovingEffect(false);
+    }
+  }
+
   const activeEffects = useMemo(() => {
     return track.effects;
   }, [track.effects]);
@@ -246,6 +283,7 @@ export default function EffectPanel({
               size="sm"
               className="w-full"
               onClick={() => setShowAddMenu(true)}
+              disabled={isMovingEffect}
             >
               <Plus className="mr-1 size-3.5" />
               添加效果
@@ -260,10 +298,8 @@ export default function EffectPanel({
                     variant="outline"
                     size="sm"
                     className="h-auto flex-col gap-1 py-2 text-[10px]"
-                    onClick={() => {
-                      onAddEffect(fx.type);
-                      setShowAddMenu(false);
-                    }}
+                    disabled={isMovingEffect}
+                    onClick={() => void handleAddEffect(fx.type)}
                   >
                     {fx.icon}
                     {fx.label}
@@ -275,6 +311,7 @@ export default function EffectPanel({
                 size="sm"
                 className="w-full text-xs text-muted-foreground"
                 onClick={() => setShowAddMenu(false)}
+                disabled={isMovingEffect}
               >
                 取消
               </Button>
@@ -301,8 +338,8 @@ export default function EffectPanel({
                   label={getEffectLabel(effect.type)}
                   isSelected={selectedEffectId === effect.id}
                   onSelect={() => setSelectedEffectId(effect.id)}
-                  onToggleBypass={() => onToggleBypass(effect.id)}
-                  onRemove={() => onRemoveEffect(effect.id)}
+                  onToggleBypass={() => void handleToggleBypass(effect.id)}
+                  onRemove={() => void handleRemoveEffect(effect.id)}
                   onMove={(toIndex) => handleMoveEffect(effect.id, toIndex)}
                   onDropEffect={(effectId, toIndex) => handleMoveEffect(effectId, toIndex)}
                   onReplace={(type) => handleReplaceEffect(effect.id, type)}
@@ -354,6 +391,7 @@ export default function EffectPanel({
                           max={param.max}
                           step={param.step}
                           onValueChange={(v) => handleParamChange(param.key, v[0])}
+                          disabled={isMovingEffect}
                           className="h-1"
                         />
                       </div>
@@ -480,6 +518,8 @@ function EffectChainItem({
           <Button
             variant="ghost"
             size="icon"
+            aria-label={effect.bypassed ? `启用${label}` : `旁路${label}`}
+            disabled={isMoving}
             className="size-6 opacity-70 hover:opacity-100"
             onClick={(e) => {
               e.stopPropagation();
@@ -525,6 +565,7 @@ function EffectChainItem({
             variant="ghost"
             size="icon"
             aria-label={`移除${label}`}
+            disabled={isMoving}
             className="size-5 shrink-0 text-muted-foreground hover:text-destructive opacity-70 hover:opacity-100"
             onClick={(e) => {
               e.stopPropagation();

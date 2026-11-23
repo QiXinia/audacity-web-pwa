@@ -7478,71 +7478,109 @@ class ProjectService {
     return result && replacement ? { ...result, index, replacement } : null;
   }
 
+  /** Add a realtime effect only after earlier project writes have committed. */
   async addEffectToTrack(
     projectId: string,
     trackId: string,
     type: EffectType,
-  ): Promise<IEffect | null> {
-    const project = this.currentProject?.id === projectId
-      ? this.currentProject
-      : await this.getProject(projectId);
-    if (!project) return null;
-
-    const track = project.tracks.find((t) => t.id === trackId);
-    if (!track) return null;
-
-    const defaultParams = this.getDefaultEffectParams(type);
-    const effect: IEffect = {
-      id: generateId(),
-      type,
-      bypassed: false,
-      params: defaultParams,
-    };
-
-    track.effects.push(effect);
-    await this.saveProject(project);
-    return effect;
+  ): Promise<{ before: IProject; after: IProject; effect: IEffect } | null> {
+    let effect: IEffect | null = null;
+    const result = await this.editLatestProject(projectId, (project) => {
+      const track = project.tracks.find((candidate) => candidate.id === trackId);
+      if (!track) return project;
+      effect = {
+        id: generateId(),
+        type,
+        bypassed: false,
+        params: this.getDefaultEffectParams(type),
+      };
+      return {
+        ...project,
+        tracks: project.tracks.map((candidate) => (
+          candidate.id === trackId
+            ? { ...candidate, effects: [...candidate.effects, effect!] }
+            : candidate
+        )),
+      };
+    });
+    return result && effect ? { ...result, effect } : null;
   }
 
+  /** Merge realtime effect settings into the latest committed effect state. */
   async updateEffect(
     projectId: string,
     trackId: string,
     effectId: string,
     updates: Partial<IEffect>,
-  ): Promise<void> {
-    const project = this.currentProject?.id === projectId
-      ? this.currentProject
-      : await this.getProject(projectId);
-    if (!project) return;
+  ): Promise<{ before: IProject; after: IProject; effect: IEffect } | null> {
+    let updatedEffect: IEffect | null = null;
+    const result = await this.editLatestProject(projectId, (project) => {
+      const track = project.tracks.find((candidate) => candidate.id === trackId);
+      const index = track?.effects.findIndex((candidate) => candidate.id === effectId) ?? -1;
+      if (!track || index < 0) return project;
+      const effect = track.effects[index]!;
+      updatedEffect = {
+        ...effect,
+        ...updates,
+        params: updates.params ? { ...effect.params, ...updates.params } : effect.params,
+      };
+      const effects = [...track.effects];
+      effects[index] = updatedEffect;
+      return {
+        ...project,
+        tracks: project.tracks.map((candidate) => (
+          candidate.id === trackId ? { ...candidate, effects } : candidate
+        )),
+      };
+    });
+    return result && updatedEffect ? { ...result, effect: updatedEffect } : null;
+  }
 
-    const track = project.tracks.find((t) => t.id === trackId);
-    if (!track) return;
-
-    const effect = track.effects.find((e) => e.id === effectId);
-    if (!effect) return;
-
-    Object.assign(effect, updates);
-    if (updates.params) {
-      effect.params = { ...effect.params, ...updates.params };
-    }
-    await this.saveProject(project);
+  /** Toggle the latest committed state so rapid commands cannot reuse stale UI values. */
+  async toggleEffectBypass(
+    projectId: string,
+    trackId: string,
+    effectId: string,
+  ): Promise<{ before: IProject; after: IProject; effect: IEffect } | null> {
+    let updatedEffect: IEffect | null = null;
+    const result = await this.editLatestProject(projectId, (project) => {
+      const track = project.tracks.find((candidate) => candidate.id === trackId);
+      const index = track?.effects.findIndex((candidate) => candidate.id === effectId) ?? -1;
+      if (!track || index < 0) return project;
+      updatedEffect = { ...track.effects[index]!, bypassed: !track.effects[index]!.bypassed };
+      const effects = [...track.effects];
+      effects[index] = updatedEffect;
+      return {
+        ...project,
+        tracks: project.tracks.map((candidate) => (
+          candidate.id === trackId ? { ...candidate, effects } : candidate
+        )),
+      };
+    });
+    return result && updatedEffect ? { ...result, effect: updatedEffect } : null;
   }
 
   async removeEffectFromTrack(
     projectId: string,
     trackId: string,
     effectId: string,
-  ): Promise<void> {
-    const project = this.currentProject?.id === projectId
-      ? this.currentProject
-      : await this.getProject(projectId);
-    if (!project) return;
-
-    const track = project.tracks.find((t) => t.id === trackId);
-    if (!track) return;
-
-    track.effects = track.effects.filter((e) => e.id !== effectId);
-    await this.saveProject(project);
+  ): Promise<{ before: IProject; after: IProject; removed: IEffect; index: number } | null> {
+    let removed: IEffect | null = null;
+    let index = -1;
+    const result = await this.editLatestProject(projectId, (project) => {
+      const track = project.tracks.find((candidate) => candidate.id === trackId);
+      index = track?.effects.findIndex((candidate) => candidate.id === effectId) ?? -1;
+      if (!track || index < 0) return project;
+      removed = track.effects[index]!;
+      const effects = track.effects.filter((_, candidateIndex) => candidateIndex !== index);
+      return {
+        ...project,
+        tracks: project.tracks.map((candidate) => (
+          candidate.id === trackId ? { ...candidate, effects } : candidate
+        )),
+      };
+    });
+    return result && removed ? { ...result, removed, index } : null;
   }
 
   // Storage info

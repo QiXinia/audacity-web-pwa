@@ -72,6 +72,45 @@ describe('EffectPanel Audacity replacement controls', () => {
     finish();
     await waitFor(() => expect(replacement).toBeEnabled());
   });
+  it('locks add, bypass, and remove while another chain mutation is saving', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = renderPanel({ onMoveEffect });
+    fireEvent.click(screen.getByRole('button', { name: '下移增益' }));
+
+    const add = screen.getByRole('button', { name: '添加效果' });
+    const bypass = screen.getByRole('button', { name: '旁路增益' });
+    const remove = screen.getByRole('button', { name: '移除增益' });
+    expect(add).toBeDisabled();
+    expect(bypass).toBeDisabled();
+    expect(remove).toBeDisabled();
+    fireEvent.click(add);
+    fireEvent.click(bypass);
+    fireEvent.click(remove);
+    expect(props.onAddEffect).not.toHaveBeenCalled();
+    expect(props.onToggleBypass).not.toHaveBeenCalled();
+    expect(props.onRemoveEffect).not.toHaveBeenCalled();
+
+    finish();
+    await waitFor(() => expect(add).toBeEnabled());
+  });
+
+  it('prevents duplicate add commands while the first add is saving', async () => {
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    renderPanel({ onAddEffect });
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '增益' }));
+
+    const lowPass = screen.getByRole('button', { name: '低通滤波' });
+    expect(lowPass).toBeDisabled();
+    fireEvent.click(lowPass);
+    expect(onAddEffect).toHaveBeenCalledTimes(1);
+    expect(onAddEffect).toHaveBeenCalledWith('gain');
+
+    finish();
+    await waitFor(() => expect(screen.queryByText('选择效果类型')).not.toBeInTheDocument());
+  });
 });
 
 describe('EffectPanel Audacity reorder controls', () => {

@@ -7236,53 +7236,76 @@ function AudioEditorPageContent() {
   // Effect operations
   async function addEffect(trackId: string, type: EffectType) {
     if (!project) return;
-    const before = JSON.parse(JSON.stringify(project)) as IProject;
-    const effect = await projectService.addEffectToTrack(project.id, trackId, type);
-    if (effect) {
-      const updated = await projectService.getProject(project.id);
-      if (updated) {
-        setProject(updated);
-        pushHistoryCmd({
-          id: generateId(),
-          label: `添加${getEffectLabel(type)}`,
-          execute: () => updated,
-          undo: () => before,
-    });
-  }
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
+    try {
+      const result = await projectService.addEffectToTrack(projectId, trackId, type);
+      if (!result || !isCurrentAction()) return;
+      setProject(result.after);
+      pushHistoryCmd({
+        id: generateId(),
+        label: `添加${getEffectLabel(type)}`,
+        execute: () => result.after,
+        undo: () => result.before,
+      }, result.before);
+    } catch (error) {
+      if (!isCurrentAction()) return;
+      logger.error('Add realtime effect failed', error);
+      toast.error(`添加效果失败：${error instanceof Error ? error.message : '未知错误'}`);
     }
   }
 
   async function updateEffectParams(trackId: string, effectId: string, params: Record<string, number>) {
     if (!project) return;
-    await projectService.updateEffect(project.id, trackId, effectId, { params });
-    const updated = await projectService.getProject(project.id);
-    if (updated) setProject(updated);
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    try {
+      const result = await projectService.updateEffect(projectId, trackId, effectId, { params });
+      if (!result || projectLoadGenerationRef.current !== generation) return;
+      setProject(result.after);
+    } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
+      logger.error('Update realtime effect parameters failed', error);
+      toast.error(`更新效果参数失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
   }
 
   async function toggleEffectBypass(trackId: string, effectId: string) {
     if (!project) return;
-    const track = project.tracks.find((t) => t.id === trackId);
-    const effect = track?.effects.find((e) => e.id === effectId);
-    if (!effect) return;
-    await projectService.updateEffect(project.id, trackId, effectId, { bypassed: !effect.bypassed });
-    const updated = await projectService.getProject(project.id);
-    if (updated) setProject(updated);
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    try {
+      const result = await projectService.toggleEffectBypass(projectId, trackId, effectId);
+      if (!result || projectLoadGenerationRef.current !== generation) return;
+      setProject(result.after);
+    } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
+      logger.error('Toggle realtime effect bypass failed', error);
+      toast.error(`切换效果旁路失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
   }
 
   async function removeEffect(trackId: string, effectId: string) {
     if (!project) return;
-    const before = JSON.parse(JSON.stringify(project)) as IProject;
-    await projectService.removeEffectFromTrack(project.id, trackId, effectId);
-    const updated = await projectService.getProject(project.id);
-    if (updated) {
-      setProject(updated);
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
+    try {
+      const result = await projectService.removeEffectFromTrack(projectId, trackId, effectId);
+      if (!result || !isCurrentAction()) return;
+      setProject(result.after);
       pushHistoryCmd({
         id: generateId(),
-        label: '移除效果',
-        execute: () => updated,
-        undo: () => before,
-    });
-  }
+        label: `移除${getEffectLabel(result.removed.type)}`,
+        execute: () => result.after,
+        undo: () => result.before,
+      }, result.before);
+    } catch (error) {
+      if (!isCurrentAction()) return;
+      logger.error('Remove realtime effect failed', error);
+      toast.error(`移除效果失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
   }
 
   async function moveEffect(trackId: string, effectId: string, toIndex: number) {
