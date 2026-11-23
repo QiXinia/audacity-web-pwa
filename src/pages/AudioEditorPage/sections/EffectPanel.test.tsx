@@ -657,6 +657,46 @@ describe('EffectPanel Audacity reorder controls', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
   });
 
+  it('discards pending effect-row focus when an asynchronous reorder finishes on another track', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-low-pass-b', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    const view = render(<EffectPanel {...props} />);
+    const down = screen.getByRole('button', { name: '下移增益' });
+    down.focus();
+    fireEvent.click(down);
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+    />);
+
+    expect(document.body).toHaveFocus();
+  });
+
   it('restores effect-row focus after an asynchronous native drag reorder', async () => {
     let finish!: () => void;
     const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));

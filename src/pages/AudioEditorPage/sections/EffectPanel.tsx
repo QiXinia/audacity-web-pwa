@@ -188,7 +188,7 @@ export default function EffectPanel({
   const pendingBypassFocus = useRef<{ trackId: string; effectId: string } | null>(null);
   const pendingToggleAllEffectsFocusTrackId = useRef<string | null>(null);
   const pendingGripFocusId = useRef<string | null>(null);
-  const pendingEffectFocusId = useRef<string | null>(null);
+  const pendingEffectFocus = useRef<{ trackId: string; effectId: string } | null>(null);
   const pendingRemovalFocus = useRef<{
     trackId: string;
     effectId: string;
@@ -213,7 +213,7 @@ export default function EffectPanel({
     if (restoreGripFocus) {
       pendingGripFocusId.current = effectId;
     } else {
-      pendingEffectFocusId.current = effectId;
+      pendingEffectFocus.current = { trackId: track.id, effectId };
     }
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
@@ -332,13 +332,20 @@ export default function EffectPanel({
   }, [activeEffects, isMovingEffect]);
 
   useEffect(() => {
-    if (isMovingEffect || !pendingEffectFocusId.current) return;
-    const effectId = pendingEffectFocusId.current;
-    const effectName = effectNameElements.current.get(effectId);
-    if (!effectName) return;
-    pendingEffectFocusId.current = null;
+    const pending = pendingEffectFocus.current;
+    if (!pending || isMovingEffect) return;
+    if (pending.trackId !== track.id) {
+      pendingEffectFocus.current = null;
+      return;
+    }
+    const effectName = effectNameElements.current.get(pending.effectId);
+    if (!effectName) {
+      pendingEffectFocus.current = null;
+      return;
+    }
+    pendingEffectFocus.current = null;
     effectName.focus();
-  }, [activeEffects, isMovingEffect]);
+  }, [activeEffects, isMovingEffect, track.id]);
 
   useEffect(() => {
     const pending = pendingBypassFocus.current;
