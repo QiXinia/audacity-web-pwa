@@ -137,6 +137,26 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(await screen.findByText('8000Hz')).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByRole('slider')[0]).toHaveFocus());
   });
+
+  it.each([
+    { outcome: 'null', result: null },
+    { outcome: 'void', result: undefined },
+  ])('restores the add button focus when adding returns $outcome without an effect', async ({ result }) => {
+    const onAddEffect = vi.fn(async () => result);
+    const props = renderPanel({ onAddEffect });
+    const add = screen.getByRole('button', { name: '添加效果' });
+    add.focus();
+    fireEvent.click(add);
+
+    const lowPass = screen.getByRole('button', { name: '低通滤波' });
+    lowPass.focus();
+    fireEvent.click(lowPass);
+    await waitFor(() => expect(onAddEffect).toHaveBeenCalledWith('lowPass'));
+    await waitFor(() => expect(screen.queryByText('选择效果类型')).not.toBeInTheDocument());
+
+    expect(props.onAddEffect).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: '添加效果' })).toHaveFocus();
+  });
 });
 
 describe('EffectPanel Audacity effect name controls', () => {

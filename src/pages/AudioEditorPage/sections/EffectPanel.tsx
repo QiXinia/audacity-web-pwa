@@ -246,6 +246,8 @@ export default function EffectPanel({
       if (added) {
         pendingParameterFocusEffectId.current = added.id;
         setSelectedEffectId(added.id);
+      } else {
+        restoreAddEffectButtonFocus.current = true;
       }
       setShowAddMenu(false);
     } finally {
