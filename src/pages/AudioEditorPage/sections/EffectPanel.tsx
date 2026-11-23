@@ -183,6 +183,9 @@ export default function EffectPanel({
   const effectMoveInFlight = useRef(false);
   const gripElements = useRef(new Map<string, HTMLButtonElement>());
   const pendingGripFocusId = useRef<string | null>(null);
+  const addEffectButton = useRef<HTMLButtonElement>(null);
+  const firstAddEffectOption = useRef<HTMLButtonElement>(null);
+  const restoreAddEffectButtonFocus = useRef(false);
 
   async function handleMoveEffect(effectId: string, toIndex: number, restoreGripFocus = false) {
     if (effectMoveInFlight.current) return;
@@ -232,6 +235,11 @@ export default function EffectPanel({
     }
   }
 
+  function closeAddMenu() {
+    restoreAddEffectButtonFocus.current = true;
+    setShowAddMenu(false);
+  }
+
   async function handleToggleBypass(effectId: string) {
     if (effectMoveInFlight.current) return;
     effectMoveInFlight.current = true;
@@ -273,6 +281,16 @@ export default function EffectPanel({
   const activeEffects = useMemo(() => {
     return track.effects;
   }, [track.effects]);
+
+  useEffect(() => {
+    if (showAddMenu) {
+      firstAddEffectOption.current?.focus();
+      return;
+    }
+    if (!restoreAddEffectButtonFocus.current) return;
+    restoreAddEffectButtonFocus.current = false;
+    addEffectButton.current?.focus();
+  }, [showAddMenu]);
 
   useEffect(() => {
     if (isMovingEffect || !pendingGripFocusId.current) return;
@@ -338,6 +356,7 @@ export default function EffectPanel({
         <div className="border-b border-border p-2">
           {!showAddMenu ? (
             <Button
+              ref={addEffectButton}
               variant="secondary"
               size="sm"
               className="w-full"
@@ -348,11 +367,20 @@ export default function EffectPanel({
               添加效果
             </Button>
           ) : (
-            <div className="space-y-1">
+            <div
+              className="space-y-1"
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                event.stopPropagation();
+                closeAddMenu();
+              }}
+            >
               <div className="text-[10px] font-medium text-muted-foreground">选择效果类型</div>
               <div className="grid grid-cols-2 gap-1">
-                {EFFECT_CATALOG.map((fx) => (
+                {EFFECT_CATALOG.map((fx, effectIndex) => (
                   <Button
+                    ref={effectIndex === 0 ? firstAddEffectOption : undefined}
                     key={fx.type}
                     variant="outline"
                     size="sm"
@@ -369,7 +397,7 @@ export default function EffectPanel({
                 variant="ghost"
                 size="sm"
                 className="w-full text-xs text-muted-foreground"
-                onClick={() => setShowAddMenu(false)}
+                onClick={closeAddMenu}
                 disabled={isMovingEffect}
               >
                 取消

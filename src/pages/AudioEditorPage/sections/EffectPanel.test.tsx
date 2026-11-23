@@ -173,6 +173,28 @@ describe('EffectPanel Audacity empty effect guidance', () => {
   });
 });
 
+describe('EffectPanel add menu keyboard navigation', () => {
+  it('focuses the first effect on open and restores the trigger after Escape or Cancel', () => {
+    const props = renderPanel();
+    const add = screen.getByRole('button', { name: '添加效果' });
+    add.focus();
+    fireEvent.click(add);
+
+    const firstEffect = screen.getByRole('button', { name: '增益' });
+    expect(firstEffect).toHaveFocus();
+    fireEvent.keyDown(firstEffect, { key: 'Escape' });
+
+    expect(screen.queryByText('选择效果类型')).not.toBeInTheDocument();
+    const restoredAdd = screen.getByRole('button', { name: '添加效果' });
+    expect(restoredAdd).toHaveFocus();
+
+    fireEvent.click(restoredAdd);
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('button', { name: '添加效果' })).toHaveFocus();
+    expect(props.onAddEffect).not.toHaveBeenCalled();
+  });
+});
+
 describe('EffectPanel Audacity replacement menu commands', () => {
   it('marks the current effect in the replacement menu', () => {
     renderPanel();
