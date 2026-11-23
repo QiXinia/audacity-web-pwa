@@ -56,6 +56,32 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(persisted).toEqual({ frequency: 81, q: 10 });
   });
 
+  it('uses the current track selection and effect id after switching tracks', () => {
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    expect(screen.getByText('0.00dB')).toBeInTheDocument();
+
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-low-pass-b', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+
+    expect(screen.getByText('6400Hz')).toBeInTheDocument();
+    expect(screen.getByTestId('realtime-effect-fx-low-pass-b')).toHaveClass('border-primary');
+    fireEvent.keyDown(screen.getAllByRole('slider')[0]!, { key: 'ArrowRight' });
+    expect(props.onUpdateEffect).toHaveBeenCalledWith('fx-low-pass-b', { frequency: 6401 });
+  });
+
   it('selects the effect returned by a successful add so its parameters open immediately', async () => {
     const added = {
       id: 'fx-low-pass-new', type: 'lowPass' as const, bypassed: false,

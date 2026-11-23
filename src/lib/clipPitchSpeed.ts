@@ -202,8 +202,8 @@ export function hasClipPitchOrSpeed(clip: IClip): boolean {
 
 /**
  * Bake the visible play region into independent PCM. As in Audacity 4.0.2
- * GetRenderedCopy, up to one output second of source context on either side
- * lets the stretcher reach a steady state before the visible boundaries.
+ * GetRenderedCopy, up to one second of raw, unstretched source context on
+ * either side lets the stretcher reach a steady state before the visible boundaries.
  */
 export function renderClipPitchAndSpeedChannels(
   clip: IClip,

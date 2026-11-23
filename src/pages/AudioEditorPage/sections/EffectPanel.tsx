@@ -246,9 +246,13 @@ export default function EffectPanel({
     return track.effects;
   }, [track.effects]);
 
+  const resolvedSelectedEffectId = activeEffects.some((effect) => effect.id === selectedEffectId)
+    ? selectedEffectId
+    : activeEffects[0]?.id ?? null;
+
   const selectedEffect = useMemo(() => {
-    return activeEffects.find((e) => e.id === selectedEffectId);
-  }, [activeEffects, selectedEffectId]);
+    return activeEffects.find((effect) => effect.id === resolvedSelectedEffectId);
+  }, [activeEffects, resolvedSelectedEffectId]);
 
   const effectDef = useMemo(() => {
     if (!selectedEffect) return null;
@@ -336,7 +340,7 @@ export default function EffectPanel({
                   effectCount={activeEffects.length}
                   isMoving={isMovingEffect}
                   label={getEffectLabel(effect.type)}
-                  isSelected={selectedEffectId === effect.id}
+                  isSelected={resolvedSelectedEffectId === effect.id}
                   onSelect={() => setSelectedEffectId(effect.id)}
                   onToggleBypass={() => void handleToggleBypass(effect.id)}
                   onRemove={() => void handleRemoveEffect(effect.id)}

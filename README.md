@@ -85,7 +85,7 @@
 | 高通滤波器 (High Pass) | ✅ |
 | 低通滤波器 (Low Pass) | ✅ |
 
-每个效果支持拖动、按钮或键盘任意排序，以及通过下拉菜单替换；替换保持原链槽位并生成默认启用的新状态，同类型替换会重置参数。添加成功后立即定位到新效果参数面板，与 Audacity 4 的添加后打开效果界面行为一致；参数滑块仅提交当前字段的增量补丁，避免快速编辑不同参数时旧完整快照覆盖新值。添加、参数修改、旁路、移除、排序和替换均基于最新已提交工程串行写入，保存失败不污染内存；面板在异步链操作期间互斥，添加、移除、排序与替换支持精确撤销／重做和 IndexedDB 持久化。
+每个效果支持拖动、按钮或键盘任意排序，以及通过下拉菜单替换；替换保持原链槽位并生成默认启用的新状态，同类型替换会重置参数。添加成功后立即定位到新效果参数面板，与 Audacity 4 的添加后打开效果界面行为一致；参数滑块仅提交当前字段的增量补丁，避免快速编辑不同参数时旧完整快照覆盖新值。切换轨道后，选中效果会解析到当前轨道的真实 effect id，参数面板不再因上一轨状态残留而消失，键盘编辑也不会写入旧 id。添加、参数修改、旁路、移除、排序和替换均基于最新已提交工程串行写入，保存失败不污染内存；面板在异步链操作期间互斥，添加、移除、排序与替换支持精确撤销／重做和 IndexedDB 持久化。
 
 ### 工程管理
 
@@ -277,7 +277,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/services/workspaceService.test.ts` | 内置工作区、自定义布局、自动更新与旧数据迁移 | 9 |
 | `src/services/projectService.test.ts` | 循环启用状态、独立循环区、BPM／拍号及旧工程持久化 | 4 |
 | `src/services/projectService.effectMutations.test.ts` | 实时效果添加、部分参数合并、连续旁路、移除、最新排队工程、无效目标及保存失败原子性 | 9 |
-| `src/pages/AudioEditorPage/sections/EffectPanel.test.tsx` | 排序、替换、独立参数增量、快速编辑防旧快照覆盖、新增效果自动定位、参数显示、链操作互斥及重复添加防护 | 10 |
+| `src/pages/AudioEditorPage/sections/EffectPanel.test.tsx` | 排序、替换、独立参数增量、快速编辑防旧快照覆盖、新增效果自动定位、跨轨选择解析、参数显示、链操作互斥及重复添加防护 | 11 |
 | `src/services/projectService.silence.test.ts` | 选区清零、共享源写时复制、多声道与片段边界保持 | 6 |
 | `src/services/projectService.generation.test.ts` | 严格及可变长生成替换、Repeat 多轨共享缓冲、失败清理与非法输入 | 13 |
 | `src/services/projectService.import.test.ts` | 导入提交、失败回滚与孤儿缓冲清理 | 2 |
