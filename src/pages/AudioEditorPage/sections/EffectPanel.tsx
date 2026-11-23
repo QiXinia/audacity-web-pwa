@@ -184,7 +184,7 @@ export default function EffectPanel({
   const gripElements = useRef(new Map<string, HTMLButtonElement>());
   const pendingGripFocusId = useRef<string | null>(null);
   const addEffectButton = useRef<HTMLButtonElement>(null);
-  const firstAddEffectOption = useRef<HTMLButtonElement>(null);
+  const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
   const restoreAddEffectButtonFocus = useRef(false);
 
   async function handleMoveEffect(effectId: string, toIndex: number, restoreGripFocus = false) {
@@ -284,7 +284,7 @@ export default function EffectPanel({
 
   useEffect(() => {
     if (showAddMenu) {
-      firstAddEffectOption.current?.focus();
+      addEffectOptions.current[0]?.focus();
       return;
     }
     if (!restoreAddEffectButtonFocus.current) return;
@@ -370,17 +370,38 @@ export default function EffectPanel({
             <div
               className="space-y-1"
               onKeyDown={(event) => {
-                if (event.key !== 'Escape') return;
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeAddMenu();
+                  return;
+                }
+
+                const options = addEffectOptions.current.filter(
+                  (option): option is HTMLButtonElement => option !== null,
+                );
+                const currentIndex = options.indexOf(event.target as HTMLButtonElement);
+                if (currentIndex < 0) return;
+
+                let nextIndex: number | null = null;
+                if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % options.length;
+                if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + options.length) % options.length;
+                if (event.key === 'Home') nextIndex = 0;
+                if (event.key === 'End') nextIndex = options.length - 1;
+                if (nextIndex === null) return;
+
                 event.preventDefault();
                 event.stopPropagation();
-                closeAddMenu();
+                options[nextIndex]?.focus();
               }}
             >
               <div className="text-[10px] font-medium text-muted-foreground">选择效果类型</div>
               <div className="grid grid-cols-2 gap-1">
                 {EFFECT_CATALOG.map((fx, effectIndex) => (
                   <Button
-                    ref={effectIndex === 0 ? firstAddEffectOption : undefined}
+                    ref={(node) => {
+                      addEffectOptions.current[effectIndex] = node;
+                    }}
                     key={fx.type}
                     variant="outline"
                     size="sm"

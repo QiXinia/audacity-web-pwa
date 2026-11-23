@@ -193,6 +193,32 @@ describe('EffectPanel add menu keyboard navigation', () => {
     expect(screen.getByRole('button', { name: '添加效果' })).toHaveFocus();
     expect(props.onAddEffect).not.toHaveBeenCalled();
   });
+
+  it('moves between effect options with arrows, Home and End without scrolling the page', () => {
+    const props = renderPanel();
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+
+    const gain = screen.getByRole('button', { name: '增益' });
+    const highPass = screen.getByRole('button', { name: '高通滤波' });
+    const noiseGate = screen.getByRole('button', { name: '噪声门' });
+    expect(gain).toHaveFocus();
+
+    expect(fireEvent.keyDown(gain, { key: 'ArrowDown' })).toBe(false);
+    expect(highPass).toHaveFocus();
+    expect(fireEvent.keyDown(highPass, { key: 'ArrowUp' })).toBe(false);
+    expect(gain).toHaveFocus();
+
+    expect(fireEvent.keyDown(gain, { key: 'ArrowUp' })).toBe(false);
+    expect(noiseGate).toHaveFocus();
+    expect(fireEvent.keyDown(noiseGate, { key: 'ArrowDown' })).toBe(false);
+    expect(gain).toHaveFocus();
+
+    expect(fireEvent.keyDown(gain, { key: 'End' })).toBe(false);
+    expect(noiseGate).toHaveFocus();
+    expect(fireEvent.keyDown(noiseGate, { key: 'Home' })).toBe(false);
+    expect(gain).toHaveFocus();
+    expect(props.onAddEffect).not.toHaveBeenCalled();
+  });
 });
 
 describe('EffectPanel Audacity replacement menu commands', () => {
