@@ -183,6 +183,10 @@ export default function EffectPanel({
   const effectMoveInFlight = useRef(false);
   const gripElements = useRef(new Map<string, HTMLButtonElement>());
   const effectNameElements = useRef(new Map<string, HTMLButtonElement>());
+  const bypassElements = useRef(new Map<string, HTMLButtonElement>());
+  const toggleAllEffectsButton = useRef<HTMLButtonElement>(null);
+  const pendingBypassFocus = useRef<{ trackId: string; effectId: string } | null>(null);
+  const pendingToggleAllEffectsFocusTrackId = useRef<string | null>(null);
   const pendingGripFocusId = useRef<string | null>(null);
   const pendingEffectFocusId = useRef<string | null>(null);
   const pendingRemovalFocus = useRef<{
@@ -265,6 +269,7 @@ export default function EffectPanel({
 
   async function handleToggleBypass(effectId: string) {
     if (effectMoveInFlight.current) return;
+    pendingBypassFocus.current = { trackId: track.id, effectId };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -277,6 +282,7 @@ export default function EffectPanel({
 
   async function handleToggleAllEffects() {
     if (effectMoveInFlight.current || !onToggleAllEffects) return;
+    pendingToggleAllEffectsFocusTrackId.current = track.id;
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -333,6 +339,26 @@ export default function EffectPanel({
     pendingEffectFocusId.current = null;
     effectName.focus();
   }, [activeEffects, isMovingEffect]);
+
+  useEffect(() => {
+    const pending = pendingBypassFocus.current;
+    if (!pending || isMovingEffect) return;
+    if (pending.trackId !== track.id) {
+      pendingBypassFocus.current = null;
+      return;
+    }
+    const bypass = bypassElements.current.get(pending.effectId);
+    if (!bypass) return;
+    pendingBypassFocus.current = null;
+    bypass.focus();
+  }, [activeEffects, isMovingEffect, track.id]);
+
+  useEffect(() => {
+    const pendingTrackId = pendingToggleAllEffectsFocusTrackId.current;
+    if (!pendingTrackId || isMovingEffect) return;
+    pendingToggleAllEffectsFocusTrackId.current = null;
+    if (pendingTrackId === track.id) toggleAllEffectsButton.current?.focus();
+  }, [isMovingEffect, track.id]);
 
   useEffect(() => {
     const pending = pendingRemovalFocus.current;
@@ -405,6 +431,7 @@ export default function EffectPanel({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
+                  ref={toggleAllEffectsButton}
                   type="button"
                   variant="ghost"
                   size="icon"
@@ -547,6 +574,10 @@ export default function EffectPanel({
                     if (node) effectNameElements.current.set(effect.id, node);
                     else effectNameElements.current.delete(effect.id);
                   }}
+                  bypassRef={(node) => {
+                    if (node) bypassElements.current.set(effect.id, node);
+                    else bypassElements.current.delete(effect.id);
+                  }}
                 />
               ))}
             </div>
@@ -626,6 +657,7 @@ function EffectChainItem({
   onReplace,
   gripRef,
   nameRef,
+  bypassRef,
 }: {
   effect: IEffect;
   index: number;
@@ -641,6 +673,7 @@ function EffectChainItem({
   onReplace: (type: EffectType) => void;
   gripRef: (node: HTMLButtonElement | null) => void;
   nameRef: (node: HTMLButtonElement | null) => void;
+  bypassRef: (node: HTMLButtonElement | null) => void;
 }) {
   const icon = EFFECT_CATALOG.find((e) => e.type === effect.type)?.icon ?? <Sliders className="size-3.5" />;
 
@@ -746,6 +779,7 @@ function EffectChainItem({
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
+            ref={bypassRef}
             variant="ghost"
             size="icon"
             aria-label={effect.bypassed ? `启用${label}` : `旁路${label}`}

@@ -205,6 +205,110 @@ describe('EffectPanel Audacity track effects power', () => {
   });
 });
 
+describe('EffectPanel realtime bypass focus', () => {
+  it.each([
+    { outcome: 'a committed toggle', committed: true },
+    { outcome: 'no committed change', committed: false },
+  ])('restores the bypass-button focus after $outcome', async ({ committed }) => {
+    let finish!: () => void;
+    const onToggleBypass = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass, onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const bypass = screen.getByRole('button', { name: '旁路高通滤波' });
+    await act(async () => {
+      bypass.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
+    fireEvent.click(bypass);
+    expect(onToggleBypass).toHaveBeenCalledWith('fx-high-pass');
+    expect(bypass).toBeDisabled();
+
+    const updatedTrack = committed
+      ? {
+          ...track,
+          effects: track.effects.map((effect) => effect.id === 'fx-high-pass'
+            ? { ...effect, bypassed: true }
+            : effect),
+        }
+      : track;
+    view.rerender(<EffectPanel {...props} track={updatedTrack} />);
+    const currentBypass = screen.getByRole('button', {
+      name: committed ? '启用高通滤波' : '旁路高通滤波',
+    });
+    // Chromium drops focus when the activated button becomes disabled during saving.
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    expect(document.body).toHaveFocus();
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(currentBypass).toHaveFocus());
+    expect(currentBypass).toBeEnabled();
+  });
+
+  it('restores the track-effects power-button focus after an asynchronous toggle', async () => {
+    let finish!: () => void;
+    const onToggleAllEffects = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects, onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const toggle = screen.getByRole('button', { name: '切换全部效果' });
+    await act(async () => {
+      toggle.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
+    fireEvent.click(toggle);
+    expect(onToggleAllEffects).toHaveBeenCalledWith('track-a', false);
+    expect(toggle).toBeDisabled();
+
+    view.rerender(<EffectPanel {...props} track={{ ...track, effectsActive: false }} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    expect(document.body).toHaveFocus();
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(toggle).toHaveFocus());
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(toggle).toBeEnabled();
+  });
+
+  it('does not restore a pending bypass focus into a different track', async () => {
+    let finish!: () => void;
+    const onToggleBypass = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass, onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '旁路高通滤波' }));
+    expect(onToggleBypass).toHaveBeenCalledWith('fx-high-pass');
+
+    const otherTrack = { ...track, id: 'track-b', name: 'Track B' };
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    const otherTrackEffect = screen.getByRole('button', { name: '打开混响参数' });
+    otherTrackEffect.focus();
+    expect(otherTrackEffect).toHaveFocus();
+    await act(async () => { finish(); });
+
+    expect(otherTrackEffect).toHaveFocus();
+    expect(screen.getByRole('button', { name: '旁路高通滤波' })).not.toHaveFocus();
+  });
+});
+
 describe('EffectPanel Audacity empty effect guidance', () => {
   it('shows non-destructive guidance and the official video link for an empty chain', () => {
     renderPanel({ track: { ...track, effects: [] } });
