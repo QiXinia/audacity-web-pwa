@@ -281,6 +281,37 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(screen.getByRole('button', { name: '添加效果' })).toHaveFocus();
   });
 
+  it.each([
+    { outcome: 'null', result: null, shouldReject: false },
+    { outcome: 'void', result: undefined, shouldReject: false },
+    { outcome: 'rejection', result: null, shouldReject: true },
+  ])('cancels stale add-button focus after explicit selection when the add returns $outcome', async ({ result, shouldReject }) => {
+    let settle!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<null | undefined>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('add save failed after explicit selection'));
+        else resolve(result);
+      };
+    }));
+    renderPanel({ onAddEffect });
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    expect(onAddEffect).toHaveBeenCalledWith('lowPass');
+
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { settle(); });
+    await waitFor(() => expect(screen.queryByText('选择效果类型')).not.toBeInTheDocument());
+    const add = screen.getByRole('button', { name: '添加效果' });
+    expect(add).toBeEnabled();
+    expect(reverb).toHaveFocus();
+    expect(add).not.toHaveFocus();
+    expect(onAddEffect).toHaveBeenCalledTimes(1);
+  });
+
   it('closes the add menu and restores its trigger focus when the asynchronous add rejects', async () => {
     let fail!: () => void;
     const onAddEffect = vi.fn(() => new Promise<null>((_resolve, reject) => {
@@ -489,6 +520,32 @@ describe('EffectPanel realtime bypass focus', () => {
     await waitFor(() => expect(toggle).toHaveFocus());
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(toggle).toBeEnabled();
+  });
+
+  it('cancels stale track-effects power focus after the user explicitly selects another effect', async () => {
+    let finish!: () => void;
+    const onToggleAllEffects = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects, onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '切换全部效果' }));
+    expect(onToggleAllEffects).toHaveBeenCalledWith('track-a', false);
+
+    view.rerender(<EffectPanel {...props} track={{ ...track, effectsActive: false }} />);
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { finish(); });
+    const toggle = screen.getByRole('button', { name: '切换全部效果' });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(reverb).toHaveFocus();
+    expect(toggle).not.toHaveFocus();
   });
 
   it('restores track-effects power-button focus and unlocks when the asynchronous toggle rejects', async () => {

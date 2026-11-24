@@ -251,19 +251,19 @@ export default function EffectPanel({
 
   async function handleAddEffect(type: EffectType) {
     if (effectMoveInFlight.current) return;
+    // Queue restoration before awaiting so a newer explicit selection can cancel it.
+    restoreAddEffectButtonFocus.current = track.id;
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
       const added = await onAddEffect(type);
       if (added) {
+        restoreAddEffectButtonFocus.current = null;
         pendingParameterFocus.current = { trackId: track.id, effectId: added.id };
         setSelectedEffectId(added.id);
-      } else {
-        restoreAddEffectButtonFocus.current = track.id;
       }
       setShowAddMenu(false);
     } catch {
-      restoreAddEffectButtonFocus.current = track.id;
       setShowAddMenu(false);
     } finally {
       effectMoveInFlight.current = false;
@@ -473,6 +473,8 @@ export default function EffectPanel({
     pendingEffectFocus.current = null;
     pendingGripFocus.current = null;
     pendingBypassFocus.current = null;
+    pendingToggleAllEffectsFocusTrackId.current = null;
+    restoreAddEffectButtonFocus.current = null;
     setSelectedEffectId(effectId);
   }
 
