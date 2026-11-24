@@ -223,6 +223,46 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(screen.queryByText('8000Hz')).not.toBeInTheDocument();
   });
 
+  it('does not auto-select an asynchronous add after an external undo reorders the same track chain', async () => {
+    const added = {
+      id: 'fx-low-pass-external-chain', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<typeof added>((resolve) => {
+      finish = () => resolve(added);
+    }));
+    const externallyReorderedTrack = {
+      ...track,
+      effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!],
+    };
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+
+    // No explicit effect selection or track switch: an external history/cross-tab update
+    // replaces the chain while the add is still saving. The service later appends to it.
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...externallyReorderedTrack, effects: [...externallyReorderedTrack.effects, added] }}
+    />);
+
+    expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');
+    expect(screen.getByTestId(`realtime-effect-${added.id}`)).not.toHaveClass('border-primary');
+    expect(screen.getByText('0.00dB')).toBeInTheDocument();
+    expect(screen.queryByText('8000Hz')).not.toBeInTheDocument();
+  });
+
   it('cancels stale add-parameter focus after the user explicitly selects another effect', async () => {
     const added = {
       id: 'fx-low-pass-explicit-selection', type: 'lowPass' as const, bypassed: false,
@@ -928,6 +968,45 @@ describe('EffectPanel Audacity replacement controls', () => {
     view.rerender(<EffectPanel
       {...props}
       track={{ ...track, effects: [track.effects[0]!, replacement, track.effects[2]!] }}
+    />);
+
+    expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');
+    expect(screen.getByTestId(`realtime-effect-${replacement.id}`)).not.toHaveClass('border-primary');
+    expect(screen.getByText('0.00dB')).toBeInTheDocument();
+    expect(screen.queryByText('0.30s')).not.toBeInTheDocument();
+  });
+
+  it('does not auto-select an asynchronous replacement after an external undo reorders the same track chain', async () => {
+    const replacement = {
+      id: 'fx-delay-external-chain', type: 'delay' as const, bypassed: false,
+      params: { time: 0.3, feedback: 0.4, wet: 0.3 },
+    };
+    let finish!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<typeof replacement>((resolve) => {
+      finish = () => resolve(replacement);
+    }));
+    const externallyReorderedTrack = {
+      ...track,
+      effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!],
+    };
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect,
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'delay' } });
+
+    // The replacement is committed by ID into the latest externally reordered chain.
+    // Its old UI completion must not override the selection established by that new chain.
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '替换高通滤波' })).toBeEnabled());
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...externallyReorderedTrack, effects: [track.effects[0]!, replacement, track.effects[2]!] }}
     />);
 
     expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');

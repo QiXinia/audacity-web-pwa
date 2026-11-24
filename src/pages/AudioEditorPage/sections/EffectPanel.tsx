@@ -183,6 +183,7 @@ export default function EffectPanel({
   const effectMoveInFlight = useRef(false);
   const explicitSelectionRevision = useRef(0);
   const trackRevision = useRef(0);
+  const effectChainRevision = useRef(0);
   const gripElements = useRef(new Map<string, HTMLButtonElement>());
   const effectNameElements = useRef(new Map<string, HTMLButtonElement>());
   const bypassElements = useRef(new Map<string, HTMLButtonElement>());
@@ -208,6 +209,12 @@ export default function EffectPanel({
     // completed during another track's visit must not select its old result on return.
     trackRevision.current += 1;
   }, [track.id]);
+
+  useEffect(() => {
+    // Audacity also rebuilds changed effect-stack entries after undo/redo. If the same
+    // track's chain changed while saving, an old UI completion no longer owns selection.
+    effectChainRevision.current += 1;
+  }, [track.effects]);
 
   async function handleMoveEffect(effectId: string, toIndex: number, restoreGripFocus = false) {
     if (effectMoveInFlight.current) return;
@@ -240,6 +247,7 @@ export default function EffectPanel({
     if (effectMoveInFlight.current) return;
     const selectionRevision = explicitSelectionRevision.current;
     const operationTrackRevision = trackRevision.current;
+    const operationEffectChainRevision = effectChainRevision.current;
     // Queue fallback restoration before awaiting so an explicit selection can cancel it.
     pendingEffectFocus.current = { trackId: track.id, effectId };
     effectMoveInFlight.current = true;
@@ -251,6 +259,7 @@ export default function EffectPanel({
         if (
           selectionRevision === explicitSelectionRevision.current
           && operationTrackRevision === trackRevision.current
+          && operationEffectChainRevision === effectChainRevision.current
         ) {
           pendingParameterFocus.current = { trackId: track.id, effectId: replacement.id };
           setSelectedEffectId(replacement.id);
@@ -268,6 +277,7 @@ export default function EffectPanel({
     if (effectMoveInFlight.current) return;
     const selectionRevision = explicitSelectionRevision.current;
     const operationTrackRevision = trackRevision.current;
+    const operationEffectChainRevision = effectChainRevision.current;
     // Queue restoration before awaiting so a newer explicit selection can cancel it.
     restoreAddEffectButtonFocus.current = track.id;
     effectMoveInFlight.current = true;
@@ -279,6 +289,7 @@ export default function EffectPanel({
         if (
           selectionRevision === explicitSelectionRevision.current
           && operationTrackRevision === trackRevision.current
+          && operationEffectChainRevision === effectChainRevision.current
         ) {
           pendingParameterFocus.current = { trackId: track.id, effectId: added.id };
           setSelectedEffectId(added.id);
