@@ -1012,6 +1012,48 @@ describe('EffectPanel Audacity reorder controls', () => {
     expect(document.body).toHaveFocus();
   });
 
+  it('discards pending grip focus when an asynchronous keyboard reorder succeeds on another track', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-gain', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    const view = render(<EffectPanel {...props} />);
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    grip.focus();
+    fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    const otherTrackGrip = screen.getByRole('button', { name: '拖动排序低通滤波' });
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(otherTrackGrip).toBeEnabled());
+    expect(otherTrackGrip).not.toHaveFocus();
+    expect(document.body).toHaveFocus();
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+    />);
+    expect(document.body).toHaveFocus();
+  });
+
   it('restores effect-row focus and unlocks when an asynchronous native drag reorder rejects', async () => {
     let fail!: () => void;
     const onMoveEffect = vi.fn(() => new Promise<void>((_resolve, reject) => {
