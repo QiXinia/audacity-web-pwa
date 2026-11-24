@@ -184,6 +184,8 @@ export default function EffectPanel({
   const explicitSelectionRevision = useRef(0);
   const trackRevision = useRef(0);
   const effectChainRevision = useRef(0);
+  const latestTrackEffects = useRef(track.effects);
+  latestTrackEffects.current = track.effects;
   const gripElements = useRef(new Map<string, HTMLButtonElement>());
   const effectNameElements = useRef(new Map<string, HTMLButtonElement>());
   const bypassElements = useRef(new Map<string, HTMLButtonElement>());
@@ -216,6 +218,30 @@ export default function EffectPanel({
     effectChainRevision.current += 1;
   }, [track.effects]);
 
+  function createFocusOperationGuard(expectedEffects?: IEffect[]) {
+    const selectionRevision = explicitSelectionRevision.current;
+    const operationTrackRevision = trackRevision.current;
+    const operationEffectChainRevision = effectChainRevision.current;
+    return () => {
+      if (
+        selectionRevision !== explicitSelectionRevision.current
+        || operationTrackRevision !== trackRevision.current
+      ) return false;
+      if (operationEffectChainRevision === effectChainRevision.current) return true;
+      // A successful mutation may legitimately commit its own new chain. Anything other
+      // than that exact expected chain is an external undo/redo or cross-tab update.
+      return expectedEffects !== undefined
+        && latestTrackEffects.current.length === expectedEffects.length
+        && latestTrackEffects.current.every((effect, index) => {
+          const expected = expectedEffects[index];
+          return expected !== undefined
+            && effect.id === expected.id
+            && effect.type === expected.type
+            && effect.bypassed === expected.bypassed;
+        });
+    };
+  }
+
   async function handleMoveEffect(effectId: string, toIndex: number, restoreGripFocus = false) {
     if (effectMoveInFlight.current) return;
     const fromIndex = track.effects.findIndex((effect) => effect.id === effectId);
@@ -226,6 +252,10 @@ export default function EffectPanel({
       || toIndex >= track.effects.length
       || toIndex === fromIndex
     ) return;
+    const expectedEffects = [...track.effects];
+    const [movedEffect] = expectedEffects.splice(fromIndex, 1);
+    expectedEffects.splice(toIndex, 0, movedEffect!);
+    const operationIsCurrent = createFocusOperationGuard(expectedEffects);
     if (restoreGripFocus) {
       pendingGripFocus.current = { trackId: track.id, effectId };
     } else {
@@ -236,8 +266,15 @@ export default function EffectPanel({
     try {
       await onMoveEffect(effectId, toIndex);
     } catch {
-      // Mutation callbacks report their own save errors; keep the queued focus restoration.
+      // Mutation callbacks report their own save errors; keep only a current restoration.
     } finally {
+      if (!operationIsCurrent()) {
+        if (restoreGripFocus && pendingGripFocus.current?.trackId === track.id) {
+          pendingGripFocus.current = null;
+        } else if (!restoreGripFocus && pendingEffectFocus.current?.trackId === track.id) {
+          pendingEffectFocus.current = null;
+        }
+      }
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
     }
@@ -321,14 +358,21 @@ export default function EffectPanel({
 
   async function handleToggleBypass(effectId: string) {
     if (effectMoveInFlight.current) return;
+    const expectedEffects = track.effects.map((effect) => (
+      effect.id === effectId ? { ...effect, bypassed: !effect.bypassed } : effect
+    ));
+    const operationIsCurrent = createFocusOperationGuard(expectedEffects);
     pendingBypassFocus.current = { trackId: track.id, effectId };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
       await onToggleBypass(effectId);
     } catch {
-      // Mutation callbacks report their own save errors; keep the queued focus restoration.
+      // Mutation callbacks report their own save errors; keep only a current restoration.
     } finally {
+      if (!operationIsCurrent() && pendingBypassFocus.current?.trackId === track.id) {
+        pendingBypassFocus.current = null;
+      }
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
     }
@@ -336,14 +380,19 @@ export default function EffectPanel({
 
   async function handleToggleAllEffects() {
     if (effectMoveInFlight.current || !onToggleAllEffects) return;
+    // This command changes only effectsActive; any effect-chain revision is external.
+    const operationIsCurrent = createFocusOperationGuard();
     pendingToggleAllEffectsFocusTrackId.current = track.id;
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
       await onToggleAllEffects(track.id, !(track.effectsActive ?? true));
     } catch {
-      // Mutation callbacks report their own save errors; keep the queued focus restoration.
+      // Mutation callbacks report their own save errors; keep only a current restoration.
     } finally {
+      if (!operationIsCurrent() && pendingToggleAllEffectsFocusTrackId.current === track.id) {
+        pendingToggleAllEffectsFocusTrackId.current = null;
+      }
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
     }

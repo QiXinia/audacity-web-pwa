@@ -2030,3 +2030,167 @@ describe('EffectPanel realtime effect removal focus', () => {
     expect(screen.getByRole('button', { name: '打开低通滤波参数' })).not.toHaveFocus();
   });
 });
+
+describe('EffectPanel focus after an external chain update', () => {
+  const externallyReorderedTrack: ITrack = {
+    ...track,
+    effects: [track.effects[2]!, track.effects[0]!, track.effects[1]!],
+  };
+
+  it.each([
+    { outcome: 'resolves', shouldReject: false },
+    { outcome: 'rejects', shouldReject: true },
+  ])('discards reorder focus after an external chain update when the keyboard command $outcome', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('keyboard reorder failed after external chain update'));
+        else resolve();
+      };
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    grip.focus();
+    fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+  });
+
+  it.each([
+    { outcome: 'resolves', shouldReject: false },
+    { outcome: 'rejects', shouldReject: true },
+  ])('discards reorder focus after an external chain update when the button command $outcome', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('button reorder failed after external chain update'));
+        else resolve();
+      };
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '下移增益' }));
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+  });
+
+  it.each([
+    { outcome: 'resolves', shouldReject: false },
+    { outcome: 'rejects', shouldReject: true },
+  ])('discards reorder focus after an external chain update when the native drag command $outcome', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('native drag failed after external chain update'));
+        else resolve();
+      };
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    const dataTransfer = {
+      effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn(() => 'fx-gain'),
+    };
+    fireEvent.dragStart(grip, { dataTransfer });
+    fireEvent.drop(screen.getByTestId('realtime-effect-fx-reverb'), { dataTransfer });
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+  });
+
+  it.each([
+    { outcome: 'resolves', shouldReject: false },
+    { outcome: 'rejects', shouldReject: true },
+  ])('discards bypass focus after an external chain update when the toggle $outcome', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onToggleBypass = vi.fn(() => new Promise<void>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('bypass failed after external chain update'));
+        else resolve();
+      };
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass, onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '旁路高通滤波' }));
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+  });
+
+  it.each([
+    { outcome: 'resolves', shouldReject: false },
+    { outcome: 'rejects', shouldReject: true },
+  ])('discards track-effects power focus after an external chain update when the toggle $outcome', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onToggleAllEffects = vi.fn(() => new Promise<void>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('track effects failed after external chain update'));
+        else resolve();
+      };
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects, onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '切换全部效果' }));
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+  });
+});
