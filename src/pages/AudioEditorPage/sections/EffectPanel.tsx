@@ -467,9 +467,12 @@ export default function EffectPanel({
   }
 
   function handleSelectEffect(effectId: string) {
-    // A newer explicit selection supersedes queued parameter and removal focus.
+    // A newer explicit selection supersedes queued operation focus restoration.
     pendingParameterFocus.current = null;
     pendingRemovalFocus.current = null;
+    pendingEffectFocus.current = null;
+    pendingGripFocus.current = null;
+    pendingBypassFocus.current = null;
     setSelectedEffectId(effectId);
   }
 

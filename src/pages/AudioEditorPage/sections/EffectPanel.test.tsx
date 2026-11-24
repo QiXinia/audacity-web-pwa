@@ -400,6 +400,39 @@ describe('EffectPanel realtime bypass focus', () => {
     expect(currentBypass).toBeEnabled();
   });
 
+  it('cancels stale bypass focus after the user explicitly selects another effect', async () => {
+    let finish!: () => void;
+    const onToggleBypass = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass, onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '旁路高通滤波' }));
+    expect(onToggleBypass).toHaveBeenCalledWith('fx-high-pass');
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{
+        ...track,
+        effects: track.effects.map((effect) => effect.id === 'fx-high-pass'
+          ? { ...effect, bypassed: true }
+          : effect),
+      }}
+    />);
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '启用高通滤波' })).toBeEnabled());
+    expect(reverb).toHaveFocus();
+  });
+
   it('restores bypass-button focus and unlocks when the asynchronous toggle rejects', async () => {
     let fail!: () => void;
     const onToggleBypass = vi.fn(() => new Promise<void>((_resolve, reject) => {
@@ -1315,6 +1348,64 @@ describe('EffectPanel Audacity reorder controls', () => {
     finish();
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+  });
+
+  it('cancels stale grip focus after the user explicitly selects another effect', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    grip.focus();
+    fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+    />);
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '拖动排序增益' })).toBeEnabled());
+    expect(reverb).toHaveFocus();
+  });
+
+  it('cancels stale effect-row focus after the user explicitly selects another effect', async () => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '下移增益' }));
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+    />);
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { finish(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '下移增益' })).toBeEnabled());
+    expect(reverb).toHaveFocus();
   });
 });
 
