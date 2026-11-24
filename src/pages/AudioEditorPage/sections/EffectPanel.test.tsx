@@ -181,6 +181,48 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(document.body).toHaveFocus();
   });
 
+  it('does not auto-select an asynchronous add that completes during a cross-track visit', async () => {
+    const added = {
+      id: 'fx-low-pass-cross-track-selection', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<typeof added>((resolve) => {
+      finish = () => resolve(added);
+    }));
+    const sourceTrack = { ...track, effects: [track.effects[0]!, track.effects[2]!] };
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-low-pass-b', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    const props = {
+      track: sourceTrack,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...sourceTrack, effects: [...sourceTrack.effects, added] }}
+    />);
+
+    expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');
+    expect(screen.getByTestId(`realtime-effect-${added.id}`)).not.toHaveClass('border-primary');
+    expect(screen.getByText('0.00dB')).toBeInTheDocument();
+    expect(screen.queryByText('8000Hz')).not.toBeInTheDocument();
+  });
+
   it('cancels stale add-parameter focus after the user explicitly selects another effect', async () => {
     const added = {
       id: 'fx-low-pass-explicit-selection', type: 'lowPass' as const, bypassed: false,
@@ -852,6 +894,46 @@ describe('EffectPanel Audacity replacement controls', () => {
     />);
 
     expect(document.body).toHaveFocus();
+  });
+
+  it('does not auto-select an asynchronous replacement that completes during a cross-track visit', async () => {
+    const replacement = {
+      id: 'fx-delay-cross-track-selection', type: 'delay' as const, bypassed: false,
+      params: { time: 0.3, feedback: 0.4, wet: 0.3 },
+    };
+    let finish!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<typeof replacement>((resolve) => {
+      finish = () => resolve(replacement);
+    }));
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-low-pass-b', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect,
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'delay' } });
+
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[0]!, replacement, track.effects[2]!] }}
+    />);
+
+    expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');
+    expect(screen.getByTestId(`realtime-effect-${replacement.id}`)).not.toHaveClass('border-primary');
+    expect(screen.getByText('0.00dB')).toBeInTheDocument();
+    expect(screen.queryByText('0.30s')).not.toBeInTheDocument();
   });
 
   it('cancels stale replacement-parameter focus after the user explicitly selects another effect', async () => {
