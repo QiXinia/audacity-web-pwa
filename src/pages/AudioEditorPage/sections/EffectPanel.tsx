@@ -253,12 +253,16 @@ export default function EffectPanel({
       if (operationEffectChainRevision === effectChainRevision.current) return true;
       // Add/replace learn their result only after the service has often committed it.
       // Resolve that expected chain lazily so their own commit is not mistaken for an
-      // external update, while any different undo/redo or cross-tab chain still fails.
+      // external update. Only one changed chain revision can belong to this operation;
+      // later revisions are external even if an ABA sequence restores the same chain.
       const resolvedExpectedEffects = typeof expectedEffects === 'function'
         ? expectedEffects()
         : expectedEffects;
-      return resolvedExpectedEffects !== undefined
-        && latestTrackEffects.current.length === resolvedExpectedEffects.length
+      if (
+        resolvedExpectedEffects === undefined
+        || effectChainRevision.current - operationEffectChainRevision !== 1
+      ) return false;
+      return latestTrackEffects.current.length === resolvedExpectedEffects.length
         && latestTrackEffects.current.every((effect, index) => {
           const expected = resolvedExpectedEffects[index];
           if (expected === undefined) return false;

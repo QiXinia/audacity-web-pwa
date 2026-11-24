@@ -203,6 +203,37 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(screen.queryByText('8000Hz')).not.toBeInTheDocument();
   });
 
+  it('does not select an added effect when external ABA revisions follow its own early commit', async () => {
+    const added = {
+      id: 'fx-low-pass-own-then-aba', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<typeof added>((resolve) => {
+      finish = () => resolve(added);
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+
+    const ownCommittedTrack = { ...track, effects: [...track.effects, added] };
+    view.rerender(<EffectPanel {...props} track={ownCommittedTrack} />);
+    view.rerender(<EffectPanel {...props} track={track} />);
+    view.rerender(<EffectPanel {...props} track={ownCommittedTrack} />);
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+
+    expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');
+    expect(screen.getByTestId(`realtime-effect-${added.id}`)).not.toHaveClass('border-primary');
+    expect(screen.queryByText('8000Hz')).not.toBeInTheDocument();
+  });
+
   it('discards pending add-parameter focus when the asynchronous add finishes on another track', async () => {
     const added = {
       id: 'fx-low-pass-cross-track', type: 'lowPass' as const, bypassed: false,
@@ -1057,6 +1088,39 @@ describe('EffectPanel Audacity replacement controls', () => {
       {...props}
       track={{ ...ownCommittedTrack, effects: [replacement, track.effects[0]!, track.effects[2]!] }}
     />);
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '替换延迟' })).toBeEnabled());
+
+    expect(screen.getByTestId('realtime-effect-fx-gain')).toHaveClass('border-primary');
+    expect(screen.getByTestId(`realtime-effect-${replacement.id}`)).not.toHaveClass('border-primary');
+    expect(screen.queryByText('0.30s')).not.toBeInTheDocument();
+  });
+
+  it('does not select a replacement when external ABA revisions follow its own early commit', async () => {
+    const replacement = {
+      id: 'fx-delay-own-then-aba', type: 'delay' as const, bypassed: false,
+      params: { time: 0.3, feedback: 0.4, wet: 0.3 },
+    };
+    let finish!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<typeof replacement>((resolve) => {
+      finish = () => resolve(replacement);
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect,
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'delay' } });
+
+    const ownCommittedTrack = {
+      ...track,
+      effects: [track.effects[0]!, replacement, track.effects[2]!],
+    };
+    view.rerender(<EffectPanel {...props} track={ownCommittedTrack} />);
+    view.rerender(<EffectPanel {...props} track={track} />);
+    view.rerender(<EffectPanel {...props} track={ownCommittedTrack} />);
     await act(async () => { finish(); });
     await waitFor(() => expect(screen.getByRole('combobox', { name: '替换延迟' })).toBeEnabled());
 
