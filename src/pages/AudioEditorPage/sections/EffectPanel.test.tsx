@@ -242,6 +242,31 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(props.onAddEffect).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: '添加效果' })).toHaveFocus();
   });
+
+  it('closes the add menu and restores its trigger focus when the asynchronous add rejects', async () => {
+    let fail!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<null>((_resolve, reject) => {
+      fail = () => reject(new Error('add save failed'));
+    }));
+    renderPanel({ onAddEffect });
+    const add = screen.getByRole('button', { name: '添加效果' });
+    add.focus();
+    fireEvent.click(add);
+
+    const lowPass = screen.getByRole('button', { name: '低通滤波' });
+    lowPass.focus();
+    fireEvent.click(lowPass);
+    expect(onAddEffect).toHaveBeenCalledWith('lowPass');
+    expect(lowPass).toBeDisabled();
+
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(screen.queryByText('选择效果类型')).not.toBeInTheDocument());
+    const restoredAdd = screen.getByRole('button', { name: '添加效果' });
+    expect(restoredAdd).toBeEnabled();
+    expect(restoredAdd).toHaveFocus();
+    expect(onAddEffect).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('EffectPanel Audacity effect name controls', () => {
@@ -594,6 +619,29 @@ describe('EffectPanel Audacity replacement controls', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开高通滤波参数' })).toHaveFocus());
     expect(menu).toBeEnabled();
+  });
+
+  it('restores the original effect-row focus and unlocks when asynchronous replacement rejects', async () => {
+    let fail!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<null>((_resolve, reject) => {
+      fail = () => reject(new Error('replacement save failed'));
+    }));
+    renderPanel({ onReplaceEffect });
+    const menu = screen.getByRole('combobox', { name: '替换高通滤波' });
+    menu.focus();
+    fireEvent.change(menu, { target: { value: 'lowPass' } });
+    expect(onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'lowPass');
+    expect(menu).toBeDisabled();
+
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开高通滤波参数' })).toHaveFocus());
+    expect(menu).toBeEnabled();
+    expect(onReplaceEffect).toHaveBeenCalledTimes(1);
   });
 
   it('displays persisted frequency values instead of falling back to zero', () => {

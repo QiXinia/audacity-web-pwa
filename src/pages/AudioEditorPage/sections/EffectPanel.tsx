@@ -235,8 +235,11 @@ export default function EffectPanel({
         pendingParameterFocus.current = { trackId: track.id, effectId: replacement.id };
         setSelectedEffectId(replacement.id);
       } else {
-        effectNameElements.current.get(effectId)?.focus();
+        pendingEffectFocus.current = { trackId: track.id, effectId };
       }
+    } catch {
+      // Mutation callbacks report their own save errors; a rejection must not strand keyboard focus.
+      pendingEffectFocus.current = { trackId: track.id, effectId };
     } finally {
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
@@ -255,6 +258,9 @@ export default function EffectPanel({
       } else {
         restoreAddEffectButtonFocus.current = track.id;
       }
+      setShowAddMenu(false);
+    } catch {
+      restoreAddEffectButtonFocus.current = track.id;
       setShowAddMenu(false);
     } finally {
       effectMoveInFlight.current = false;
