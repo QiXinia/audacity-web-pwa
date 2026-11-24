@@ -181,6 +181,44 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(document.body).toHaveFocus();
   });
 
+  it('cancels stale add-parameter focus after the user explicitly selects another effect', async () => {
+    const added = {
+      id: 'fx-low-pass-explicit-selection', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<typeof added>((resolve) => {
+      finish = () => resolve(added);
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    expect(onAddEffect).toHaveBeenCalledWith('lowPass');
+
+    // The returned effect is committed by the external store in a later render.
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    const highPass = screen.getByRole('button', { name: '打开高通滤波参数' });
+    highPass.focus();
+    fireEvent.click(highPass);
+    expect(highPass).toHaveFocus();
+
+    view.rerender(<EffectPanel {...props} track={{ ...track, effects: [...track.effects, added] }} />);
+    const openAdded = screen.getByRole('button', { name: '打开低通滤波参数' });
+    openAdded.focus();
+    fireEvent.click(openAdded);
+
+    // A newer explicit selection supersedes the old add-operation focus request.
+    expect(openAdded).toHaveFocus();
+    expect(screen.getAllByRole('slider')[0]).not.toHaveFocus();
+  });
+
   it.each([
     { outcome: 'null', result: null },
     { outcome: 'void', result: undefined },
@@ -689,6 +727,46 @@ describe('EffectPanel Audacity replacement controls', () => {
     />);
 
     expect(document.body).toHaveFocus();
+  });
+
+  it('cancels stale replacement-parameter focus after the user explicitly selects another effect', async () => {
+    const replacement = {
+      id: 'fx-delay-explicit-selection', type: 'delay' as const, bypassed: false,
+      params: { time: 0.3, feedback: 0.4, wet: 0.3 },
+    };
+    let finish!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<typeof replacement>((resolve) => {
+      finish = () => resolve(replacement);
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect,
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'delay' } });
+    expect(onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'delay');
+
+    // The returned replacement is committed by the external store in a later render.
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '替换高通滤波' })).toBeEnabled());
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[0]!, replacement, track.effects[2]!] }}
+    />);
+    const openReplacement = screen.getByRole('button', { name: '打开延迟参数' });
+    openReplacement.focus();
+    fireEvent.click(openReplacement);
+
+    // A newer explicit selection supersedes the old replacement-operation focus request.
+    expect(openReplacement).toHaveFocus();
+    expect(screen.getAllByRole('slider')[0]).not.toHaveFocus();
   });
 
   it.each([

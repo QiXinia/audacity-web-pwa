@@ -446,6 +446,12 @@ export default function EffectPanel({
     return EFFECT_CATALOG.find((e) => e.type === type)?.label || type;
   }
 
+  function handleSelectEffect(effectId: string) {
+    // A newer explicit selection supersedes any queued add/replace parameter focus.
+    pendingParameterFocus.current = null;
+    setSelectedEffectId(effectId);
+  }
+
   function handleParamChange(key: string, value: number) {
     if (!selectedEffect) return;
     onUpdateEffect(selectedEffect.id, { [key]: value });
@@ -590,7 +596,7 @@ export default function EffectPanel({
                   isMoving={isMovingEffect}
                   label={getEffectLabel(effect.type)}
                   isSelected={resolvedSelectedEffectId === effect.id}
-                  onSelect={() => setSelectedEffectId(effect.id)}
+                  onSelect={() => handleSelectEffect(effect.id)}
                   onToggleBypass={() => void handleToggleBypass(effect.id)}
                   onRemove={() => void handleRemoveEffect(effect.id)}
                   onMove={(toIndex, restoreGripFocus) => handleMoveEffect(effect.id, toIndex, restoreGripFocus)}
