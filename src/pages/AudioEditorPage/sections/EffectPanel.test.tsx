@@ -429,6 +429,48 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(onAddEffect).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { outcome: 'null', result: null, shouldReject: false },
+    { outcome: 'void', result: undefined, shouldReject: false },
+    { outcome: 'rejection', result: null, shouldReject: true },
+  ])('discards add-button focus after an external chain update when the add returns $outcome', async ({ result, shouldReject }) => {
+    let settle!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<null | undefined>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('add save failed after external chain update'));
+        else resolve(result);
+      };
+    }));
+    const externallyReorderedTrack = {
+      ...track,
+      effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!],
+    };
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    expect(onAddEffect).toHaveBeenCalledWith('lowPass');
+
+    // An external undo/cross-tab update replaces the chain without an explicit selection.
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    await waitFor(() => expect(screen.queryByText('选择效果类型')).not.toBeInTheDocument());
+    const add = screen.getByRole('button', { name: '添加效果' });
+    expect(add).toBeEnabled();
+    expect(document.body).toHaveFocus();
+    expect(add).not.toHaveFocus();
+  });
+
   it('closes the add menu and restores its trigger focus when the asynchronous add rejects', async () => {
     let fail!: () => void;
     const onAddEffect = vi.fn(() => new Promise<null>((_resolve, reject) => {
@@ -1165,6 +1207,46 @@ describe('EffectPanel Audacity replacement controls', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '打开高通滤波参数' })).toHaveFocus());
     expect(menu).toBeEnabled();
     expect(onReplaceEffect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { outcome: 'null', result: null, shouldReject: false },
+    { outcome: 'void', result: undefined, shouldReject: false },
+    { outcome: 'rejection', result: null, shouldReject: true },
+  ])('discards original-row focus after an external chain update when replacement returns $outcome', async ({ result, shouldReject }) => {
+    let settle!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<null | undefined>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('replacement failed after external chain update'));
+        else resolve(result);
+      };
+    }));
+    const externallyReorderedTrack = {
+      ...track,
+      effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!],
+    };
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect,
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'lowPass' } });
+    expect(onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'lowPass');
+
+    // The old row may still exist, but its pending command no longer owns focus after a new chain arrives.
+    view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    const menu = screen.getByRole('combobox', { name: '替换高通滤波' });
+    await waitFor(() => expect(menu).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: '打开高通滤波参数' })).not.toHaveFocus();
   });
 
   it('displays persisted frequency values instead of falling back to zero', () => {

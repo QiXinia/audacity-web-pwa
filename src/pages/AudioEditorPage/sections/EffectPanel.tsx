@@ -248,6 +248,11 @@ export default function EffectPanel({
     const selectionRevision = explicitSelectionRevision.current;
     const operationTrackRevision = trackRevision.current;
     const operationEffectChainRevision = effectChainRevision.current;
+    const operationIsCurrent = () => (
+      selectionRevision === explicitSelectionRevision.current
+      && operationTrackRevision === trackRevision.current
+      && operationEffectChainRevision === effectChainRevision.current
+    );
     // Queue fallback restoration before awaiting so an explicit selection can cancel it.
     pendingEffectFocus.current = { trackId: track.id, effectId };
     effectMoveInFlight.current = true;
@@ -256,11 +261,7 @@ export default function EffectPanel({
       const replacement = await onReplaceEffect(effectId, type);
       if (replacement) {
         pendingEffectFocus.current = null;
-        if (
-          selectionRevision === explicitSelectionRevision.current
-          && operationTrackRevision === trackRevision.current
-          && operationEffectChainRevision === effectChainRevision.current
-        ) {
+        if (operationIsCurrent()) {
           pendingParameterFocus.current = { trackId: track.id, effectId: replacement.id };
           setSelectedEffectId(replacement.id);
         }
@@ -268,6 +269,10 @@ export default function EffectPanel({
     } catch {
       // Mutation callbacks report their own save errors; keep only an uncancelled restoration.
     } finally {
+      // Empty results and failures must not restore focus into a chain replaced externally.
+      if (!operationIsCurrent() && pendingEffectFocus.current?.trackId === track.id) {
+        pendingEffectFocus.current = null;
+      }
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
     }
@@ -278,6 +283,11 @@ export default function EffectPanel({
     const selectionRevision = explicitSelectionRevision.current;
     const operationTrackRevision = trackRevision.current;
     const operationEffectChainRevision = effectChainRevision.current;
+    const operationIsCurrent = () => (
+      selectionRevision === explicitSelectionRevision.current
+      && operationTrackRevision === trackRevision.current
+      && operationEffectChainRevision === effectChainRevision.current
+    );
     // Queue restoration before awaiting so a newer explicit selection can cancel it.
     restoreAddEffectButtonFocus.current = track.id;
     effectMoveInFlight.current = true;
@@ -286,11 +296,7 @@ export default function EffectPanel({
       const added = await onAddEffect(type);
       if (added) {
         restoreAddEffectButtonFocus.current = null;
-        if (
-          selectionRevision === explicitSelectionRevision.current
-          && operationTrackRevision === trackRevision.current
-          && operationEffectChainRevision === effectChainRevision.current
-        ) {
+        if (operationIsCurrent()) {
           pendingParameterFocus.current = { trackId: track.id, effectId: added.id };
           setSelectedEffectId(added.id);
         }
@@ -299,6 +305,10 @@ export default function EffectPanel({
     } catch {
       setShowAddMenu(false);
     } finally {
+      // Preserve normal empty/failure restoration only while the original chain is current.
+      if (!operationIsCurrent() && restoreAddEffectButtonFocus.current === track.id) {
+        restoreAddEffectButtonFocus.current = null;
+      }
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
     }
