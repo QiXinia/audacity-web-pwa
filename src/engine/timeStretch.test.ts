@@ -90,4 +90,15 @@ describe('WSOLA time stretch', () => {
     expect(output.length).toBe(64);
     expect(Array.from(output).every(Number.isFinite)).toBe(true);
   });
+
+  it.each([2 ** 31, 2 ** 32, 2 ** 32 + 1])(
+    'clamps an oversized window without 32-bit overflow: %i',
+    (windowSize) => {
+      const input = sine(440, 0.016, 8000);
+      const expected = timeStretchChannelsJs([input], 0.75, 8000, { windowSize: 128 });
+      const actual = timeStretchChannelsJs([input], 0.75, 8000, { windowSize });
+
+      expect(actual).toEqual(expected);
+    },
+  );
 });

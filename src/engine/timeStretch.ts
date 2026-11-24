@@ -58,7 +58,12 @@ export function timeStretchChannelsJs(
     throw new Error('Stretch window must be an integer of at least 64 samples');
   }
   let windowSize = requestedWindowSize;
-  while (windowSize > inputFrames && windowSize > 64) windowSize >>= 1;
+  // Keep large safe-integer options out of JavaScript's signed 32-bit bitwise
+  // conversion. Bitwise halving turns 2^31 negative and 2^32 into zero, which
+  // silently selects linear interpolation instead of the equivalent WSOLA window.
+  while (windowSize > inputFrames && windowSize > 64) {
+    windowSize = Math.floor(windowSize / 2);
+  }
   if (windowSize < 64) {
     return channels.map((channel) => linearStretchChannel(channel, outputLength));
   }

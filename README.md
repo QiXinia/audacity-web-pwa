@@ -300,7 +300,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/engine/audioEngine.test.ts` | 立体声声像、增益、修剪偏移、拉伸导出时间轴、实时效果参数及轨道总开关 | 19 |
 | `src/engine/audioEngine.recording.test.ts` | Worklet 尾帧等待、双声道降级、停止超时、初始化清理 | 9 |
 | `src/engine/recordingWorklet.test.ts` | 真实 Worklet 任意尾块 flush、停止确认与去重 | 2 |
-| `src/engine/timeStretch.test.ts` | WSOLA 时长、音高、立体声对齐与归一化幅度 | 7 |
+| `src/engine/timeStretch.test.ts` | WSOLA 时长、音高、立体声对齐、归一化幅度，以及大于 32 位范围的窗口选项按等效合法窗口收缩、不误退线性插值 | 10 |
 | `src/engine/mp3Encoder.test.ts` | 真实 MPEG 输出、采样率选择、空输入边界 | 3 |
 | `src/pages/AudioEditorPage/sections/PlaybackTimingControls.test.tsx` | BPM 小数草稿与连续步进、边界禁用、拍号编辑与非法输入恢复 | 6 |
 | `src/pages/AudioEditorPage/sections/NoiseGeneratorDialog.test.tsx` | 噪声参数、独立记忆、选区只读、确定性试听不提交与取消清理 | 8 |
@@ -345,7 +345,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.noiseReduction.test.tsx` | Noise Reduction 两步 Profile、双声道精确试听、多轨单次历史、失败无历史与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.truncateSilence.test.tsx` | Truncate Silence 真实菜单、联动双声道 PCM 试听、多轨单次历史、失败／无变更无历史与无选区禁用 | 4 |
 
-当前完整前端回归共 **312 个测试文件、2475 项测试**；本次实际完整运行全部通过且无跳过；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
+当前完整前端回归共 **312 个测试文件、2554 项测试**；本次按完整 Git 跟踪清单分批实际运行，全部通过且无跳过，覆盖无缺失、无重复；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
 
 运行测试：
 
