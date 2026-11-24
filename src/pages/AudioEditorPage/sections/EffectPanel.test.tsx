@@ -362,6 +362,29 @@ describe('EffectPanel realtime bypass focus', () => {
     expect(currentBypass).toBeEnabled();
   });
 
+  it('restores bypass-button focus and unlocks when the asynchronous toggle rejects', async () => {
+    let fail!: () => void;
+    const onToggleBypass = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      fail = () => reject(new Error('bypass save failed'));
+    }));
+    renderPanel({ onToggleBypass });
+    const bypass = screen.getByRole('button', { name: '旁路高通滤波' });
+    bypass.focus();
+    fireEvent.click(bypass);
+    expect(onToggleBypass).toHaveBeenCalledWith('fx-high-pass');
+    expect(bypass).toBeDisabled();
+
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(bypass).toHaveFocus());
+    expect(bypass).toBeEnabled();
+    expect(onToggleBypass).toHaveBeenCalledTimes(1);
+  });
+
   it('restores the track-effects power-button focus after an asynchronous toggle', async () => {
     let finish!: () => void;
     const onToggleAllEffects = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
@@ -392,6 +415,29 @@ describe('EffectPanel realtime bypass focus', () => {
     await waitFor(() => expect(toggle).toHaveFocus());
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(toggle).toBeEnabled();
+  });
+
+  it('restores track-effects power-button focus and unlocks when the asynchronous toggle rejects', async () => {
+    let fail!: () => void;
+    const onToggleAllEffects = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      fail = () => reject(new Error('track effects save failed'));
+    }));
+    renderPanel({ onToggleAllEffects });
+    const toggle = screen.getByRole('button', { name: '切换全部效果' });
+    toggle.focus();
+    fireEvent.click(toggle);
+    expect(onToggleAllEffects).toHaveBeenCalledWith('track-a', false);
+    expect(toggle).toBeDisabled();
+
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(toggle).toHaveFocus());
+    expect(toggle).toBeEnabled();
+    expect(onToggleAllEffects).toHaveBeenCalledTimes(1);
   });
 
   it('does not restore a pending bypass focus into a different track', async () => {
@@ -808,6 +854,29 @@ describe('EffectPanel Audacity reorder controls', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '拖动排序增益' })).toHaveFocus());
   });
 
+  it('restores grip focus and unlocks when an asynchronous keyboard reorder rejects', async () => {
+    let fail!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      fail = () => reject(new Error('keyboard reorder save failed'));
+    }));
+    renderPanel({ onMoveEffect });
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    grip.focus();
+    fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+    expect(grip).toBeDisabled();
+
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(grip).toHaveFocus());
+    expect(grip).toBeEnabled();
+    expect(onMoveEffect).toHaveBeenCalledTimes(1);
+  });
+
   it('restores effect-row focus after an asynchronous arrow-button reorder', async () => {
     let finish!: () => void;
     const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
@@ -832,6 +901,29 @@ describe('EffectPanel Audacity reorder controls', () => {
     finish();
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+  });
+
+  it('restores effect-row focus and unlocks when an asynchronous button reorder rejects', async () => {
+    let fail!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      fail = () => reject(new Error('button reorder save failed'));
+    }));
+    renderPanel({ onMoveEffect });
+    const down = screen.getByRole('button', { name: '下移增益' });
+    down.focus();
+    fireEvent.click(down);
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+    expect(down).toBeDisabled();
+
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+    expect(down).toBeEnabled();
+    expect(onMoveEffect).toHaveBeenCalledTimes(1);
   });
 
   it('discards pending effect-row focus when an asynchronous reorder finishes on another track', async () => {
@@ -995,5 +1087,28 @@ describe('EffectPanel realtime effect removal focus', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
     expect(menu).toBeEnabled();
+  });
+
+  it('restores the original effect-row focus and unlocks when the asynchronous remove rejects', async () => {
+    let fail!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      fail = () => reject(new Error('remove save failed'));
+    }));
+    renderPanel({ onRemoveEffect });
+    const remove = screen.getByRole('button', { name: '移除增益' });
+    remove.focus();
+    fireEvent.click(remove);
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-gain');
+    expect(remove).toBeDisabled();
+
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+    expect(remove).toBeEnabled();
+    expect(onRemoveEffect).toHaveBeenCalledTimes(1);
   });
 });

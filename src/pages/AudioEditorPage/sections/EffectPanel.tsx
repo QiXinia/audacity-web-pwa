@@ -219,6 +219,8 @@ export default function EffectPanel({
     setIsMovingEffect(true);
     try {
       await onMoveEffect(effectId, toIndex);
+    } catch {
+      // Mutation callbacks report their own save errors; keep the queued focus restoration.
     } finally {
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
@@ -280,6 +282,8 @@ export default function EffectPanel({
     setIsMovingEffect(true);
     try {
       await onToggleBypass(effectId);
+    } catch {
+      // Mutation callbacks report their own save errors; keep the queued focus restoration.
     } finally {
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
@@ -293,6 +297,8 @@ export default function EffectPanel({
     setIsMovingEffect(true);
     try {
       await onToggleAllEffects(track.id, !(track.effectsActive ?? true));
+    } catch {
+      // Mutation callbacks report their own save errors; keep the queued focus restoration.
     } finally {
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
@@ -308,6 +314,8 @@ export default function EffectPanel({
     setIsMovingEffect(true);
     try {
       await onRemoveEffect(effectId);
+    } catch {
+      // Mutation callbacks report their own save errors; keep the queued focus restoration.
     } finally {
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
