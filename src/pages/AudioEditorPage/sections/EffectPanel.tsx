@@ -373,9 +373,9 @@ export default function EffectPanel({
       return;
     }
     const bypass = bypassElements.current.get(pending.effectId);
-    if (!bypass) return;
+    // Bypassing never recreates a missing effect, so do not retain a stale focus request.
     pendingBypassFocus.current = null;
-    bypass.focus();
+    bypass?.focus();
   }, [activeEffects, isMovingEffect, track.id]);
 
   useEffect(() => {

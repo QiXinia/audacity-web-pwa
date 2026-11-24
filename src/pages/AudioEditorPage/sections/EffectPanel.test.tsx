@@ -446,6 +446,47 @@ describe('EffectPanel realtime bypass focus', () => {
     expect(onToggleAllEffects).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { outcome: 'resolves', shouldReject: false },
+    { outcome: 'rejects', shouldReject: true },
+  ])('discards pending bypass focus when the target disappears before the asynchronous toggle $outcome', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onToggleBypass = vi.fn(() => new Promise<void>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('bypass save failed after external removal'));
+        else resolve();
+      };
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass, onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '旁路高通滤波' }));
+    expect(onToggleBypass).toHaveBeenCalledWith('fx-high-pass');
+
+    const withoutTarget = {
+      ...track,
+      effects: track.effects.filter((effect) => effect.id !== 'fx-high-pass'),
+    };
+    view.rerender(<EffectPanel {...props} track={withoutTarget} />);
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+
+    // An external undo can restore the same effect id; the old bypass request must not steal focus now.
+    view.rerender(<EffectPanel {...props} track={track} />);
+    expect(screen.getByRole('button', { name: '旁路高通滤波' })).toBeEnabled();
+    expect(document.body).toHaveFocus();
+  });
+
   it('does not restore a pending bypass focus into a different track', async () => {
     let finish!: () => void;
     const onToggleBypass = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
