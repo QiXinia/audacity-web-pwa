@@ -218,9 +218,16 @@ export default function EffectPanel({
   } | null>(null);
   const addEffectButton = useRef<HTMLButtonElement>(null);
   const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
-  const restoreAddEffectButtonFocus = useRef<string | null>(null);
+  const restoreAddEffectButtonFocus = useRef<{
+    trackId: string;
+    operationIsCurrent?: () => boolean;
+  } | null>(null);
   const parameterPanel = useRef<HTMLDivElement>(null);
-  const pendingParameterFocus = useRef<{ trackId: string; effectId: string } | null>(null);
+  const pendingParameterFocus = useRef<{
+    trackId: string;
+    effectId: string;
+    operationIsCurrent?: () => boolean;
+  } | null>(null);
 
   useEffect(() => {
     // Audacity resets the effect model when the selected track changes. An operation
@@ -250,10 +257,14 @@ export default function EffectPanel({
         && latestTrackEffects.current.length === expectedEffects.length
         && latestTrackEffects.current.every((effect, index) => {
           const expected = expectedEffects[index];
-          return expected !== undefined
-            && effect.id === expected.id
+          if (expected === undefined) return false;
+          const actualParamKeys = Object.keys(effect.params);
+          const expectedParamKeys = Object.keys(expected.params);
+          return effect.id === expected.id
             && effect.type === expected.type
-            && effect.bypassed === expected.bypassed;
+            && effect.bypassed === expected.bypassed
+            && actualParamKeys.length === expectedParamKeys.length
+            && expectedParamKeys.every((key) => Object.is(effect.params[key], expected.params[key]));
         });
     };
   }
@@ -298,16 +309,9 @@ export default function EffectPanel({
 
   async function handleReplaceEffect(effectId: string, type: EffectType) {
     if (effectMoveInFlight.current) return;
-    const selectionRevision = explicitSelectionRevision.current;
-    const operationTrackRevision = trackRevision.current;
-    const operationEffectChainRevision = effectChainRevision.current;
-    const operationIsCurrent = () => (
-      selectionRevision === explicitSelectionRevision.current
-      && operationTrackRevision === trackRevision.current
-      && operationEffectChainRevision === effectChainRevision.current
-    );
+    const operationIsCurrent = createFocusOperationGuard();
     // Queue fallback restoration before awaiting so an explicit selection can cancel it.
-    pendingEffectFocus.current = { trackId: track.id, effectId };
+    pendingEffectFocus.current = { trackId: track.id, effectId, operationIsCurrent };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -315,7 +319,14 @@ export default function EffectPanel({
       if (replacement) {
         pendingEffectFocus.current = null;
         if (operationIsCurrent()) {
-          pendingParameterFocus.current = { trackId: track.id, effectId: replacement.id };
+          const expectedEffects = latestTrackEffects.current.map((effect) => (
+            effect.id === effectId ? replacement : effect
+          ));
+          pendingParameterFocus.current = {
+            trackId: track.id,
+            effectId: replacement.id,
+            operationIsCurrent: createFocusOperationGuard(expectedEffects),
+          };
           setSelectedEffectId(replacement.id);
         }
       }
@@ -333,16 +344,9 @@ export default function EffectPanel({
 
   async function handleAddEffect(type: EffectType) {
     if (effectMoveInFlight.current) return;
-    const selectionRevision = explicitSelectionRevision.current;
-    const operationTrackRevision = trackRevision.current;
-    const operationEffectChainRevision = effectChainRevision.current;
-    const operationIsCurrent = () => (
-      selectionRevision === explicitSelectionRevision.current
-      && operationTrackRevision === trackRevision.current
-      && operationEffectChainRevision === effectChainRevision.current
-    );
+    const operationIsCurrent = createFocusOperationGuard();
     // Queue restoration before awaiting so a newer explicit selection can cancel it.
-    restoreAddEffectButtonFocus.current = track.id;
+    restoreAddEffectButtonFocus.current = { trackId: track.id, operationIsCurrent };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -350,7 +354,12 @@ export default function EffectPanel({
       if (added) {
         restoreAddEffectButtonFocus.current = null;
         if (operationIsCurrent()) {
-          pendingParameterFocus.current = { trackId: track.id, effectId: added.id };
+          const expectedEffects = [...latestTrackEffects.current, added];
+          pendingParameterFocus.current = {
+            trackId: track.id,
+            effectId: added.id,
+            operationIsCurrent: createFocusOperationGuard(expectedEffects),
+          };
           setSelectedEffectId(added.id);
         }
       }
@@ -359,7 +368,7 @@ export default function EffectPanel({
       setShowAddMenu(false);
     } finally {
       // Preserve normal empty/failure restoration only while the original chain is current.
-      if (!operationIsCurrent() && restoreAddEffectButtonFocus.current === track.id) {
+      if (!operationIsCurrent() && restoreAddEffectButtonFocus.current?.trackId === track.id) {
         restoreAddEffectButtonFocus.current = null;
       }
       effectMoveInFlight.current = false;
@@ -368,7 +377,7 @@ export default function EffectPanel({
   }
 
   function closeAddMenu() {
-    restoreAddEffectButtonFocus.current = track.id;
+    restoreAddEffectButtonFocus.current = { trackId: track.id };
     setShowAddMenu(false);
   }
 
@@ -453,10 +462,13 @@ export default function EffectPanel({
       addEffectOptions.current[0]?.focus();
       return;
     }
-    const focusTrackId = restoreAddEffectButtonFocus.current;
-    if (focusTrackId === null) return;
+    const pending = restoreAddEffectButtonFocus.current;
+    if (!pending) return;
     restoreAddEffectButtonFocus.current = null;
-    if (focusTrackId === track.id) {
+    if (
+      pending.trackId === track.id
+      && (pending.operationIsCurrent === undefined || pending.operationIsCurrent())
+    ) {
       addEffectButton.current?.focus();
     }
   }, [showAddMenu, track.id]);
@@ -579,8 +591,14 @@ export default function EffectPanel({
   useEffect(() => {
     const pending = pendingParameterFocus.current;
     if (!pending || isMovingEffect) return;
-    if (pending.trackId !== track.id) {
+    if (
+      pending.trackId !== track.id
+      || (pending.operationIsCurrent !== undefined && !pending.operationIsCurrent())
+    ) {
       pendingParameterFocus.current = null;
+      // The operation may have selected its result just before an external chain render.
+      // Do not let that stale selection reappear if the service commits its result later.
+      setSelectedEffectId((current) => current === pending.effectId ? null : current);
       return;
     }
     if (resolvedSelectedEffectId !== pending.effectId) return;

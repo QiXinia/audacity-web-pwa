@@ -2435,4 +2435,175 @@ describe('EffectPanel focus consumption after an external chain update', () => {
     expect(document.body).toHaveFocus();
     expect(screen.getByRole('button', { name: '打开增益参数' })).not.toHaveFocus();
   });
+
+  it.each([
+    { command: 'reorder', targetName: '拖动排序增益' },
+    { command: 'bypass', targetName: '启用高通滤波' },
+  ])('discards $command focus when an external parameter-only update follows its own commit', async ({ command, targetName }) => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const onToggleBypass = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = makeProps({ onMoveEffect, onToggleBypass });
+    const view = render(<EffectPanel {...props} />);
+    if (command === 'reorder') {
+      const grip = screen.getByRole('button', { name: '拖动排序增益' });
+      grip.focus();
+      fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: '旁路高通滤波' }));
+    }
+
+    const committedTrack: ITrack = command === 'reorder'
+      ? { ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }
+      : {
+          ...track,
+          effects: track.effects.map((effect) => effect.id === 'fx-high-pass'
+            ? { ...effect, bypassed: true }
+            : effect),
+        };
+    view.rerender(<EffectPanel {...props} track={committedTrack} />);
+    focusBody();
+    await settleThenUpdateBeforeFocus(finish, () => {
+      view.rerender(<EffectPanel
+        {...props}
+        track={{
+          ...committedTrack,
+          effects: committedTrack.effects.map((effect) => effect.id === 'fx-reverb'
+            ? { ...effect, params: { ...effect.params, mix: 45 } }
+            : effect),
+        }}
+      />);
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: targetName })).not.toHaveFocus();
+  });
+
+  it.each([
+    { outcome: 'null', shouldReject: false },
+    { outcome: 'rejection', shouldReject: true },
+  ])('discards add-trigger focus when an external update follows an asynchronous $outcome result', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<null>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('add failed before an external update'));
+        else resolve(null);
+      };
+    }));
+    const props = makeProps({ onAddEffect });
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    focusBody();
+
+    await settleThenUpdateBeforeFocus(settle, () => {
+      view.rerender(<EffectPanel
+        {...props}
+        track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+      />);
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: '添加效果' })).not.toHaveFocus();
+  });
+
+  it.each([
+    { outcome: 'null', shouldReject: false },
+    { outcome: 'rejection', shouldReject: true },
+  ])('discards replacement-row focus when an external update follows an asynchronous $outcome result', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<null>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('replacement failed before an external update'));
+        else resolve(null);
+      };
+    }));
+    const props = makeProps({ onReplaceEffect });
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'lowPass' } });
+    focusBody();
+
+    await settleThenUpdateBeforeFocus(settle, () => {
+      view.rerender(<EffectPanel
+        {...props}
+        track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+      />);
+    });
+
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '替换高通滤波' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: '打开高通滤波参数' })).not.toHaveFocus();
+  });
+
+  it('discards a successful add selection and parameter focus when an external update follows settlement', async () => {
+    const added = {
+      id: 'fx-low-pass-late-external', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<typeof added>((resolve) => { finish = () => resolve(added); }));
+    const props = makeProps({ onAddEffect });
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    focusBody();
+    const externallyReorderedTrack: ITrack = {
+      ...track,
+      effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!],
+    };
+
+    await settleThenUpdateBeforeFocus(finish, () => {
+      view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    });
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...externallyReorderedTrack, effects: [...externallyReorderedTrack.effects, added] }}
+    />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByTestId(`realtime-effect-${added.id}`)).not.toHaveClass('border-primary');
+    expect(screen.queryByText('8000Hz')).not.toBeInTheDocument();
+    expect(document.body).toHaveFocus();
+    expect(screen.getAllByRole('slider')[0]).not.toHaveFocus();
+  });
+
+  it('discards a successful replacement selection and parameter focus when an external update follows settlement', async () => {
+    const replacement = {
+      id: 'fx-delay-late-external', type: 'delay' as const, bypassed: false,
+      params: { time: 0.3, feedback: 0.4, wet: 0.3 },
+    };
+    let finish!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<typeof replacement>((resolve) => {
+      finish = () => resolve(replacement);
+    }));
+    const props = makeProps({ onReplaceEffect });
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'delay' } });
+    focusBody();
+    const externallyReorderedTrack: ITrack = {
+      ...track,
+      effects: [track.effects[0]!, track.effects[2]!, track.effects[1]!],
+    };
+
+    await settleThenUpdateBeforeFocus(finish, () => {
+      view.rerender(<EffectPanel {...props} track={externallyReorderedTrack} />);
+    });
+    view.rerender(<EffectPanel
+      {...props}
+      track={{
+        ...externallyReorderedTrack,
+        effects: externallyReorderedTrack.effects.map((effect) => (
+          effect.id === 'fx-high-pass' ? replacement : effect
+        )),
+      }}
+    />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByTestId(`realtime-effect-${replacement.id}`)).not.toHaveClass('border-primary');
+    expect(screen.queryByText('0.30s')).not.toBeInTheDocument();
+    expect(document.body).toHaveFocus();
+    expect(screen.getAllByRole('slider')[0]).not.toHaveFocus();
+  });
 });
