@@ -2029,6 +2029,71 @@ describe('EffectPanel realtime effect removal focus', () => {
     expect(gain).toHaveFocus();
     expect(screen.getByRole('button', { name: '打开低通滤波参数' })).not.toHaveFocus();
   });
+
+  it.each([
+    { kind: 'ABA reorder', shouldReject: false, outcome: 'resolves' },
+    { kind: 'ABA reorder', shouldReject: true, outcome: 'rejects' },
+    { kind: 'parameter-only update', shouldReject: false, outcome: 'resolves' },
+    { kind: 'parameter-only update', shouldReject: true, outcome: 'rejects' },
+    { kind: 'bypass-only update', shouldReject: false, outcome: 'resolves' },
+    { kind: 'bypass-only update', shouldReject: true, outcome: 'rejects' },
+  ])('discards removal focus after an external $kind when the command $outcome', async ({ kind, shouldReject }) => {
+    let settle!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('remove save failed after external chain update'));
+        else resolve();
+      };
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect, onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const remove = screen.getByRole('button', { name: '移除增益' });
+    await act(async () => {
+      remove.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
+    fireEvent.click(remove);
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-gain');
+
+    const externallyUpdatedTrack: ITrack = kind === 'parameter-only update'
+      ? {
+          ...track,
+          effects: track.effects.map((effect) => effect.id === 'fx-gain'
+            ? { ...effect, params: { ...effect.params, gain: 3 } }
+            : effect),
+        }
+      : kind === 'bypass-only update'
+        ? {
+            ...track,
+            effects: track.effects.map((effect) => effect.id === 'fx-high-pass'
+              ? { ...effect, bypassed: true }
+              : effect),
+          }
+        : { ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] };
+    view.rerender(<EffectPanel {...props} track={externallyUpdatedTrack} />);
+    if (kind === 'ABA reorder') {
+      // The final ID list is identical to the original, but two external revisions occurred.
+      view.rerender(<EffectPanel
+        {...props}
+        track={{ ...track, effects: track.effects.map((effect) => ({ ...effect })) }}
+      />);
+    }
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { settle(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: '打开增益参数' })).not.toHaveFocus();
+    expect(onRemoveEffect).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('EffectPanel focus after an external chain update', () => {

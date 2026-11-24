@@ -402,6 +402,8 @@ export default function EffectPanel({
     if (effectMoveInFlight.current) return;
     const index = track.effects.findIndex((effect) => effect.id === effectId);
     if (index < 0) return;
+    const expectedEffects = track.effects.filter((effect) => effect.id !== effectId);
+    const operationIsCurrent = createFocusOperationGuard(expectedEffects);
     pendingRemovalFocus.current = {
       trackId: track.id,
       effectId,
@@ -413,8 +415,11 @@ export default function EffectPanel({
     try {
       await onRemoveEffect(effectId);
     } catch {
-      // Mutation callbacks report their own save errors; keep the queued focus restoration.
+      // Mutation callbacks report their own save errors; a current operation may still restore focus.
     } finally {
+      if (!operationIsCurrent() && pendingRemovalFocus.current?.trackId === track.id) {
+        pendingRemovalFocus.current = null;
+      }
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
     }
