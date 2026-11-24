@@ -2259,3 +2259,180 @@ describe('EffectPanel focus after an external chain update', () => {
     expect(document.body).toHaveFocus();
   });
 });
+
+describe('EffectPanel focus consumption after an external chain update', () => {
+  function makeProps(overrides: Partial<Parameters<typeof EffectPanel>[0]> = {}) {
+    return {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  function focusBody() {
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+  }
+
+  async function settleThenUpdateBeforeFocus(settle: () => void, update: () => void) {
+    await act(async () => {
+      settle();
+      // Let the mutation continuation run its finally block and queue isMovingEffect=false.
+      // The external render is then batched before React consumes the pending focus effect.
+      await Promise.resolve();
+      update();
+    });
+  }
+
+  it.each([
+    { command: 'keyboard', targetName: '拖动排序增益' },
+    { command: 'button', targetName: '打开增益参数' },
+  ])('discards $command reorder focus when an external update arrives after settlement but before focus consumption', async ({ command, targetName }) => {
+    let finish!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = makeProps({ onMoveEffect });
+    const view = render(<EffectPanel {...props} />);
+    if (command === 'keyboard') {
+      const grip = screen.getByRole('button', { name: '拖动排序增益' });
+      grip.focus();
+      fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: '下移增益' }));
+    }
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+
+    const committedTrack: ITrack = {
+      ...track,
+      effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!],
+    };
+    view.rerender(<EffectPanel {...props} track={committedTrack} />);
+    focusBody();
+    await settleThenUpdateBeforeFocus(finish, () => {
+      view.rerender(<EffectPanel
+        {...props}
+        track={{
+          ...committedTrack,
+          effects: [committedTrack.effects[2]!, committedTrack.effects[1]!, committedTrack.effects[0]!],
+        }}
+      />);
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: targetName })).not.toHaveFocus();
+  });
+
+  it('discards bypass focus when an external reorder arrives after settlement but before focus consumption', async () => {
+    let finish!: () => void;
+    const onToggleBypass = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = makeProps({ onToggleBypass });
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '旁路高通滤波' }));
+    expect(onToggleBypass).toHaveBeenCalledWith('fx-high-pass');
+
+    const committedTrack: ITrack = {
+      ...track,
+      effects: track.effects.map((effect) => effect.id === 'fx-high-pass'
+        ? { ...effect, bypassed: true }
+        : effect),
+    };
+    view.rerender(<EffectPanel {...props} track={committedTrack} />);
+    focusBody();
+    await settleThenUpdateBeforeFocus(finish, () => {
+      view.rerender(<EffectPanel
+        {...props}
+        track={{
+          ...committedTrack,
+          effects: [committedTrack.effects[2]!, committedTrack.effects[0]!, committedTrack.effects[1]!],
+        }}
+      />);
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: '启用高通滤波' })).not.toHaveFocus();
+  });
+
+  it('discards track-effects power focus when an external reorder arrives after settlement but before focus consumption', async () => {
+    let finish!: () => void;
+    const onToggleAllEffects = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = makeProps({ onToggleAllEffects });
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '切换全部效果' }));
+    expect(onToggleAllEffects).toHaveBeenCalledWith('track-a', false);
+
+    const committedTrack = { ...track, effectsActive: false };
+    view.rerender(<EffectPanel {...props} track={committedTrack} />);
+    focusBody();
+    await settleThenUpdateBeforeFocus(finish, () => {
+      view.rerender(<EffectPanel
+        {...props}
+        track={{ ...committedTrack, effects: [track.effects[2]!, track.effects[0]!, track.effects[1]!] }}
+      />);
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: '切换全部效果' })).not.toHaveFocus();
+  });
+
+  it('discards removal focus when an external bypass update arrives after settlement but before focus consumption', async () => {
+    let finish!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = makeProps({ onRemoveEffect });
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '移除增益' }));
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-gain');
+
+    const committedTrack: ITrack = { ...track, effects: [track.effects[1]!, track.effects[2]!] };
+    view.rerender(<EffectPanel {...props} track={committedTrack} />);
+    focusBody();
+    await settleThenUpdateBeforeFocus(finish, () => {
+      view.rerender(<EffectPanel
+        {...props}
+        track={{
+          ...committedTrack,
+          effects: committedTrack.effects.map((effect) => effect.id === 'fx-high-pass'
+            ? { ...effect, bypassed: true }
+            : effect),
+        }}
+      />);
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: '打开高通滤波参数' })).not.toHaveFocus();
+  });
+
+  it('discards rejected removal focus when an external parameter update arrives after settlement but before focus consumption', async () => {
+    let fail!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      fail = () => reject(new Error('remove failed before an external parameter update'));
+    }));
+    const props = makeProps({ onRemoveEffect });
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '移除增益' }));
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-gain');
+    focusBody();
+
+    await settleThenUpdateBeforeFocus(fail, () => {
+      view.rerender(<EffectPanel
+        {...props}
+        track={{
+          ...track,
+          effects: track.effects.map((effect) => effect.id === 'fx-reverb'
+            ? { ...effect, params: { ...effect.params, mix: 45 } }
+            : effect),
+        }}
+      />);
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole('button', { name: '打开增益参数' })).not.toHaveFocus();
+  });
+});

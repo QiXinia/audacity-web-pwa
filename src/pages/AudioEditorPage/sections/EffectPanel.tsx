@@ -190,15 +190,31 @@ export default function EffectPanel({
   const effectNameElements = useRef(new Map<string, HTMLButtonElement>());
   const bypassElements = useRef(new Map<string, HTMLButtonElement>());
   const toggleAllEffectsButton = useRef<HTMLButtonElement>(null);
-  const pendingBypassFocus = useRef<{ trackId: string; effectId: string } | null>(null);
-  const pendingToggleAllEffectsFocusTrackId = useRef<string | null>(null);
-  const pendingGripFocus = useRef<{ trackId: string; effectId: string } | null>(null);
-  const pendingEffectFocus = useRef<{ trackId: string; effectId: string } | null>(null);
+  const pendingBypassFocus = useRef<{
+    trackId: string;
+    effectId: string;
+    operationIsCurrent?: () => boolean;
+  } | null>(null);
+  const pendingToggleAllEffectsFocus = useRef<{
+    trackId: string;
+    operationIsCurrent: () => boolean;
+  } | null>(null);
+  const pendingGripFocus = useRef<{
+    trackId: string;
+    effectId: string;
+    operationIsCurrent?: () => boolean;
+  } | null>(null);
+  const pendingEffectFocus = useRef<{
+    trackId: string;
+    effectId: string;
+    operationIsCurrent?: () => boolean;
+  } | null>(null);
   const pendingRemovalFocus = useRef<{
     trackId: string;
     effectId: string;
     index: number;
     effectIds: string[];
+    operationIsCurrent: () => boolean;
   } | null>(null);
   const addEffectButton = useRef<HTMLButtonElement>(null);
   const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
@@ -257,9 +273,9 @@ export default function EffectPanel({
     expectedEffects.splice(toIndex, 0, movedEffect!);
     const operationIsCurrent = createFocusOperationGuard(expectedEffects);
     if (restoreGripFocus) {
-      pendingGripFocus.current = { trackId: track.id, effectId };
+      pendingGripFocus.current = { trackId: track.id, effectId, operationIsCurrent };
     } else {
-      pendingEffectFocus.current = { trackId: track.id, effectId };
+      pendingEffectFocus.current = { trackId: track.id, effectId, operationIsCurrent };
     }
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
@@ -362,7 +378,7 @@ export default function EffectPanel({
       effect.id === effectId ? { ...effect, bypassed: !effect.bypassed } : effect
     ));
     const operationIsCurrent = createFocusOperationGuard(expectedEffects);
-    pendingBypassFocus.current = { trackId: track.id, effectId };
+    pendingBypassFocus.current = { trackId: track.id, effectId, operationIsCurrent };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -382,7 +398,7 @@ export default function EffectPanel({
     if (effectMoveInFlight.current || !onToggleAllEffects) return;
     // This command changes only effectsActive; any effect-chain revision is external.
     const operationIsCurrent = createFocusOperationGuard();
-    pendingToggleAllEffectsFocusTrackId.current = track.id;
+    pendingToggleAllEffectsFocus.current = { trackId: track.id, operationIsCurrent };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -390,8 +406,8 @@ export default function EffectPanel({
     } catch {
       // Mutation callbacks report their own save errors; keep only a current restoration.
     } finally {
-      if (!operationIsCurrent() && pendingToggleAllEffectsFocusTrackId.current === track.id) {
-        pendingToggleAllEffectsFocusTrackId.current = null;
+      if (!operationIsCurrent() && pendingToggleAllEffectsFocus.current?.trackId === track.id) {
+        pendingToggleAllEffectsFocus.current = null;
       }
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
@@ -409,6 +425,7 @@ export default function EffectPanel({
       effectId,
       index,
       effectIds: track.effects.map((effect) => effect.id),
+      operationIsCurrent,
     };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
@@ -447,15 +464,24 @@ export default function EffectPanel({
   useEffect(() => {
     const pending = pendingGripFocus.current;
     if (!pending || isMovingEffect) return;
+    if (
+      pending.trackId !== track.id
+      || (pending.operationIsCurrent !== undefined && !pending.operationIsCurrent())
+    ) {
+      pendingGripFocus.current = null;
+      return;
+    }
     pendingGripFocus.current = null;
-    if (pending.trackId !== track.id) return;
     gripElements.current.get(pending.effectId)?.focus();
   }, [activeEffects, isMovingEffect, track.id]);
 
   useEffect(() => {
     const pending = pendingEffectFocus.current;
     if (!pending || isMovingEffect) return;
-    if (pending.trackId !== track.id) {
+    if (
+      pending.trackId !== track.id
+      || (pending.operationIsCurrent !== undefined && !pending.operationIsCurrent())
+    ) {
       pendingEffectFocus.current = null;
       return;
     }
@@ -471,7 +497,10 @@ export default function EffectPanel({
   useEffect(() => {
     const pending = pendingBypassFocus.current;
     if (!pending || isMovingEffect) return;
-    if (pending.trackId !== track.id) {
+    if (
+      pending.trackId !== track.id
+      || (pending.operationIsCurrent !== undefined && !pending.operationIsCurrent())
+    ) {
       pendingBypassFocus.current = null;
       return;
     }
@@ -482,16 +511,18 @@ export default function EffectPanel({
   }, [activeEffects, isMovingEffect, track.id]);
 
   useEffect(() => {
-    const pendingTrackId = pendingToggleAllEffectsFocusTrackId.current;
-    if (!pendingTrackId || isMovingEffect) return;
-    pendingToggleAllEffectsFocusTrackId.current = null;
-    if (pendingTrackId === track.id) toggleAllEffectsButton.current?.focus();
+    const pending = pendingToggleAllEffectsFocus.current;
+    if (!pending || isMovingEffect) return;
+    pendingToggleAllEffectsFocus.current = null;
+    if (pending.trackId === track.id && pending.operationIsCurrent()) {
+      toggleAllEffectsButton.current?.focus();
+    }
   }, [isMovingEffect, track.id]);
 
   useEffect(() => {
     const pending = pendingRemovalFocus.current;
     if (!pending || isMovingEffect) return;
-    if (pending.trackId !== track.id) {
+    if (pending.trackId !== track.id || !pending.operationIsCurrent()) {
       pendingRemovalFocus.current = null;
       return;
     }
@@ -571,7 +602,7 @@ export default function EffectPanel({
     pendingEffectFocus.current = null;
     pendingGripFocus.current = null;
     pendingBypassFocus.current = null;
-    pendingToggleAllEffectsFocusTrackId.current = null;
+    pendingToggleAllEffectsFocus.current = null;
     restoreAddEffectButtonFocus.current = null;
     setSelectedEffectId(effectId);
   }
