@@ -241,7 +241,7 @@ export default function EffectPanel({
     effectChainRevision.current += 1;
   }, [track.effects]);
 
-  function createFocusOperationGuard(expectedEffects?: IEffect[]) {
+  function createFocusOperationGuard(expectedEffects?: IEffect[] | (() => IEffect[] | undefined)) {
     const selectionRevision = explicitSelectionRevision.current;
     const operationTrackRevision = trackRevision.current;
     const operationEffectChainRevision = effectChainRevision.current;
@@ -251,12 +251,16 @@ export default function EffectPanel({
         || operationTrackRevision !== trackRevision.current
       ) return false;
       if (operationEffectChainRevision === effectChainRevision.current) return true;
-      // A successful mutation may legitimately commit its own new chain. Anything other
-      // than that exact expected chain is an external undo/redo or cross-tab update.
-      return expectedEffects !== undefined
-        && latestTrackEffects.current.length === expectedEffects.length
+      // Add/replace learn their result only after the service has often committed it.
+      // Resolve that expected chain lazily so their own commit is not mistaken for an
+      // external update, while any different undo/redo or cross-tab chain still fails.
+      const resolvedExpectedEffects = typeof expectedEffects === 'function'
+        ? expectedEffects()
+        : expectedEffects;
+      return resolvedExpectedEffects !== undefined
+        && latestTrackEffects.current.length === resolvedExpectedEffects.length
         && latestTrackEffects.current.every((effect, index) => {
-          const expected = expectedEffects[index];
+          const expected = resolvedExpectedEffects[index];
           if (expected === undefined) return false;
           const actualParamKeys = Object.keys(effect.params);
           const expectedParamKeys = Object.keys(expected.params);
@@ -309,7 +313,9 @@ export default function EffectPanel({
 
   async function handleReplaceEffect(effectId: string, type: EffectType) {
     if (effectMoveInFlight.current) return;
-    const operationIsCurrent = createFocusOperationGuard();
+    const initialEffects = track.effects;
+    let expectedEffects: IEffect[] | undefined;
+    const operationIsCurrent = createFocusOperationGuard(() => expectedEffects);
     // Queue fallback restoration before awaiting so an explicit selection can cancel it.
     pendingEffectFocus.current = { trackId: track.id, effectId, operationIsCurrent };
     effectMoveInFlight.current = true;
@@ -317,11 +323,11 @@ export default function EffectPanel({
     try {
       const replacement = await onReplaceEffect(effectId, type);
       if (replacement) {
+        expectedEffects = initialEffects.map((effect) => (
+          effect.id === effectId ? replacement : effect
+        ));
         pendingEffectFocus.current = null;
         if (operationIsCurrent()) {
-          const expectedEffects = latestTrackEffects.current.map((effect) => (
-            effect.id === effectId ? replacement : effect
-          ));
           pendingParameterFocus.current = {
             trackId: track.id,
             effectId: replacement.id,
@@ -344,7 +350,9 @@ export default function EffectPanel({
 
   async function handleAddEffect(type: EffectType) {
     if (effectMoveInFlight.current) return;
-    const operationIsCurrent = createFocusOperationGuard();
+    const initialEffects = track.effects;
+    let expectedEffects: IEffect[] | undefined;
+    const operationIsCurrent = createFocusOperationGuard(() => expectedEffects);
     // Queue restoration before awaiting so a newer explicit selection can cancel it.
     restoreAddEffectButtonFocus.current = { trackId: track.id, operationIsCurrent };
     effectMoveInFlight.current = true;
@@ -352,9 +360,9 @@ export default function EffectPanel({
     try {
       const added = await onAddEffect(type);
       if (added) {
+        expectedEffects = [...initialEffects, added];
         restoreAddEffectButtonFocus.current = null;
         if (operationIsCurrent()) {
-          const expectedEffects = [...latestTrackEffects.current, added];
           pendingParameterFocus.current = {
             trackId: track.id,
             effectId: added.id,
