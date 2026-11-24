@@ -77,12 +77,20 @@ export function updateClipSelection(
 ): ClipKey[] {
   const target = findClipLocation(tracks, key);
   const groupId = target?.clip.groupId;
-  const groupedKeys = target && Number.isSafeInteger(groupId) && (groupId ?? -1) >= 0
+  const hasClipGroup = target !== null && Number.isSafeInteger(groupId) && (groupId ?? -1) >= 0;
+  const groupedKeys = target && hasClipGroup
     ? tracks.flatMap((track) => track.clips
       .filter((clip) => clip.groupId === groupId)
       .map((clip) => ({ trackId: track.id, clipId: clip.id })))
     : [key];
-  if (mode === 'replace') return groupedKeys;
+  if (mode === 'replace') {
+    // Audacity preserves an existing multi-selection when an already selected
+    // ungrouped clip is activated; grouped clips instead reselect their group.
+    if (!hasClipGroup && current.some((item) => clipKeyId(item) === clipKeyId(key))) {
+      return [...current];
+    }
+    return groupedKeys;
+  }
   if (mode === 'toggle') {
     const currentIds = new Set(current.map(clipKeyId));
     const groupedIds = new Set(groupedKeys.map(clipKeyId));

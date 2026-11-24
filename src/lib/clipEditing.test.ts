@@ -64,8 +64,16 @@ describe('clip selection editing', () => {
     selected = updateClipSelection(selected, c, 'toggle');
     selected = updateClipSelection(selected, b, 'toggle');
     expect(selected).toEqual([a, c, b]);
-    expect(updateClipSelection(selected, c, 'toggle')).toEqual([a, b]);
-    expect(updateClipSelection(selected, b, 'replace')).toEqual([b]);
+    selected = updateClipSelection(selected, c, 'toggle');
+    expect(selected).toEqual([a, b]);
+    expect(updateClipSelection(selected, b, 'replace')).toEqual([a, b]);
+  });
+
+  it('preserves a multi-selection when plain activating an already selected ungrouped clip', () => {
+    const source = project();
+    expect(updateClipSelection([a, c, b], b, 'replace', source.tracks)).toEqual([a, c, b]);
+    expect(updateClipSelection([a, c, b], c, 'replace', source.tracks)).toEqual([a, c, b]);
+    expect(updateClipSelection([a, c], b, 'replace', source.tracks)).toEqual([b]);
   });
 
   it('selects the official Shift time/track rectangle in either direction', () => {

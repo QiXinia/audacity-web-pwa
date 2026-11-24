@@ -13366,8 +13366,10 @@ function ClipItem({
     const mode: ClipSelectionMode = e.ctrlKey || e.metaKey
       ? 'toggle'
       : e.shiftKey ? 'range' : 'replace';
-    // Audacity keeps a multi-clip selection intact when one selected clip is activated.
-    if (mode === 'replace' && isSelected && hasMultipleSelections) return;
+    const hasClipGroup = Number.isSafeInteger(clip.groupId) && (clip.groupId ?? -1) >= 0;
+    // Audacity preserves a multi-selection for a selected ungrouped clip, but
+    // plain activation of a grouped clip reselects that complete group.
+    if (mode === 'replace' && isSelected && hasMultipleSelections && !hasClipGroup) return;
     onSelect(mode);
   }
 

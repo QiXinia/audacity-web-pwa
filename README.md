@@ -29,7 +29,7 @@
 | Find Clipping 削波分析 | ✅ | “分析 → Find Clipping”对照 Audacity 4.0.2 `FindClippingBase` 实现官方 Start／Stop threshold、逐轨逐声道满幅 run 检测、停止阈值后标签落地及选区末尾不强制补标签；读取 Shift 多选轨道的有效拉伸 PCM，时间轴空隙按零采样处理，生成可持久化、可撤销并可点击定位选区的 Clipping 标签轨；附算法、持久化及页面集成测试 |
 | 选区编辑 | ✅ | 剪切、复制、粘贴、裁剪、删除 |
 | 非破坏性时间拉伸 | ✅ | 片段级 WSOLA 拉伸，0.25×–4×，保持音高并贯穿播放、分割、编辑与导出 |
-| Shift 片段多选 | ✅ | 同轨按 Audacity 4 有序片段连续区间选择（包含尾部越过目标端点的中间片段），并保留跨轨矩形扩展；支持不连续选择及成组移动、修剪、拉伸、删除与速度复位 |
+| Shift 片段多选 | ✅ | 同轨按 Audacity 4 有序片段连续区间选择（包含尾部越过目标端点的中间片段），并保留跨轨矩形扩展；普通激活已选中的非分组片段时保留多选，激活已选中的 Clip Group 时收敛到完整组；支持不连续选择及成组移动、修剪、拉伸、删除与速度复位 |
 | 基础效果 | ✅ | 增益、淡入、淡出、标准化、反转、静音、移除直流 |
 | 重复选区 | ✅ | 效果菜单“重复…”支持多轨选区复制、次数与时长预览、原子提交和单次撤销；副本共享暂存 PCM，后续音频右移以避免覆盖 |
 | 音调 / 噪声 / 静默生成 | ✅ | 光标生成默认 30 秒并分别记住上次时长；Tone/Noise 支持独立用户预设（选择、保存、同名覆盖确认、重置、删除及刷新恢复），预设不覆盖选区锁定时长；支持不写入工程的试听、手动停止与关闭清理，按采样量化并真实替换当前轨道选区，保留选区外片段与拉伸源窗口；Silence Audio 清零选区且保持片段边界；Tone 使用独立对话框并有父页面命令链集成回归 |
@@ -231,7 +231,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/lib/snapping.test.ts` | 时间／小节吸附、跨片段边界、移动／修剪／拉伸边界 | 20 |
 | `src/lib/musicalTiming.test.ts` | BPM／拍号校验、四分音符与小节时长、不可变更新 | 4 |
 | `src/lib/loopPlayback.test.ts` | 循环区编辑、跨周期播放头、片段循环渲染与淡入淡出 | 14 |
-| `src/lib/clipEditing.test.ts` | 同轨有序 Shift 连续区间与越界中间片段、跨轨多选、成组编辑、速度复位起点保持、非破坏性分割与删除边界 | 18 |
+| `src/lib/clipEditing.test.ts` | 同轨有序 Shift 连续区间与越界中间片段、普通激活已选非分组片段的多选保持、跨轨多选、成组编辑、速度复位起点保持、非破坏性分割与删除边界 | 19 |
 | `src/lib/repeatEditing.test.ts` | 重复片段生成、后续片段平移、跨点拆分、拉伸源窗口与非法输入 | 5 |
 | `src/lib/levelMeter.test.ts` | 峰值读取、dBFS 换算、表头位置与即时上升／衰减 | 11 |
 | `src/lib/toneGenerator.test.ts` | Audacity 兼容波形、抗混叠方波与参数边界 | 4 |
@@ -322,7 +322,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/sections/LimiterDialog.test.tsx` | 五参数官方默认值与范围、2 秒动态历史、真实输入／输出试听、显示开关、恢复默认及非法输入防崩溃 | 5 |
 | `src/pages/AudioEditorPage/sections/TruncateSilenceDialog.test.tsx` | Truncate Silence 官方默认值、完整参数提交、动作联动控件、非法范围、恢复默认及无选区／busy 禁用 | 4 |
 | `src/pages/AudioEditorPage/sections/PlotSpectrumDialog.test.tsx` | 官方默认值、真实分析进度与 stale 取消、纵向缩放／平移／复位、跨关闭首选项、峰值、导出、Replot 与截断提示 | 6 |
-| `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史、选区量化与 Shift 多选 | 26 |
+| `src/pages/AudioEditorPage/AudioEditorPage.tone.test.tsx` | 真实生成菜单、DTMF 一秒默认、Pluck／Rhythm／Risset 可变长替换、多轨历史、选区量化、Shift 多选、普通激活非分组多选保持及 Clip Group 整组收敛 | 27 |
 | `src/pages/AudioEditorPage/AudioEditorPage.workspace.test.tsx` | Workspace 故障恢复、纵向及水平缩放与持久化 | 4 |
 | `src/pages/AudioEditorPage/AudioEditorPage.plotSpectrum.test.tsx` | Shift 多选轨道的拉伸立体声 PCM、真实菜单入口、无工程／历史写入及无选区禁用 | 2 |
 | `src/lib/findClipping.test.ts` | 官方 run／停止阈值与末尾边界、轨道和声道身份、时间轴空隙、参数校验及标签持久化 | 10 |
@@ -345,7 +345,7 @@ GitHub Pages 是静态托管，直接访问子路径（如 `/editor/xxx`）会 4
 | `src/pages/AudioEditorPage/AudioEditorPage.noiseReduction.test.tsx` | Noise Reduction 两步 Profile、双声道精确试听、多轨单次历史、失败无历史与无选区禁用 | 3 |
 | `src/pages/AudioEditorPage/AudioEditorPage.truncateSilence.test.tsx` | Truncate Silence 真实菜单、联动双声道 PCM 试听、多轨单次历史、失败／无变更无历史与无选区禁用 | 4 |
 
-当前完整前端回归共 **312 个测试文件、2557 项测试**；本次按完整 Git 跟踪清单分批实际运行，全部通过且无跳过，覆盖无缺失、无重复；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
+当前完整前端回归共 **312 个测试文件、2559 项测试**；本次按完整 Git 跟踪清单分批实际运行，全部通过且无跳过，覆盖无缺失、无重复；Rust/WASM 另有 **4 项** WSOLA 单元测试，已在本机 Rust 工具链执行并全部通过；独立 wasm32 release 构建也已通过。
 
 运行测试：
 

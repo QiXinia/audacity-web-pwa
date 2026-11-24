@@ -781,6 +781,32 @@ describe('AudioEditorPage official clip selection integration', () => {
     expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(0);
   });
 
+  it('plain activating a selected Clip Group collapses the selection back to that complete group', async () => {
+    const project = createTwoTrackProject();
+    project.tracks[0].clips[0].groupId = 9;
+    project.tracks[1].clips[0].groupId = 9;
+    project.tracks[0].clips.push({
+      ...project.tracks[0].clips[0],
+      id: 'clip-later-a', audioBufferId: 'buffer-later-a', startTime: 0.02,
+      name: 'Later A', groupId: undefined,
+    });
+    renderTwoTrackProject(project);
+
+    const clipA = await screen.findByRole('button', { name: /^Clip A/ });
+    const clipB = screen.getByRole('button', { name: /^Clip B/ });
+    const laterA = screen.getByRole('button', { name: /^Later A/ });
+    fireEvent.click(clipA);
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(2);
+    fireEvent.click(laterA, { ctrlKey: true });
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(3);
+
+    fireEvent.click(clipA);
+    expect(clipA).toHaveAttribute('aria-pressed', 'true');
+    expect(clipB).toHaveAttribute('aria-pressed', 'true');
+    expect(laterA).toHaveAttribute('aria-pressed', 'false');
+    expect(document.querySelectorAll('.au-clip[aria-pressed="true"]')).toHaveLength(2);
+  });
+
   it('moves the range anchor on Ctrl add and preserves it on Ctrl remove', async () => {
     const project = createTwoTrackProject();
     project.tracks[0].clips.push({
