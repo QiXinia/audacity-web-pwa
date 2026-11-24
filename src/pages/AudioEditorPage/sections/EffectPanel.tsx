@@ -193,6 +193,7 @@ export default function EffectPanel({
     trackId: string;
     effectId: string;
     index: number;
+    effectIds: string[];
   } | null>(null);
   const addEffectButton = useRef<HTMLButtonElement>(null);
   const addEffectOptions = useRef<Array<HTMLButtonElement | null>>([]);
@@ -309,7 +310,12 @@ export default function EffectPanel({
     if (effectMoveInFlight.current) return;
     const index = track.effects.findIndex((effect) => effect.id === effectId);
     if (index < 0) return;
-    pendingRemovalFocus.current = { trackId: track.id, effectId, index };
+    pendingRemovalFocus.current = {
+      trackId: track.id,
+      effectId,
+      index,
+      effectIds: track.effects.map((effect) => effect.id),
+    };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
@@ -389,6 +395,20 @@ export default function EffectPanel({
     const pending = pendingRemovalFocus.current;
     if (!pending || isMovingEffect) return;
     if (pending.trackId !== track.id) {
+      pendingRemovalFocus.current = null;
+      return;
+    }
+
+    const currentEffectIds = activeEffects.map((effect) => effect.id);
+    const hasSameEffectIds = (expected: string[]) => (
+      currentEffectIds.length === expected.length
+      && currentEffectIds.every((effectId, index) => effectId === expected[index])
+    );
+    const isUnchanged = hasSameEffectIds(pending.effectIds);
+    const isOwnRemoval = hasSameEffectIds(pending.effectIds.filter((effectId) => effectId !== pending.effectId));
+    // Undo/redo or another tab can replace the chain while this command is pending.
+    // Only consume the request for an unchanged chain or exactly its own removal.
+    if (!isUnchanged && !isOwnRemoval) {
       pendingRemovalFocus.current = null;
       return;
     }

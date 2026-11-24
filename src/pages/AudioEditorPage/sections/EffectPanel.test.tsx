@@ -1436,4 +1436,69 @@ describe('EffectPanel realtime effect removal focus', () => {
     expect(remove).toBeEnabled();
     expect(onRemoveEffect).toHaveBeenCalledTimes(1);
   });
+
+  it('discards removal focus when an external reorder keeps the pending target', async () => {
+    let finish!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect, onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const remove = screen.getByRole('button', { name: '移除增益' });
+    await act(async () => {
+      remove.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
+    fireEvent.click(remove);
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-gain');
+
+    // Undo/redo or another tab can replace the chain without performing this removal.
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[0]!, track.effects[2]!] }}
+    />);
+    const highPass = screen.getByRole('button', { name: '打开高通滤波参数' });
+    highPass.focus();
+    await act(async () => { finish(); });
+
+    expect(highPass).toHaveFocus();
+    expect(screen.getByRole('button', { name: '打开增益参数' })).not.toHaveFocus();
+  });
+
+  it('discards removal focus when an external replacement also changes another effect', async () => {
+    let finish!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect, onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const remove = screen.getByRole('button', { name: '移除高通滤波' });
+    await act(async () => {
+      remove.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
+    fireEvent.click(remove);
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-high-pass');
+
+    const lowPass = {
+      id: 'fx-low-pass-external', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 6400, q: 0.707 },
+    };
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[0]!, lowPass, track.effects[2]!] }}
+    />);
+    const gain = screen.getByRole('button', { name: '打开增益参数' });
+    gain.focus();
+    await act(async () => { finish(); });
+
+    expect(gain).toHaveFocus();
+    expect(screen.getByRole('button', { name: '打开低通滤波参数' })).not.toHaveFocus();
+  });
 });
