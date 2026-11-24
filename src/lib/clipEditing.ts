@@ -64,8 +64,9 @@ function findClipLocation(tracks: IProject['tracks'], key: ClipKey) {
 }
 
 /**
- * Audacity selection semantics: replace on plain activation, Shift selects the
- * time/track rectangle from the anchor, and Ctrl/Cmd toggles a clip or its whole group.
+ * Audacity selection semantics: replace on plain activation, Shift selects an
+ * ordered same-track item range, and Ctrl/Cmd toggles a clip or its whole group.
+ * The existing cross-track Shift time/track rectangle is retained as an extension.
  */
 export function updateClipSelection(
   current: readonly ClipKey[],
@@ -95,6 +96,22 @@ export function updateClipSelection(
     .map((candidate) => candidate ? findClipLocation(tracks, candidate) : null)
     .find((candidate) => candidate !== null);
   if (!rangeAnchor) return [key];
+
+  if (rangeAnchor.trackIndex === target.trackIndex) {
+    // Audacity 4's itemKeysInRange selects the contiguous sorted item indices,
+    // not only clips wholly contained by the endpoint times. In particular, a
+    // middle clip remains selected when its tail extends beyond the target.
+    const track = tracks[target.trackIndex]!;
+    const orderedClips = [...track.clips].sort((left, right) =>
+      left.startTime - right.startTime || left.id.localeCompare(right.id),
+    );
+    const anchorIndex = orderedClips.findIndex((clip) => clip.id === rangeAnchor.clip.id);
+    const targetIndex = orderedClips.findIndex((clip) => clip.id === target.clip.id);
+    if (anchorIndex < 0 || targetIndex < 0) return [key];
+    return orderedClips
+      .slice(Math.min(anchorIndex, targetIndex), Math.max(anchorIndex, targetIndex) + 1)
+      .map((clip) => ({ trackId: track.id, clipId: clip.id }));
+  }
 
   const firstTrackIndex = Math.min(rangeAnchor.trackIndex, target.trackIndex);
   const lastTrackIndex = Math.max(rangeAnchor.trackIndex, target.trackIndex);

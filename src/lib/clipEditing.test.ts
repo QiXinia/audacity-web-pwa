@@ -87,6 +87,21 @@ describe('clip selection editing', () => {
     expect(updateClipSelection([], c, 'range', source.tracks, null)).toEqual([c]);
   });
 
+  it('keeps every ordered clip in a same-track Shift range even when a middle clip overhangs the target', () => {
+    const source = project();
+    source.tracks[0]!.clips = [
+      clip('anchor', { startTime: 1, duration: 1, originalDuration: 1 }),
+      clip('middle', { startTime: 2, duration: 4, originalDuration: 4 }),
+      clip('target', { startTime: 3, duration: 1, originalDuration: 1 }),
+    ];
+    const anchor = { trackId: 'track-a', clipId: 'anchor' } satisfies ClipKey;
+    const middle = { trackId: 'track-a', clipId: 'middle' } satisfies ClipKey;
+    const target = { trackId: 'track-a', clipId: 'target' } satisfies ClipKey;
+
+    expect(updateClipSelection([anchor], target, 'range', source.tracks, anchor)).toEqual([anchor, middle, target]);
+    expect(updateClipSelection([target], anchor, 'range', source.tracks, target)).toEqual([anchor, middle, target]);
+  });
+
   it('selects and Ctrl-toggles a complete Clip group across tracks', () => {
     const source = project();
     source.tracks[0]!.clips[0]!.groupId = 9;
