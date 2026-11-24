@@ -187,7 +187,7 @@ export default function EffectPanel({
   const toggleAllEffectsButton = useRef<HTMLButtonElement>(null);
   const pendingBypassFocus = useRef<{ trackId: string; effectId: string } | null>(null);
   const pendingToggleAllEffectsFocusTrackId = useRef<string | null>(null);
-  const pendingGripFocusId = useRef<string | null>(null);
+  const pendingGripFocus = useRef<{ trackId: string; effectId: string } | null>(null);
   const pendingEffectFocus = useRef<{ trackId: string; effectId: string } | null>(null);
   const pendingRemovalFocus = useRef<{
     trackId: string;
@@ -211,7 +211,7 @@ export default function EffectPanel({
       || toIndex === fromIndex
     ) return;
     if (restoreGripFocus) {
-      pendingGripFocusId.current = effectId;
+      pendingGripFocus.current = { trackId: track.id, effectId };
     } else {
       pendingEffectFocus.current = { trackId: track.id, effectId };
     }
@@ -342,11 +342,12 @@ export default function EffectPanel({
   }, [showAddMenu, track.id]);
 
   useEffect(() => {
-    if (isMovingEffect || !pendingGripFocusId.current) return;
-    const effectId = pendingGripFocusId.current;
-    pendingGripFocusId.current = null;
-    gripElements.current.get(effectId)?.focus();
-  }, [activeEffects, isMovingEffect]);
+    const pending = pendingGripFocus.current;
+    if (!pending || isMovingEffect) return;
+    pendingGripFocus.current = null;
+    if (pending.trackId !== track.id) return;
+    gripElements.current.get(pending.effectId)?.focus();
+  }, [activeEffects, isMovingEffect, track.id]);
 
   useEffect(() => {
     const pending = pendingEffectFocus.current;

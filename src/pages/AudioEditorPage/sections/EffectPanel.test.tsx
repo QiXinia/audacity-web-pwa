@@ -369,7 +369,10 @@ describe('EffectPanel realtime bypass focus', () => {
     }));
     renderPanel({ onToggleBypass });
     const bypass = screen.getByRole('button', { name: '旁路高通滤波' });
-    bypass.focus();
+    await act(async () => {
+      bypass.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
     fireEvent.click(bypass);
     expect(onToggleBypass).toHaveBeenCalledWith('fx-high-pass');
     expect(bypass).toBeDisabled();
@@ -424,7 +427,10 @@ describe('EffectPanel realtime bypass focus', () => {
     }));
     renderPanel({ onToggleAllEffects });
     const toggle = screen.getByRole('button', { name: '切换全部效果' });
-    toggle.focus();
+    await act(async () => {
+      toggle.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
     fireEvent.click(toggle);
     expect(onToggleAllEffects).toHaveBeenCalledWith('track-a', false);
     expect(toggle).toBeDisabled();
@@ -966,6 +972,73 @@ describe('EffectPanel Audacity reorder controls', () => {
     expect(document.body).toHaveFocus();
   });
 
+  it('discards pending grip focus when an asynchronous keyboard reorder rejects on another track', async () => {
+    let fail!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      fail = () => reject(new Error('cross-track keyboard reorder save failed'));
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect,
+      onReplaceEffect: vi.fn(),
+    };
+    const otherTrack: ITrack = {
+      ...track,
+      id: 'track-b',
+      name: 'Track B',
+      effects: [
+        { id: 'fx-gain', type: 'lowPass', bypassed: false, params: { frequency: 6400, q: 0.707 } },
+      ],
+    };
+    const view = render(<EffectPanel {...props} />);
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    grip.focus();
+    fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 1);
+
+    view.rerender(<EffectPanel {...props} track={otherTrack} />);
+    const otherTrackGrip = screen.getByRole('button', { name: '拖动排序低通滤波' });
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(otherTrackGrip).toBeEnabled());
+    expect(document.body).toHaveFocus();
+
+    view.rerender(<EffectPanel {...props} track={track} />);
+    expect(document.body).toHaveFocus();
+  });
+
+  it('restores effect-row focus and unlocks when an asynchronous native drag reorder rejects', async () => {
+    let fail!: () => void;
+    const onMoveEffect = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      fail = () => reject(new Error('native drag reorder save failed'));
+    }));
+    renderPanel({ onMoveEffect });
+    const grip = screen.getByRole('button', { name: '拖动排序增益' });
+    const dataTransfer = {
+      effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn(() => 'fx-gain'),
+    };
+    grip.focus();
+    fireEvent.dragStart(grip, { dataTransfer });
+    fireEvent.drop(screen.getByTestId('realtime-effect-fx-reverb'), { dataTransfer });
+    expect(onMoveEffect).toHaveBeenCalledWith('fx-gain', 2);
+    expect(grip).toBeDisabled();
+
+    act(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await act(async () => { fail(); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开增益参数' })).toHaveFocus());
+    expect(grip).toBeEnabled();
+    expect(onMoveEffect).toHaveBeenCalledTimes(1);
+  });
+
   it('restores effect-row focus after an asynchronous native drag reorder', async () => {
     let finish!: () => void;
     const onMoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
@@ -1096,7 +1169,10 @@ describe('EffectPanel realtime effect removal focus', () => {
     }));
     renderPanel({ onRemoveEffect });
     const remove = screen.getByRole('button', { name: '移除增益' });
-    remove.focus();
+    await act(async () => {
+      remove.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
     fireEvent.click(remove);
     expect(onRemoveEffect).toHaveBeenCalledWith('fx-gain');
     expect(remove).toBeDisabled();
