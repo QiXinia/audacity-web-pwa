@@ -1437,6 +1437,42 @@ describe('EffectPanel realtime effect removal focus', () => {
     expect(onRemoveEffect).toHaveBeenCalledTimes(1);
   });
 
+  it('cancels stale removal focus after the user explicitly selects another effect', async () => {
+    let finish!: () => void;
+    const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect, onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    const remove = screen.getByRole('button', { name: '移除增益' });
+    await act(async () => {
+      remove.focus();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    });
+    fireEvent.click(remove);
+    expect(onRemoveEffect).toHaveBeenCalledWith('fx-gain');
+
+    // The store commits the removal before the mutation promise releases the UI lock.
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[1]!, track.effects[2]!] }}
+    />);
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+
+    // The newer explicit selection supersedes the old remove-operation focus request.
+    expect(reverb).toHaveFocus();
+    expect(screen.getByRole('button', { name: '打开高通滤波参数' })).not.toHaveFocus();
+  });
+
   it('discards removal focus when an external reorder keeps the pending target', async () => {
     let finish!: () => void;
     const onRemoveEffect = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));

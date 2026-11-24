@@ -467,8 +467,9 @@ export default function EffectPanel({
   }
 
   function handleSelectEffect(effectId: string) {
-    // A newer explicit selection supersedes any queued add/replace parameter focus.
+    // A newer explicit selection supersedes queued parameter and removal focus.
     pendingParameterFocus.current = null;
+    pendingRemovalFocus.current = null;
     setSelectedEffectId(effectId);
   }
 
