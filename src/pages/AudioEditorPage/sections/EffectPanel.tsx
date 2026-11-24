@@ -181,6 +181,7 @@ export default function EffectPanel({
   );
   const [isMovingEffect, setIsMovingEffect] = useState(false);
   const effectMoveInFlight = useRef(false);
+  const explicitSelectionRevision = useRef(0);
   const gripElements = useRef(new Map<string, HTMLButtonElement>());
   const effectNameElements = useRef(new Map<string, HTMLButtonElement>());
   const bypassElements = useRef(new Map<string, HTMLButtonElement>());
@@ -230,19 +231,22 @@ export default function EffectPanel({
 
   async function handleReplaceEffect(effectId: string, type: EffectType) {
     if (effectMoveInFlight.current) return;
+    const selectionRevision = explicitSelectionRevision.current;
+    // Queue fallback restoration before awaiting so an explicit selection can cancel it.
+    pendingEffectFocus.current = { trackId: track.id, effectId };
     effectMoveInFlight.current = true;
     setIsMovingEffect(true);
     try {
       const replacement = await onReplaceEffect(effectId, type);
       if (replacement) {
-        pendingParameterFocus.current = { trackId: track.id, effectId: replacement.id };
-        setSelectedEffectId(replacement.id);
-      } else {
-        pendingEffectFocus.current = { trackId: track.id, effectId };
+        pendingEffectFocus.current = null;
+        if (selectionRevision === explicitSelectionRevision.current) {
+          pendingParameterFocus.current = { trackId: track.id, effectId: replacement.id };
+          setSelectedEffectId(replacement.id);
+        }
       }
     } catch {
-      // Mutation callbacks report their own save errors; a rejection must not strand keyboard focus.
-      pendingEffectFocus.current = { trackId: track.id, effectId };
+      // Mutation callbacks report their own save errors; keep only an uncancelled restoration.
     } finally {
       effectMoveInFlight.current = false;
       setIsMovingEffect(false);
@@ -251,6 +255,7 @@ export default function EffectPanel({
 
   async function handleAddEffect(type: EffectType) {
     if (effectMoveInFlight.current) return;
+    const selectionRevision = explicitSelectionRevision.current;
     // Queue restoration before awaiting so a newer explicit selection can cancel it.
     restoreAddEffectButtonFocus.current = track.id;
     effectMoveInFlight.current = true;
@@ -259,8 +264,10 @@ export default function EffectPanel({
       const added = await onAddEffect(type);
       if (added) {
         restoreAddEffectButtonFocus.current = null;
-        pendingParameterFocus.current = { trackId: track.id, effectId: added.id };
-        setSelectedEffectId(added.id);
+        if (selectionRevision === explicitSelectionRevision.current) {
+          pendingParameterFocus.current = { trackId: track.id, effectId: added.id };
+          setSelectedEffectId(added.id);
+        }
       }
       setShowAddMenu(false);
     } catch {
@@ -467,7 +474,8 @@ export default function EffectPanel({
   }
 
   function handleSelectEffect(effectId: string) {
-    // A newer explicit selection supersedes queued operation focus restoration.
+    // A newer explicit selection supersedes queued operation selection and focus restoration.
+    explicitSelectionRevision.current += 1;
     pendingParameterFocus.current = null;
     pendingRemovalFocus.current = null;
     pendingEffectFocus.current = null;

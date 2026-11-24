@@ -219,6 +219,41 @@ describe('EffectPanel parameter edits and newly added effects', () => {
     expect(screen.getAllByRole('slider')[0]).not.toHaveFocus();
   });
 
+  it('preserves an explicit selection made while a successful add is still pending', async () => {
+    const added = {
+      id: 'fx-low-pass-pending-explicit-selection', type: 'lowPass' as const, bypassed: false,
+      params: { frequency: 8000, q: 0.707 },
+    };
+    let finish!: () => void;
+    const onAddEffect = vi.fn(() => new Promise<typeof added>((resolve) => {
+      finish = () => resolve(added);
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect, onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect: vi.fn(),
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加效果' }));
+    fireEvent.click(screen.getByRole('button', { name: '低通滤波' }));
+    expect(onAddEffect).toHaveBeenCalledWith('lowPass');
+
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加效果' })).toBeEnabled());
+    view.rerender(<EffectPanel {...props} track={{ ...track, effects: [...track.effects, added] }} />);
+
+    expect(screen.getByTestId('realtime-effect-fx-reverb')).toHaveClass('border-primary');
+    expect(screen.getByTestId(`realtime-effect-${added.id}`)).not.toHaveClass('border-primary');
+    expect(reverb).toHaveFocus();
+    expect(screen.queryByText('8000Hz')).not.toBeInTheDocument();
+  });
+
   it.each([
     { outcome: 'null', result: null },
     { outcome: 'void', result: undefined },
@@ -857,6 +892,72 @@ describe('EffectPanel Audacity replacement controls', () => {
     // A newer explicit selection supersedes the old replacement-operation focus request.
     expect(openReplacement).toHaveFocus();
     expect(screen.getAllByRole('slider')[0]).not.toHaveFocus();
+  });
+
+  it('preserves an explicit selection made while a successful replacement is still pending', async () => {
+    const replacement = {
+      id: 'fx-delay-pending-explicit-selection', type: 'delay' as const, bypassed: false,
+      params: { time: 0.3, feedback: 0.4, wet: 0.3 },
+    };
+    let finish!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<typeof replacement>((resolve) => {
+      finish = () => resolve(replacement);
+    }));
+    const props = {
+      track,
+      onClose: vi.fn(), onAddEffect: vi.fn(), onUpdateEffect: vi.fn(),
+      onToggleBypass: vi.fn(), onToggleAllEffects: vi.fn(), onRemoveEffect: vi.fn(), onMoveEffect: vi.fn(),
+      onReplaceEffect,
+    };
+    const view = render(<EffectPanel {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'delay' } });
+    expect(onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'delay');
+
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { finish(); });
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '替换高通滤波' })).toBeEnabled());
+    view.rerender(<EffectPanel
+      {...props}
+      track={{ ...track, effects: [track.effects[0]!, replacement, track.effects[2]!] }}
+    />);
+
+    expect(screen.getByTestId('realtime-effect-fx-reverb')).toHaveClass('border-primary');
+    expect(screen.getByTestId(`realtime-effect-${replacement.id}`)).not.toHaveClass('border-primary');
+    expect(reverb).toHaveFocus();
+    expect(screen.queryByText('0.30s')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { outcome: 'null', shouldReject: false },
+    { outcome: 'rejection', shouldReject: true },
+  ])('preserves explicit selection when a pending replacement ends with $outcome', async ({ shouldReject }) => {
+    let settle!: () => void;
+    const onReplaceEffect = vi.fn(() => new Promise<null>((resolve, reject) => {
+      settle = () => {
+        if (shouldReject) reject(new Error('replacement failed after explicit selection'));
+        else resolve(null);
+      };
+    }));
+    renderPanel({ onReplaceEffect });
+    fireEvent.change(screen.getByRole('combobox', { name: '替换高通滤波' }), { target: { value: 'lowPass' } });
+    expect(onReplaceEffect).toHaveBeenCalledWith('fx-high-pass', 'lowPass');
+
+    const reverb = screen.getByRole('button', { name: '打开混响参数' });
+    reverb.focus();
+    fireEvent.click(reverb);
+    expect(reverb).toHaveFocus();
+
+    await act(async () => { settle(); });
+    const highPass = screen.getByRole('button', { name: '打开高通滤波参数' });
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '替换高通滤波' })).toBeEnabled());
+
+    expect(reverb).toHaveFocus();
+    expect(highPass).not.toHaveFocus();
+    expect(screen.getByTestId('realtime-effect-fx-reverb')).toHaveClass('border-primary');
   });
 
   it.each([
