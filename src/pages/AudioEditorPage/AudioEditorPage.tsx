@@ -6899,22 +6899,28 @@ function AudioEditorPageContent() {
 
   async function handleApplyBassTreble(settings: BassTrebleSettings) {
     if (!project || !quantizedGeneratorSelection) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsApplyingBassTreble(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
       }
       const before = JSON.parse(JSON.stringify(project)) as IProject;
       const changed = await projectService.bassTrebleSelectionOnTracks(
-        project.id,
+        projectId,
         activeSelection,
         settings,
         targets,
       );
-      const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('应用低音和高音后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -6927,10 +6933,11 @@ function AudioEditorPageContent() {
       setBassTrebleDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用低音和高音`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('应用低音和高音失败:', String(error));
       toast.error(error instanceof Error ? `应用低音和高音失败：${error.message}` : '应用低音和高音失败');
     } finally {
-      setIsApplyingBassTreble(false);
+      if (isCurrentAction()) setIsApplyingBassTreble(false);
     }
   }
 
@@ -7063,22 +7070,28 @@ function AudioEditorPageContent() {
 
   async function handleApplyDistortion(settings: DistortionSettings) {
     if (!project || !quantizedGeneratorSelection) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsApplyingDistortion(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
       }
       const before = JSON.parse(JSON.stringify(project)) as IProject;
       const changed = await projectService.distortionSelectionOnTracks(
-        project.id,
+        projectId,
         activeSelection,
         settings,
         targets,
       );
-      const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('应用 Distortion 后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -7091,10 +7104,11 @@ function AudioEditorPageContent() {
       setDistortionDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Distortion 失真`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('应用 Distortion 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Distortion 失败：${error.message}` : '应用 Distortion 失败');
     } finally {
-      setIsApplyingDistortion(false);
+      if (isCurrentAction()) setIsApplyingDistortion(false);
     }
   }
 
