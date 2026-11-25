@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   previewBuffers: [] as { channels: number; length: number; sampleRate: number; data: Float32Array[] }[],
 }));
 let mockProject: IProject;
+let mockRouteProjectId = 'auto-duck-project';
 
 function makeProject(trackCount = 3): IProject {
   const clip = (id: string) => ({
@@ -80,7 +81,7 @@ vi.mock('@/engine/audioEngine', () => ({
   },
 }));
 vi.mock('@/wasm/processor', () => ({ isWasmAvailable: vi.fn(() => false), wasmProcessor: {} }));
-vi.mock('react-router-dom', () => ({ useParams: () => ({ projectId: 'auto-duck-project' }), useNavigate: () => vi.fn() }));
+vi.mock('react-router-dom', () => ({ useParams: () => ({ projectId: mockRouteProjectId }), useNavigate: () => vi.fn() }));
 vi.mock('sonner', () => ({ toast: { success: mocks.success, error: mocks.error, info: mocks.info } }));
 vi.mock('@/utils/logger', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), log: vi.fn() } }));
 
@@ -133,6 +134,7 @@ describe('AudioEditorPage Auto Duck effect', () => {
     vi.clearAllMocks();
     mocks.previewBuffers.length = 0;
     mockProject = makeProject();
+    mockRouteProjectId = 'auto-duck-project';
     vi.stubGlobal('AudioContext', MockAudioContext);
     Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
     mocks.loadChannels.mockImplementation(async (id: string) => {
@@ -235,5 +237,37 @@ describe('AudioEditorPage Auto Duck effect', () => {
     expect(await screen.findByText('Auto Duck integration')).toBeInTheDocument();
     fireEvent.pointerDown(screen.getByRole('button', { name: '效果' }));
     expect(await screen.findByText('Auto Duck…')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('ignores a late Auto Duck result after switching projects', async () => {
+    let release!: (changed: number) => void;
+    const oldApply = new Promise<number>((resolve) => { release = resolve; });
+    mocks.autoDuck.mockReturnValueOnce(oldApply);
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Auto Duck integration')).toBeInTheDocument();
+    await openAutoDuckDialog();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Auto Duck' }));
+    await waitFor(() => expect(mocks.autoDuck).toHaveBeenCalledTimes(1));
+
+    const replacement = {
+      ...structuredClone(makeProject()),
+      id: 'replacement-auto-duck-project',
+      name: 'Replacement Auto Duck project',
+    };
+    mockProject = replacement;
+    mockRouteProjectId = replacement.id;
+    rerender(<AudioEditorPage key={replacement.id} />);
+    expect(await screen.findByText(replacement.name)).toBeInTheDocument();
+    mocks.push.mockClear();
+    mocks.success.mockClear();
+    mocks.error.mockClear();
+
+    release(2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.success).not.toHaveBeenCalled();
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: 'Auto Duck' })).not.toBeInTheDocument();
+    expect(screen.getByText(replacement.name)).toBeInTheDocument();
   });
 });

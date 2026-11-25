@@ -6682,9 +6682,12 @@ function AudioEditorPageContent() {
   async function handleApplyVocoder(settings: VocoderSettings) {
     if (!project || !quantizedGeneratorSelection || isApplyingVocoder) return;
     setIsApplyingVocoder(true);
+    const loadGeneration = projectLoadGenerationRef.current;
+    const isCurrentProjectRequest = () => projectLoadGenerationRef.current === loadGeneration;
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentProjectRequest()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -6699,7 +6702,9 @@ function AudioEditorPageContent() {
         settings,
         targets,
       );
+      if (!isCurrentProjectRequest()) return;
       const updated = await projectService.getProject(project.id);
+      if (!isCurrentProjectRequest()) return;
       if (!updated) throw new Error('应用 Vocoder 后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection);
@@ -6713,6 +6718,7 @@ function AudioEditorPageContent() {
       setVocoderDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Vocoder`);
     } catch (error) {
+      if (!isCurrentProjectRequest()) return;
       logger.error('应用 Vocoder 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Vocoder 失败：${error.message}` : '应用 Vocoder 失败');
     } finally {
@@ -6791,9 +6797,12 @@ function AudioEditorPageContent() {
   async function handleApplyAutoDuck(settings: AutoDuckSettings, controlTrackId: string) {
     if (!project || !quantizedGeneratorSelection || isApplyingAutoDuck) return;
     setIsApplyingAutoDuck(true);
+    const loadGeneration = projectLoadGenerationRef.current;
+    const isCurrentProjectRequest = () => projectLoadGenerationRef.current === loadGeneration;
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentProjectRequest()) return;
       if (targets.length < 2) {
         toast.info('Auto Duck 需要选区内至少两条含音频轨道');
         return;
@@ -6809,11 +6818,13 @@ function AudioEditorPageContent() {
         targets,
         controlTrackId,
       );
+      if (!isCurrentProjectRequest()) return;
       if (changed === 0) {
         toast.info('控制轨未超过阈值，未修改任何音频');
         return;
       }
       const updated = await projectService.getProject(project.id);
+      if (!isCurrentProjectRequest()) return;
       if (!updated) throw new Error('应用 Auto Duck 后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection);
@@ -6827,6 +6838,7 @@ function AudioEditorPageContent() {
       setAutoDuckDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Auto Duck，控制轨未修改`);
     } catch (error) {
+      if (!isCurrentProjectRequest()) return;
       logger.error('应用 Auto Duck 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Auto Duck 失败：${error.message}` : '应用 Auto Duck 失败');
     } finally {
