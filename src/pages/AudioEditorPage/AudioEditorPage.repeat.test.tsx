@@ -44,6 +44,7 @@ vi.mock('@/services/projectService', () => ({
     crossfadeSelectionOnTracks: vi.fn(), crossfadeClipsSelection: vi.fn(), delaySelectionOnTracks: vi.fn(),
     notchFilterSelectionOnTracks: vi.fn(), spectralEditSelectionOnTracks: vi.fn(), adjustableFadeSelectionOnTracks: vi.fn(),
     studioFadeOutSelectionOnTracks: vi.fn(), repairSelectionOnTracks: vi.fn(), clickRemovalSelectionOnTracks: vi.fn(),
+    learnNoiseReductionProfile: vi.fn(), noiseReductionSelectionOnTracks: vi.fn(), truncateSilenceSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -696,6 +697,162 @@ describe('AudioEditorPage Repeat command integration', () => {
     expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
     expect(historyManager.push).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Click Removal 咔哒声消除');
+  });
+
+  it('does not apply a Noise Profile learned for an old project after switching projects', async () => {
+    const baseProject = makeProject();
+    const project: IProject = {
+      ...baseProject,
+      selection: { start: 0, end: 4.096 },
+      tracks: baseProject.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => ({ ...clip, duration: 4.096, originalDuration: 4.096 })),
+      })),
+    };
+    const nextProject = makeNextProject('Next project after Noise Profile');
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(4096).fill(0.01)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(4096).fill(0.01));
+    let releaseNoiseProfile!: () => void;
+    const noiseProfileGate = new Promise<void>((resolve) => { releaseNoiseProfile = resolve; });
+    vi.mocked(projectService.learnNoiseReductionProfile).mockImplementationOnce(async () => {
+      await noiseProfileGate;
+      return {
+        sampleRate: 1000,
+        windowSize: 2048,
+        totalWindows: 1,
+        means: new Float32Array(1025).fill(0.01),
+      };
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Noise Reduction 降噪…'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Get Noise Profile' }));
+    await waitFor(() => expect(projectService.learnNoiseReductionProfile).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseNoiseProfile();
+      await noiseProfileGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalledWith('Noise Profile 已获取：1 个窗口，请重新选择待处理音频');
+  });
+
+  it('does not replace a newly opened project when Noise Reduction completes late', async () => {
+    const baseProject = makeProject();
+    const project: IProject = {
+      ...baseProject,
+      selection: { start: 0, end: 4.096 },
+      tracks: baseProject.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => ({ ...clip, duration: 4.096, originalDuration: 4.096 })),
+      })),
+    };
+    const nextProject = makeNextProject('Next project after Noise Reduction');
+    const updated: IProject = { ...project, name: 'Old project after Noise Reduction' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(4096).fill(0.01)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(4096).fill(0.01));
+    vi.mocked(projectService.learnNoiseReductionProfile).mockResolvedValue({
+      sampleRate: 1000,
+      windowSize: 2048,
+      totalWindows: 1,
+      means: new Float32Array(1025).fill(0.01),
+    });
+    let releaseNoiseReduction!: () => void;
+    const noiseReductionGate = new Promise<void>((resolve) => { releaseNoiseReduction = resolve; });
+    vi.mocked(projectService.noiseReductionSelectionOnTracks).mockImplementationOnce(async () => {
+      await noiseReductionGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    let effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Noise Reduction 降噪…'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Get Noise Profile' }));
+    await waitFor(() => expect(projectService.learnNoiseReductionProfile).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId('noise-reduction-dialog')).not.toBeInTheDocument());
+
+    effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Noise Reduction 降噪…'));
+    fireEvent.click(await screen.findByRole('button', { name: '应用 Noise Reduction' }));
+    await waitFor(() => expect(projectService.noiseReductionSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseNoiseReduction();
+      await noiseReductionGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Noise Reduction 降噪');
+  });
+
+  it('does not replace a newly opened project when Truncate Silence completes late', async () => {
+    const baseProject = makeProject();
+    const project: IProject = {
+      ...baseProject,
+      selection: { start: 0, end: 4 },
+      tracks: baseProject.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => ({ ...clip, duration: 4, originalDuration: 4 })),
+      })),
+    };
+    const nextProject = makeNextProject('Next project after Truncate Silence');
+    const updated: IProject = { ...project, name: 'Old project after Truncate Silence' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(4000).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(4000).fill(0.25));
+    let releaseTruncateSilence!: () => void;
+    const truncateSilenceGate = new Promise<void>((resolve) => { releaseTruncateSilence = resolve; });
+    vi.mocked(projectService.truncateSilenceSelectionOnTracks).mockImplementationOnce(async () => {
+      await truncateSilenceGate;
+      return { project: updated, selectionEnd: 2, changedTracks: 2 };
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Truncate Silence 静音截断…'));
+    fireEvent.click(await screen.findByRole('button', { name: '应用 Truncate Silence' }));
+    await waitFor(() => expect(projectService.truncateSilenceSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseTruncateSilence();
+      await truncateSilenceGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 条轨道应用 Truncate Silence 静音截断');
   });
 
   it('does not replace a newly opened project when Repeat completes late', async () => {

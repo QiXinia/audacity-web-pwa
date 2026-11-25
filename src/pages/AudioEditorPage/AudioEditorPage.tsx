@@ -6041,17 +6041,21 @@ function AudioEditorPageContent() {
       toast.info('请先选择一段纯噪声');
       return;
     }
+    const loadGeneration = projectLoadGenerationRef.current;
     try {
       const targets = await collectFullTrackTargets(quantizedGeneratorSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       const profile = await projectService.learnNoiseReductionProfile(
         project.id,
         quantizedGeneratorSelection,
         targets,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       setNoiseReductionProfile(profile);
       setNoiseReductionDialogOpen(false);
       toast.success(`Noise Profile 已获取：${profile.totalWindows} 个窗口，请重新选择待处理音频`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('获取 Noise Profile 失败:', String(error));
       toast.error(error instanceof Error ? `获取 Noise Profile 失败：${error.message}` : '获取 Noise Profile 失败');
     }
@@ -6080,10 +6084,12 @@ function AudioEditorPageContent() {
 
   async function handleApplyNoiseReduction(settings: NoiseReductionSettings, profile: NoiseReductionProfile) {
     if (!project || !quantizedGeneratorSelection || isApplyingNoiseReduction) return;
+    const loadGeneration = projectLoadGenerationRef.current;
     setIsApplyingNoiseReduction(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectFullTrackTargets(activeSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       const before = {
         ...(JSON.parse(JSON.stringify(project)) as IProject),
         selection: activeSelection,
@@ -6095,7 +6101,9 @@ function AudioEditorPageContent() {
         profile,
         targets,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       const updated = await projectService.getProject(project.id);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (!updated) throw new Error('应用 Noise Reduction 后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection);
@@ -6109,6 +6117,7 @@ function AudioEditorPageContent() {
       setNoiseReductionDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Noise Reduction 降噪`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('应用 Noise Reduction 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Noise Reduction 失败：${error.message}` : '应用 Noise Reduction 失败');
     } finally {
@@ -6135,10 +6144,12 @@ function AudioEditorPageContent() {
 
   async function handleApplyTruncateSilence(settings: TruncateSilenceSettings) {
     if (!project || !quantizedGeneratorSelection || isApplyingTruncateSilence) return;
+    const loadGeneration = projectLoadGenerationRef.current;
     setIsApplyingTruncateSilence(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectFullTrackTargets(activeSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -6153,11 +6164,13 @@ function AudioEditorPageContent() {
         settings,
         targets,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (result.changedTracks === 0) {
         toast.info('未检测到符合参数且可缩短的静音，未修改音频');
         return;
       }
       const updated = await projectService.getProject(project.id);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (!updated) throw new Error('应用 Truncate Silence 后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection);
@@ -6171,6 +6184,7 @@ function AudioEditorPageContent() {
       setTruncateSilenceDialogOpen(false);
       toast.success(`已对 ${result.changedTracks} 条轨道应用 Truncate Silence 静音截断`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('应用 Truncate Silence 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Truncate Silence 失败：${error.message}` : '应用 Truncate Silence 失败');
     } finally {
