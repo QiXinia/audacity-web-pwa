@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { audioDb } from '@/db/audioDb';
 import { audioEngine } from '@/engine/audioEngine';
+import { historyManager } from '@/services/historyService';
 import type { IClip, IProject } from '@/types/project';
 
 const mocks = vi.hoisted(() => ({
+  projectId: 'clip-properties-project',
   loadChannels: vi.fn(),
   loadMetadata: vi.fn(),
   editLatestProject: vi.fn(),
@@ -41,9 +43,17 @@ const project: IProject = {
   updatedAt: 100, createdAt: 50, timeSignature: { numerator: 4, denominator: 4 }, tempo: 120,
 };
 
+const nextProject: IProject = {
+  ...project,
+  id: 'clip-properties-next-project',
+  name: 'Next project after old render',
+  tracks: [{ ...project.tracks[0]!, id: 'next-track', clips: [] }],
+};
+
 vi.mock('@/services/projectService', () => ({
   projectService: {
-    getProject: vi.fn(async () => project), openProject: vi.fn(async () => project),
+    getProject: vi.fn(async (id: string) => id === nextProject.id ? nextProject : project),
+    openProject: vi.fn(async (id: string) => id === nextProject.id ? nextProject : project),
     saveProject: mocks.saveProject, loadAudioChannels: mocks.loadChannels,
     editLatestProject: mocks.editLatestProject,
     loadAudioBufferMetadata: mocks.loadMetadata, loadAudioBuffer: vi.fn(async () => null),
@@ -89,7 +99,7 @@ vi.mock('@/wasm/processor', () => ({
 }));
 vi.mock('@/lib/waveformDrawing', () => ({ drawWaveform: mocks.drawWaveform }));
 vi.mock('react-router-dom', () => ({
-  useParams: () => ({ projectId: 'clip-properties-project' }), useNavigate: () => vi.fn(),
+  useParams: () => ({ projectId: mocks.projectId }), useNavigate: () => vi.fn(),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), log: vi.fn() } }));
@@ -107,6 +117,7 @@ async function renderProject() {
 describe('AudioEditorPage Clip properties integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.projectId = project.id;
     project.sampleRate = 44100;
     window.localStorage.clear();
     mocks.loadChannels.mockResolvedValue([left, right]);
@@ -278,5 +289,48 @@ describe('AudioEditorPage Clip properties integration', () => {
     expect(audioDb.audioBuffers.delete).toHaveBeenCalledWith(renderedBufferId);
     expect(audioEngine.evictBuffer).toHaveBeenCalledWith(renderedBufferId);
     expect(toast.success).not.toHaveBeenCalledWith('Rendered time-stretched audio');
+  });
+
+  it('does not replace a newly opened project when the previous render commits late', async () => {
+    project.sampleRate = 1000;
+    const { container, rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Clip properties integration')).toBeInTheDocument();
+    const clips = Array.from(container.querySelectorAll<HTMLElement>('.au-clip'));
+    mocks.loadChannels.mockResolvedValueOnce([new Float32Array(8000).fill(0.1)]);
+
+    const latestProject = structuredClone(project);
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+    let editApplied = false;
+    mocks.editLatestProject.mockImplementationOnce(async (
+      projectId: string,
+      edit: (value: IProject) => IProject | Promise<IProject>,
+    ) => {
+      expect(projectId).toBe(project.id);
+      const before = structuredClone(latestProject);
+      const after = await edit(latestProject);
+      editApplied = true;
+      await commitGate;
+      return { before, after };
+    });
+
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByText('Render pitch and speed'));
+    await waitFor(() => expect(editApplied).toBe(true));
+
+    mocks.projectId = nextProject.id;
+    rerender(<AudioEditorPage />);
+    expect(await screen.findByText('Next project after old render')).toBeInTheDocument();
+
+    await act(async () => {
+      releaseCommit();
+      await commitGate;
+    });
+
+    expect(screen.getByText('Next project after old render')).toBeInTheDocument();
+    expect(screen.queryByText('Clip properties integration')).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('Rendered time-stretched audio');
+    expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
   });
 });

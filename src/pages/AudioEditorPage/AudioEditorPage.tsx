@@ -2711,10 +2711,16 @@ function AudioEditorPageContent() {
     onCommitted?: () => void,
   ): Promise<boolean> {
     if (!project) return false;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
-      const result = await projectService.editLatestProject(project.id, edit);
+      const result = await projectService.editLatestProject(projectId, edit);
       if (!result) return false;
+      // A committed old-project edit must retain its newly referenced resources,
+      // but it must not overwrite the newly opened page or its undo history.
       onCommitted?.();
+      if (!isCurrentAction()) return false;
       setProject(result.after);
       pushHistoryCmd({
         id: generateId(),
@@ -2724,6 +2730,7 @@ function AudioEditorPageContent() {
       }, result.before);
       return true;
     } catch (error) {
+      if (!isCurrentAction()) return false;
       logger.error('Clip edit failed', error);
       toast.error(error instanceof Error ? error.message : 'Clip edit failed');
       return false;
