@@ -43,6 +43,7 @@ vi.mock('@/services/projectService', () => ({
     repeatSelectionOnTracks: vi.fn(), duplicateSelectionToTracks: vi.fn(),
     crossfadeSelectionOnTracks: vi.fn(), delaySelectionOnTracks: vi.fn(),
     notchFilterSelectionOnTracks: vi.fn(), spectralEditSelectionOnTracks: vi.fn(), adjustableFadeSelectionOnTracks: vi.fn(),
+    studioFadeOutSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -452,6 +453,84 @@ describe('AudioEditorPage Repeat command integration', () => {
     ));
     expect(historyManager.push).toHaveBeenCalledTimes(1);
     expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Adjustable Fade 可调淡化');
+  });
+
+  it('does not replace a newly opened project when Adjustable Fade completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Adjustable Fade');
+    const updated: IProject = { ...project, name: 'Old project after Adjustable Fade' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseAdjustableFade!: () => void;
+    const adjustableFadeGate = new Promise<void>((resolve) => { releaseAdjustableFade = resolve; });
+    vi.mocked(projectService.adjustableFadeSelectionOnTracks).mockImplementationOnce(async () => {
+      await adjustableFadeGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Adjustable Fade 可调淡化…'));
+    expect(await screen.findByRole('dialog', { name: 'Adjustable Fade 可调淡化' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Adjustable Fade' }));
+    await waitFor(() => expect(projectService.adjustableFadeSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseAdjustableFade();
+      await adjustableFadeGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Adjustable Fade');
+  });
+
+  it('does not replace a newly opened project when Studio Fade Out completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Studio Fade Out');
+    const updated: IProject = { ...project, name: 'Old project after Studio Fade Out' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseStudioFadeOut!: () => void;
+    const studioFadeOutGate = new Promise<void>((resolve) => { releaseStudioFadeOut = resolve; });
+    vi.mocked(projectService.studioFadeOutSelectionOnTracks).mockImplementationOnce(async () => {
+      await studioFadeOutGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Studio Fade Out 工作室淡出'));
+    await waitFor(() => expect(projectService.studioFadeOutSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseStudioFadeOut();
+      await studioFadeOutGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Studio Fade Out');
   });
 
   it('does not replace a newly opened project when Repeat completes late', async () => {
