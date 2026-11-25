@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   info: vi.fn(),
   saveProject: vi.fn(),
   echo: vi.fn(),
+  clipFix: vi.fn(),
   loadChannels: vi.fn(),
   previewBuffers: [] as { channels: number; length: number; sampleRate: number; data: Float32Array[] }[],
 }));
@@ -68,6 +69,7 @@ vi.mock('@/services/projectService', () => ({
     loadAudioChannels: mocks.loadChannels,
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
     echoSelectionOnTracks: mocks.echo,
+    clipFixSelectionOnTracks: mocks.clipFix,
   },
 }));
 vi.mock('@/services/historyService', () => ({
@@ -269,6 +271,49 @@ describe('AudioEditorPage Echo effect', () => {
     expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
     expect(mocks.push).not.toHaveBeenCalled();
     expect(mocks.success).not.toHaveBeenCalledWith('已对 2 个片段应用回声');
+  });
+
+  it('does not replace a newly opened project when Clip Fix completes late', async () => {
+    const project = makeProject();
+    const nextProject: IProject = {
+      ...makeProject(),
+      id: 'next-project',
+      name: 'Next project after Clip Fix',
+      selection: null,
+    };
+    const updated: IProject = { ...project, name: 'Old project after Clip Fix' };
+    mockProject = project;
+    mockProjectId = project.id;
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    let releaseClipFix!: () => void;
+    const clipFixGate = new Promise<void>((resolve) => { releaseClipFix = resolve; });
+    mocks.clipFix.mockImplementationOnce(async () => {
+      await clipFixGate;
+      return 2;
+    });
+    const view = render(<AudioEditorPage />);
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole('button', { name: '效果' }));
+    fireEvent.click(await screen.findByText('Clip Fix 削波修复…'));
+    expect(await screen.findByRole('dialog', { name: 'Clip Fix 削波修复' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Clip Fix' }));
+    await waitFor(() => expect(mocks.clipFix).toHaveBeenCalledTimes(1));
+
+    mockProjectId = nextProject.id;
+    view.rerender(<AudioEditorPage />);
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseClipFix();
+      await clipFixGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Clip Fix');
   });
 
   it('disables Echo when there is no real selection', async () => {

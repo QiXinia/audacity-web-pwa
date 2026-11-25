@@ -42,7 +42,7 @@ vi.mock('@/services/projectService', () => ({
     addGeneratedAudioToTracks: vi.fn(), silenceSelectionOnTracks: vi.fn(),
     repeatSelectionOnTracks: vi.fn(), duplicateSelectionToTracks: vi.fn(),
     crossfadeSelectionOnTracks: vi.fn(), delaySelectionOnTracks: vi.fn(),
-    adjustableFadeSelectionOnTracks: vi.fn(),
+    notchFilterSelectionOnTracks: vi.fn(), adjustableFadeSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -344,6 +344,46 @@ describe('AudioEditorPage Repeat command integration', () => {
     expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
     expect(historyManager.push).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Delay');
+  });
+
+  it('does not replace a newly opened project when Notch Filter completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Notch Filter');
+    const updated: IProject = { ...project, name: 'Old project after Notch Filter' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseNotchFilter!: () => void;
+    const notchFilterGate = new Promise<void>((resolve) => { releaseNotchFilter = resolve; });
+    vi.mocked(projectService.notchFilterSelectionOnTracks).mockImplementationOnce(async () => {
+      await notchFilterGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Notch Filter 陷波滤波…'));
+    expect(await screen.findByRole('dialog', { name: 'Notch Filter 陷波滤波' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Notch Filter' }));
+    await waitFor(() => expect(projectService.notchFilterSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseNotchFilter();
+      await notchFilterGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Notch Filter');
   });
 
   it('opens Adjustable Fade and applies the default fade with one undo entry', async () => {

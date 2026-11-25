@@ -5596,10 +5596,13 @@ function AudioEditorPageContent() {
 
   async function handleApplyClipFix(clipFixSettings: ClipFixSettings) {
     if (!project || !quantizedGeneratorSelection) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsApplyingClipFix(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -5611,7 +5614,9 @@ function AudioEditorPageContent() {
         clipFixSettings,
         targets,
       );
+      if (!isCurrentAction()) return;
       const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('应用 Clip Fix 后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -5624,6 +5629,7 @@ function AudioEditorPageContent() {
       setClipFixDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Clip Fix`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('应用 Clip Fix 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Clip Fix 失败：${error.message}` : '应用 Clip Fix 失败');
     } finally {
@@ -5669,10 +5675,13 @@ function AudioEditorPageContent() {
 
   async function handleApplyNotchFilter(notchSettings: NotchFilterSettings) {
     if (!project || !quantizedGeneratorSelection) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsApplyingNotchFilter(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -5684,7 +5693,9 @@ function AudioEditorPageContent() {
         notchSettings,
         targets,
       );
+      if (!isCurrentAction()) return;
       const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('应用 Notch Filter 后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -5697,6 +5708,7 @@ function AudioEditorPageContent() {
       setNotchFilterDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Notch Filter`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('应用 Notch Filter 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Notch Filter 失败：${error.message}` : '应用 Notch Filter 失败');
     } finally {
