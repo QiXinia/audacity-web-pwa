@@ -46,6 +46,7 @@ vi.mock('@/services/projectService', () => ({
     studioFadeOutSelectionOnTracks: vi.fn(), repairSelectionOnTracks: vi.fn(), clickRemovalSelectionOnTracks: vi.fn(),
     learnNoiseReductionProfile: vi.fn(), noiseReductionSelectionOnTracks: vi.fn(), truncateSilenceSelectionOnTracks: vi.fn(),
     wahWahSelectionOnTracks: vi.fn(), phaserSelectionOnTracks: vi.fn(),
+    classicFilterSelectionOnTracks: vi.fn(), tremoloSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -934,6 +935,86 @@ describe('AudioEditorPage Repeat command integration', () => {
     expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
     expect(historyManager.push).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Phaser');
+  });
+
+  it('does not replace a newly opened project when Classic Filters completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Classic Filters');
+    const updated: IProject = { ...project, name: 'Old project after Classic Filters' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseClassicFilter!: () => void;
+    const classicFilterGate = new Promise<void>((resolve) => { releaseClassicFilter = resolve; });
+    vi.mocked(projectService.classicFilterSelectionOnTracks).mockImplementationOnce(async () => {
+      await classicFilterGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Classic Filters…'));
+    expect(await screen.findByRole('heading', { name: 'Classic Filters' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用' }));
+    await waitFor(() => expect(projectService.classicFilterSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseClassicFilter();
+      await classicFilterGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Classic Filters');
+  });
+
+  it('does not replace a newly opened project when Tremolo completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Tremolo');
+    const updated: IProject = { ...project, name: 'Old project after Tremolo' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseTremolo!: () => void;
+    const tremoloGate = new Promise<void>((resolve) => { releaseTremolo = resolve; });
+    vi.mocked(projectService.tremoloSelectionOnTracks).mockImplementationOnce(async () => {
+      await tremoloGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Tremolo…'));
+    expect(await screen.findByRole('heading', { name: 'Tremolo' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Tremolo' }));
+    await waitFor(() => expect(projectService.tremoloSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseTremolo();
+      await tremoloGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Tremolo');
   });
 
   it('does not replace a newly opened project when Repeat completes late', async () => {
