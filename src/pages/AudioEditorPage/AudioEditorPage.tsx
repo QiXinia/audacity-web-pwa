@@ -5759,9 +5759,11 @@ function AudioEditorPageContent() {
   async function handleApplyShelfFilter(settings: ShelfFilterSettings) {
     if (!project || !quantizedGeneratorSelection) return;
     setIsApplyingShelfFilter(true);
+    const loadGeneration = projectLoadGenerationRef.current;
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -5773,7 +5775,9 @@ function AudioEditorPageContent() {
         settings,
         targets,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       const updated = await projectService.getProject(project.id);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (!updated) throw new Error('应用 Shelf Filter 后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -5786,6 +5790,7 @@ function AudioEditorPageContent() {
       setShelfFilterDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Shelf Filter`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('应用 Shelf Filter 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Shelf Filter 失败：${error.message}` : '应用 Shelf Filter 失败');
     } finally {
@@ -5802,9 +5807,11 @@ function AudioEditorPageContent() {
   async function handleApplySpectralEdit(settings: SpectralEditSettings) {
     if (!project || !quantizedGeneratorSelection) return;
     setIsApplyingSpectralEdit(true);
+    const loadGeneration = projectLoadGenerationRef.current;
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -5821,7 +5828,9 @@ function AudioEditorPageContent() {
         targets,
         spectralSelection,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       const updated = await projectService.getProject(project.id);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (!updated) throw new Error('应用 Spectral tools 后无法重新读取工程');
       const labels: Record<SpectralEditKind, string> = {
         'delete-selection': 'Spectral Edit Delete selection',
@@ -5849,6 +5858,7 @@ function AudioEditorPageContent() {
       setSpectralEditKind(null);
       toast.success(`已对 ${changed} 个片段应用 ${labels[settings.kind]}`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('应用 Spectral tools 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Spectral tools 失败：${error.message}` : '应用 Spectral tools 失败');
     } finally {

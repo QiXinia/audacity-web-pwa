@@ -42,7 +42,7 @@ vi.mock('@/services/projectService', () => ({
     addGeneratedAudioToTracks: vi.fn(), silenceSelectionOnTracks: vi.fn(),
     repeatSelectionOnTracks: vi.fn(), duplicateSelectionToTracks: vi.fn(),
     crossfadeSelectionOnTracks: vi.fn(), delaySelectionOnTracks: vi.fn(),
-    notchFilterSelectionOnTracks: vi.fn(), adjustableFadeSelectionOnTracks: vi.fn(),
+    notchFilterSelectionOnTracks: vi.fn(), spectralEditSelectionOnTracks: vi.fn(), adjustableFadeSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -384,6 +384,46 @@ describe('AudioEditorPage Repeat command integration', () => {
     expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
     expect(historyManager.push).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Notch Filter');
+  });
+
+  it('does not replace a newly opened project when Spectral Edit completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Spectral Edit');
+    const updated: IProject = { ...project, name: 'Old project after Spectral Edit' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseSpectralEdit!: () => void;
+    const spectralEditGate = new Promise<void>((resolve) => { releaseSpectralEdit = resolve; });
+    vi.mocked(projectService.spectralEditSelectionOnTracks).mockImplementationOnce(async () => {
+      await spectralEditGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Delete selection center frequency…'));
+    expect(await screen.findByRole('dialog', { name: 'Spectral Edit: Delete center frequency' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '删除中心频率' }));
+    await waitFor(() => expect(projectService.spectralEditSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseSpectralEdit();
+      await spectralEditGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Spectral Edit Delete center frequency');
   });
 
   it('opens Adjustable Fade and applies the default fade with one undo entry', async () => {

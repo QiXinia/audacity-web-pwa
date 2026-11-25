@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   saveProject: vi.fn(),
   echo: vi.fn(),
   clipFix: vi.fn(),
+  shelfFilter: vi.fn(),
   loadChannels: vi.fn(),
   previewBuffers: [] as { channels: number; length: number; sampleRate: number; data: Float32Array[] }[],
 }));
@@ -70,6 +71,7 @@ vi.mock('@/services/projectService', () => ({
     loadAudioBuffer: vi.fn(async () => new Float32Array(10)),
     echoSelectionOnTracks: mocks.echo,
     clipFixSelectionOnTracks: mocks.clipFix,
+    shelfFilterSelectionOnTracks: mocks.shelfFilter,
   },
 }));
 vi.mock('@/services/historyService', () => ({
@@ -314,6 +316,50 @@ describe('AudioEditorPage Echo effect', () => {
     expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
     expect(mocks.push).not.toHaveBeenCalled();
     expect(mocks.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Clip Fix');
+  });
+
+  it('does not replace a newly opened project when Shelf Filter completes late', async () => {
+    const project = makeProject();
+    const nextProject: IProject = {
+      ...makeProject(),
+      id: 'next-project',
+      name: 'Next project after Shelf Filter',
+      selection: null,
+    };
+    const updated: IProject = { ...project, name: 'Old project after Shelf Filter' };
+    mockProject = project;
+    mockProjectId = project.id;
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    let releaseShelfFilter!: () => void;
+    const shelfFilterGate = new Promise<void>((resolve) => { releaseShelfFilter = resolve; });
+    mocks.shelfFilter.mockImplementationOnce(async () => {
+      await shelfFilterGate;
+      return 2;
+    });
+    const view = render(<AudioEditorPage />);
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole('button', { name: '效果' }));
+    fireEvent.click(await screen.findByText('Shelf Filter 搁架滤波…'));
+    expect(await screen.findByRole('dialog', { name: 'Shelf Filter 搁架滤波' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('频率（Hz）'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: '应用 Shelf Filter' }));
+    await waitFor(() => expect(mocks.shelfFilter).toHaveBeenCalledTimes(1));
+
+    mockProjectId = nextProject.id;
+    view.rerender(<AudioEditorPage />);
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseShelfFilter();
+      await shelfFilterGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Shelf Filter');
   });
 
   it('disables Echo when there is no real selection', async () => {
