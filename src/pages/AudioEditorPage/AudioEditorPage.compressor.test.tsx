@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject } from '@/types/project';
 import type { CompressorTrackAudio } from '@/services/projectService';
@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   previewBuffers: [] as { channels: number; length: number; sampleRate: number; data: Float32Array[] }[],
 }));
 let mockProject: IProject;
+let mockRouteProjectId = 'compressor-project';
 
 function makeProject(): IProject {
   const clip = (id: string, startTime = 0) => ({
@@ -115,7 +116,7 @@ vi.mock('@/engine/audioEngine', () => ({
 }));
 vi.mock('@/wasm/processor', () => ({ isWasmAvailable: vi.fn(() => false), wasmProcessor: {} }));
 vi.mock('react-router-dom', () => ({
-  useParams: () => ({ projectId: 'compressor-project' }),
+  useParams: () => ({ projectId: mockRouteProjectId }),
   useNavigate: () => vi.fn(),
 }));
 vi.mock('sonner', () => ({ toast: { success: mocks.success, error: mocks.error, info: mocks.info } }));
@@ -153,6 +154,7 @@ describe('AudioEditorPage Compressor effect', () => {
     vi.clearAllMocks();
     mocks.previewBuffers.length = 0;
     mockProject = makeProject();
+    mockRouteProjectId = 'compressor-project';
     vi.stubGlobal('AudioContext', MockAudioContext);
     mocks.loadChannels.mockImplementation(async (id: string) => {
       if (id === 'buffer-one-a') {
@@ -241,5 +243,39 @@ describe('AudioEditorPage Compressor effect', () => {
     expect(await screen.findByText('Compressor integration')).toBeInTheDocument();
     fireEvent.pointerDown(screen.getByRole('button', { name: '效果' }));
     expect(await screen.findByText('Compressor 压缩器…')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('ignores a late Compressor result after switching projects', async () => {
+    let release!: (changed: number) => void;
+    const oldApply = new Promise<number>((resolve) => { release = resolve; });
+    mocks.compressor.mockReturnValueOnce(oldApply);
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText('Compressor integration')).toBeInTheDocument();
+    await openCompressorDialog();
+    fireEvent.click(screen.getByRole('button', { name: '应用' }));
+    await waitFor(() => expect(mocks.compressor).toHaveBeenCalledTimes(1));
+
+    const replacement = {
+      ...structuredClone(makeProject()),
+      id: 'replacement-compressor-project',
+      name: 'Replacement Compressor project',
+    };
+    mockProject = replacement;
+    mockRouteProjectId = replacement.id;
+    rerender(<AudioEditorPage key={replacement.id} />);
+    expect(await screen.findByText(replacement.name)).toBeInTheDocument();
+    mocks.push.mockClear();
+    mocks.success.mockClear();
+    mocks.error.mockClear();
+
+    await act(async () => {
+      release(3);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.success).not.toHaveBeenCalled();
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: 'Compressor 压缩器' })).not.toBeInTheDocument();
+    expect(screen.getByText(replacement.name)).toBeInTheDocument();
   });
 });

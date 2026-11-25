@@ -6988,22 +6988,28 @@ function AudioEditorPageContent() {
 
   async function handleApplyReverb(settings: ReverbSettings) {
     if (!project || !quantizedGeneratorSelection) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsApplyingReverb(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
       }
       const before = JSON.parse(JSON.stringify(project)) as IProject;
       const changed = await projectService.reverbSelectionOnTracks(
-        project.id,
+        projectId,
         activeSelection,
         settings,
         targets,
       );
-      const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('应用 Reverb 后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -7016,10 +7022,11 @@ function AudioEditorPageContent() {
       setReverbDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Reverb 混响`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('应用 Reverb 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Reverb 失败：${error.message}` : '应用 Reverb 失败');
     } finally {
-      setIsApplyingReverb(false);
+      if (isCurrentAction()) setIsApplyingReverb(false);
     }
   }
 
@@ -7157,10 +7164,14 @@ function AudioEditorPageContent() {
 
   async function handleApplyCompressor(settings: CompressorSettings) {
     if (!project || !quantizedGeneratorSelection || isApplyingCompressor) return;
+    const projectId = project.id;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsApplyingCompressor(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -7170,17 +7181,19 @@ function AudioEditorPageContent() {
         selection: activeSelection,
       };
       const changed = await projectService.compressorSelectionOnTracks(
-        project.id,
+        projectId,
         activeSelection,
         settings,
         targets,
       );
+      if (!isCurrentAction()) return;
       if (changed === 0) {
         setCompressorDialogOpen(false);
         toast.info('Compressor 参数为直通，未修改音频');
         return;
       }
-      const updated = await projectService.getProject(project.id);
+      const updated = await projectService.getProject(projectId);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('应用 Compressor 后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection);
@@ -7194,10 +7207,11 @@ function AudioEditorPageContent() {
       setCompressorDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Compressor 压缩器`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('应用 Compressor 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Compressor 失败：${error.message}` : '应用 Compressor 失败');
     } finally {
-      setIsApplyingCompressor(false);
+      if (isCurrentAction()) setIsApplyingCompressor(false);
     }
   }
 
