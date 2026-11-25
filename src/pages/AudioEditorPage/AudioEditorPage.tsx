@@ -2708,11 +2708,13 @@ function AudioEditorPageContent() {
   async function commitClipEdit(
     edit: (latest: IProject) => IProject | Promise<IProject>,
     label: string,
+    onCommitted?: () => void,
   ): Promise<boolean> {
     if (!project) return false;
     try {
       const result = await projectService.editLatestProject(project.id, edit);
       if (!result) return false;
+      onCommitted?.();
       setProject(result.after);
       pushHistoryCmd({
         id: generateId(),
@@ -2864,15 +2866,18 @@ function AudioEditorPageContent() {
 
     setRenderingPitchAndSpeedClipId(operationId);
     stopPlaybackAndSyncMonitoring();
+    let uncommittedBufferId: string | null = null;
     try {
       const channels = await projectService.loadAudioChannels(clip.audioBufferId, project.sampleRate);
       if (!channels) throw new Error(`片段“${clip.name || clip.id}”的音频不可用`);
       const renderedChannels = renderClipPitchAndSpeedChannels(clip, channels, project.sampleRate);
       const renderedDuration = renderedChannels[0].length / project.sampleRate;
-      const bufferId = await storeProjectBuffer(project.id, renderedChannels, project.sampleRate);
+      uncommittedBufferId = generateId();
+      await storeProjectBuffer(project.id, renderedChannels, project.sampleRate, uncommittedBufferId);
       const committed = await commitClipEdit(
-        (latest) => replaceClipWithRenderedPitchAndSpeed(latest, key, bufferId, renderedDuration, clip),
+        (latest) => replaceClipWithRenderedPitchAndSpeed(latest, key, uncommittedBufferId!, renderedDuration, clip),
         'Rendered time-stretched audio · Render',
+        () => { uncommittedBufferId = null; },
       );
       if (!committed) return;
       setSelectedClips([key]);
@@ -2882,6 +2887,14 @@ function AudioEditorPageContent() {
       logger.error('Render clip pitch and speed failed', error);
       toast.error(`Render pitch and speed 失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
+      if (uncommittedBufferId) {
+        try {
+          await discardUncommittedProjectBuffer(uncommittedBufferId);
+        } catch (cleanupError) {
+          logger.error('Discard uncommitted pitch and speed render failed', cleanupError);
+          toast.error('Render pitch and speed 的临时音频清理失败，请检查浏览器存储');
+        }
+      }
       setRenderingPitchAndSpeedClipId(null);
     }
   }
@@ -7490,13 +7503,13 @@ function AudioEditorPageContent() {
     projectId: string,
     channels: Float32Array[],
     sampleRate: number,
+    bufferId = generateId(),
   ): Promise<string> {
     if (channels.length === 0 || channels[0].length === 0) throw new Error('Cannot store an empty audio buffer');
     const length = channels[0].length;
     if (channels.some((channel) => channel.length !== length)) {
       throw new Error('Audio channels must have equal lengths');
     }
-    const bufferId = generateId();
     await audioDb.audioBuffers.put({
       id: bufferId,
       projectId,
@@ -7511,6 +7524,23 @@ function AudioEditorPageContent() {
     });
     audioEngine.cacheBuffer(bufferId, channels, sampleRate);
     return bufferId;
+  }
+
+  async function discardUncommittedProjectBuffer(bufferId: string): Promise<void> {
+    const cleanupErrors: unknown[] = [];
+    try {
+      await audioDb.audioBuffers.delete(bufferId);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      audioEngine.evictBuffer(bufferId);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, '临时音频缓冲清理失败');
+    }
   }
 
   async function loadEffectiveClipChannels(clip: IClip, sampleRate: number): Promise<{

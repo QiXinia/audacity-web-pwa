@@ -3,6 +3,8 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
+import { audioDb } from '@/db/audioDb';
+import { audioEngine } from '@/engine/audioEngine';
 import type { IClip, IProject } from '@/types/project';
 
 const mocks = vi.hoisted(() => ({
@@ -196,5 +198,85 @@ describe('AudioEditorPage Clip properties integration', () => {
       pitchCents: 600,
       stretchRatio: 1.25,
     });
+    const renderedBufferId = vi.mocked(audioDb.audioBuffers.put).mock.calls[0]![0].id;
+    await waitFor(() => expect(audioDb.audioBuffers.delete).toHaveBeenCalledWith(renderedBufferId));
+    expect(audioEngine.evictBuffer).toHaveBeenCalledWith(renderedBufferId);
+  });
+
+  it('cleans the preallocated buffer id when staging reports a failure', async () => {
+    project.sampleRate = 1000;
+    const clips = await renderProject();
+    mocks.loadChannels.mockResolvedValueOnce([new Float32Array(8000).fill(0.1)]);
+    vi.mocked(audioDb.audioBuffers.put).mockRejectedValueOnce(new Error('put failed'));
+
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByText('Render pitch and speed'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+      'Render pitch and speed 失败：put failed',
+    ));
+    await waitFor(() => expect(audioDb.audioBuffers.delete).toHaveBeenCalledTimes(1));
+
+    const renderedBufferId = vi.mocked(audioDb.audioBuffers.delete).mock.calls[0]![0];
+    expect(renderedBufferId).toEqual(expect.any(String));
+    expect(renderedBufferId).not.toBe('');
+    expect(audioEngine.evictBuffer).toHaveBeenCalledWith(renderedBufferId);
+    expect(mocks.editLatestProject).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('Rendered time-stretched audio');
+  });
+
+  it('retains the rendered buffer after a successful project commit', async () => {
+    project.sampleRate = 1000;
+    const clips = await renderProject();
+    mocks.loadChannels.mockResolvedValueOnce([new Float32Array(8000).fill(0.1)]);
+    const latestProject = structuredClone(project);
+    const committedProjects: IProject[] = [];
+    mocks.editLatestProject.mockImplementationOnce(async (
+      _projectId: string,
+      edit: (value: IProject) => IProject | Promise<IProject>,
+    ) => {
+      const before = structuredClone(latestProject);
+      const after = await edit(latestProject);
+      committedProjects.push(after);
+      return { before, after };
+    });
+
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByText('Render pitch and speed'));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Rendered time-stretched audio'));
+
+    const renderedBufferId = vi.mocked(audioDb.audioBuffers.put).mock.calls[0]![0].id;
+    expect(committedProjects).toHaveLength(1);
+    expect(committedProjects[0]!.tracks[0]!.clips[0]).toMatchObject({
+      audioBufferId: renderedBufferId,
+      offset: 0,
+      duration: 2,
+      originalDuration: 2,
+      stretchRatio: 1,
+      pitchCents: 0,
+      optimizeForVoice: false,
+    });
+    expect(audioEngine.cacheBuffer).toHaveBeenCalledWith(renderedBufferId, expect.any(Array), 1000);
+    expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
+    expect(audioEngine.evictBuffer).not.toHaveBeenCalledWith(renderedBufferId);
+  });
+
+  it('evicts the cache and reports cleanup failure when a rejected render cannot be deleted', async () => {
+    project.sampleRate = 1000;
+    const clips = await renderProject();
+    mocks.loadChannels.mockResolvedValueOnce([new Float32Array(8000).fill(0.1)]);
+    mocks.editLatestProject.mockRejectedValueOnce(new Error('save failed'));
+    vi.mocked(audioDb.audioBuffers.delete).mockRejectedValueOnce(new Error('delete failed'));
+
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByText('Render pitch and speed'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+      'Render pitch and speed 的临时音频清理失败，请检查浏览器存储',
+    ));
+
+    const renderedBufferId = vi.mocked(audioDb.audioBuffers.put).mock.calls[0]![0].id;
+    expect(toast.error).toHaveBeenCalledWith('save failed');
+    expect(audioDb.audioBuffers.delete).toHaveBeenCalledWith(renderedBufferId);
+    expect(audioEngine.evictBuffer).toHaveBeenCalledWith(renderedBufferId);
+    expect(toast.success).not.toHaveBeenCalledWith('Rendered time-stretched audio');
   });
 });
