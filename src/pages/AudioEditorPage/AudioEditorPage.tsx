@@ -3225,6 +3225,7 @@ function AudioEditorPageContent() {
 
     const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
     const beforeProject = structuredClone(project);
+    const generation = projectLoadGenerationRef.current;
     setIsGeneratingTone(true);
     try {
       const duration = activeSelection
@@ -3246,9 +3247,11 @@ function AudioEditorPageContent() {
         `音调 ${settings.frequency} Hz`,
         activeSelection ?? undefined,
       );
+      if (projectLoadGenerationRef.current !== generation) return;
       if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
+      if (projectLoadGenerationRef.current !== generation) return;
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
       setSelectedTrackId(trackIds[0]!);
@@ -3266,6 +3269,7 @@ function AudioEditorPageContent() {
         ? `已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为音调`
         : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(duration)} 音调`);
     } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成音调失败：${message}`);
     } finally {
@@ -3283,6 +3287,7 @@ function AudioEditorPageContent() {
 
     const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
     const beforeProject = structuredClone(project);
+    const generation = projectLoadGenerationRef.current;
     setIsGeneratingChirp(true);
     try {
       const duration = activeSelection
@@ -3301,9 +3306,11 @@ function AudioEditorPageContent() {
         `扫频 ${settings.startFrequency}–${settings.endFrequency} Hz`,
         activeSelection ?? undefined,
       );
+      if (projectLoadGenerationRef.current !== generation) return;
       if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
+      if (projectLoadGenerationRef.current !== generation) return;
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
       setSelectedTrackId(trackIds[0]!);
@@ -3321,6 +3328,7 @@ function AudioEditorPageContent() {
         ? `已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为扫频`
         : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(duration)} 扫频`);
     } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成扫频失败：${message}`);
     } finally {
@@ -3338,6 +3346,7 @@ function AudioEditorPageContent() {
 
     const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
     const beforeProject = structuredClone(project);
+    const generation = projectLoadGenerationRef.current;
     setIsGeneratingDtmf(true);
     try {
       const duration = activeSelection
@@ -3356,9 +3365,11 @@ function AudioEditorPageContent() {
         `DTMF ${settings.sequence}`,
         activeSelection ?? undefined,
       );
+      if (projectLoadGenerationRef.current !== generation) return;
       if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
+      if (projectLoadGenerationRef.current !== generation) return;
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
       setSelectedTrackId(trackIds[0]!);
@@ -3376,6 +3387,7 @@ function AudioEditorPageContent() {
         ? `已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为 DTMF`
         : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(duration)} DTMF`);
     } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成 DTMF 失败：${message}`);
     } finally {
@@ -3396,6 +3408,7 @@ function AudioEditorPageContent() {
       ? { ...activeSelection, allowDurationChange: true }
       : undefined;
     const beforeProject = structuredClone(project);
+    const generation = projectLoadGenerationRef.current;
     setIsGeneratingPluck(true);
     try {
       const channels = generatePluck({ ...settings, sampleRate: project.sampleRate });
@@ -3407,9 +3420,11 @@ function AudioEditorPageContent() {
         `Pluck MIDI ${settings.midi}`,
         replacementSelection,
       );
+      if (projectLoadGenerationRef.current !== generation) return;
       if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
+      if (projectLoadGenerationRef.current !== generation) return;
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
       setSelectedTrackId(trackIds[0]!);
@@ -3427,6 +3442,7 @@ function AudioEditorPageContent() {
         ? `已将 ${trackIds.length} 条轨道的选区替换为 ${formatTime(settings.duration)} Pluck，后续片段已平移`
         : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(settings.duration)} Pluck`);
     } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成 Pluck 失败：${message}`);
     } finally {
@@ -3447,6 +3463,7 @@ function AudioEditorPageContent() {
       ? { ...activeSelection, allowDurationChange: true }
       : undefined;
     const beforeProject = structuredClone(project);
+    const generation = projectLoadGenerationRef.current;
     setIsGeneratingRhythm(true);
     try {
       const randomSeed = new Uint32Array(1);
@@ -3462,9 +3479,11 @@ function AudioEditorPageContent() {
         `Rhythm ${settings.tempo} BPM`,
         replacementSelection,
       );
+      if (projectLoadGenerationRef.current !== generation) return;
       if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
+      if (projectLoadGenerationRef.current !== generation) return;
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
       setSelectedTrackId(trackIds[0]!);
@@ -3481,6 +3500,7 @@ function AudioEditorPageContent() {
         ? `已将 ${trackIds.length} 条轨道的选区替换为 ${formatTime(result.duration)} Rhythm Track，后续片段已平移`
         : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${result.barCount} 小节 Rhythm Track`);
     } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成 Rhythm Track 失败：${message}`);
     } finally {
@@ -3501,6 +3521,7 @@ function AudioEditorPageContent() {
       ? { ...activeSelection, allowDurationChange: true }
       : undefined;
     const beforeProject = structuredClone(project);
+    const generation = projectLoadGenerationRef.current;
     setIsGeneratingRisset(true);
     try {
       const randomSeed = new Uint32Array(1);
@@ -3515,9 +3536,11 @@ function AudioEditorPageContent() {
         `Risset Drum ${settings.frequency} Hz`,
         replacementSelection,
       );
+      if (projectLoadGenerationRef.current !== generation) return;
       if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
+      if (projectLoadGenerationRef.current !== generation) return;
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
       setSelectedTrackId(trackIds[0]!);
@@ -3534,6 +3557,7 @@ function AudioEditorPageContent() {
         ? `已将 ${trackIds.length} 条轨道的选区替换为 ${formatTime(result.duration)} Risset Drum，后续片段已平移`
         : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(result.duration)} Risset Drum`);
     } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成 Risset Drum 失败：${message}`);
     } finally {
@@ -3552,6 +3576,7 @@ function AudioEditorPageContent() {
 
     const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
     const beforeProject = structuredClone(project);
+    const generation = projectLoadGenerationRef.current;
     setIsGeneratingNoise(true);
     try {
       const duration = activeSelection
@@ -3576,9 +3601,11 @@ function AudioEditorPageContent() {
         `噪声 ${settings.type}`,
         activeSelection ?? undefined,
       );
+      if (projectLoadGenerationRef.current !== generation) return;
       if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
+      if (projectLoadGenerationRef.current !== generation) return;
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
       setSelectedTrackId(trackIds[0]!);
@@ -3596,6 +3623,7 @@ function AudioEditorPageContent() {
         ? `已将 ${trackIds.length} 条轨道的 ${formatTime(activeSelection.start)}–${formatTime(activeSelection.end)} 替换为噪声`
         : `已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(duration)} 噪声`);
     } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成噪声失败：${message}`);
     } finally {
@@ -3613,6 +3641,7 @@ function AudioEditorPageContent() {
 
     const activeSelection = quantizeSelectionToSamples(selection, project.sampleRate);
     const beforeProject = structuredClone(project);
+    const generation = projectLoadGenerationRef.current;
     setIsGeneratingSilence(true);
     try {
       if (activeSelection) {
@@ -3621,9 +3650,11 @@ function AudioEditorPageContent() {
           trackIds,
           activeSelection,
         );
+        if (projectLoadGenerationRef.current !== generation) return;
         if (changedClips === 0) throw new Error('所选轨道的选区未覆盖任何可用音频');
 
         const updated = await projectService.getProject(project.id);
+        if (projectLoadGenerationRef.current !== generation) return;
         if (!updated) throw new Error('工程保存后无法重新加载');
         setProject(updated);
         pushHistoryCmd({
@@ -3648,9 +3679,11 @@ function AudioEditorPageContent() {
         cursorPosition,
         '静默',
       );
+      if (projectLoadGenerationRef.current !== generation) return;
       if (clips.length !== trackIds.length) throw new Error('目标轨道不可用');
 
       const updated = await projectService.getProject(project.id);
+      if (projectLoadGenerationRef.current !== generation) return;
       if (!updated) throw new Error('工程保存后无法重新加载');
       setProject(updated);
       setSelectedTrackId(trackIds[0]!);
@@ -3666,6 +3699,7 @@ function AudioEditorPageContent() {
       const trackMessage = trackIds.length > 1 ? `到 ${trackIds.length} 条轨道` : '';
       toast.success(`已在 ${formatTime(cursorPosition)} ${trackMessage}生成 ${formatTime(requestedDuration)} 静默`);
     } catch (error) {
+      if (projectLoadGenerationRef.current !== generation) return;
       const message = error instanceof Error ? error.message : '未知错误';
       toast.error(`生成静默失败：${message}`);
     } finally {

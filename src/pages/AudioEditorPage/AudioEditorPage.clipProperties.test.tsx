@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   loadChannels: vi.fn(),
   loadMetadata: vi.fn(),
   editLatestProject: vi.fn(),
+  addGeneratedAudio: vi.fn(),
+  silenceSelection: vi.fn(),
   saveProject: vi.fn(async () => undefined),
   drawWaveform: vi.fn(),
 }));
@@ -56,6 +58,8 @@ vi.mock('@/services/projectService', () => ({
     openProject: vi.fn(async (id: string) => id === nextProject.id ? nextProject : project),
     saveProject: mocks.saveProject, loadAudioChannels: mocks.loadChannels,
     editLatestProject: mocks.editLatestProject,
+    addGeneratedAudioToTracks: mocks.addGeneratedAudio,
+    silenceSelectionOnTracks: mocks.silenceSelection,
     loadAudioBufferMetadata: mocks.loadMetadata, loadAudioBuffer: vi.fn(async () => null),
   },
 }));
@@ -119,6 +123,7 @@ describe('AudioEditorPage Clip properties integration', () => {
     vi.clearAllMocks();
     mocks.projectId = project.id;
     project.sampleRate = 44100;
+    project.selection = null;
     window.localStorage.clear();
     mocks.loadChannels.mockResolvedValue([left, right]);
     mocks.loadMetadata.mockResolvedValue({
@@ -332,5 +337,100 @@ describe('AudioEditorPage Clip properties integration', () => {
     expect(historyManager.push).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalledWith('Rendered time-stretched audio');
     expect(audioDb.audioBuffers.delete).not.toHaveBeenCalled();
+  });
+
+  it('does not replace a newly opened project when tone generation completes late', async () => {
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+    let releaseGeneration!: () => void;
+    const generationGate = new Promise<void>((resolve) => { releaseGeneration = resolve; });
+    mocks.addGeneratedAudio.mockImplementationOnce(async () => {
+      await generationGate;
+      return [{ ...clipA, id: 'generated-tone', audioBufferId: 'generated-tone-buffer', name: 'Generated tone' }];
+    });
+
+    const trigger = screen.getByRole('button', { name: '生成' });
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
+    fireEvent.click(await screen.findByText('音调…'));
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成音调' }));
+    await waitFor(() => expect(mocks.addGeneratedAudio).toHaveBeenCalledTimes(1));
+
+    mocks.projectId = nextProject.id;
+    rerender(<AudioEditorPage />);
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+
+    await act(async () => {
+      releaseGeneration();
+      await generationGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(project.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.success).mock.calls.some(([message]) => String(message).includes('音调'))).toBe(false);
+  });
+
+  it('does not report a late tone failure inside a newly opened project', async () => {
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+    let releaseGeneration!: () => void;
+    const generationGate = new Promise<void>((resolve) => { releaseGeneration = resolve; });
+    mocks.addGeneratedAudio.mockImplementationOnce(async () => {
+      await generationGate;
+      throw new Error('late old-project failure');
+    });
+
+    const trigger = screen.getByRole('button', { name: '生成' });
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
+    fireEvent.click(await screen.findByText('音调…'));
+    fireEvent.change(screen.getByLabelText('时长（秒）'), { target: { value: '0.01' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成音调' }));
+    await waitFor(() => expect(mocks.addGeneratedAudio).toHaveBeenCalledTimes(1));
+
+    mocks.projectId = nextProject.id;
+    rerender(<AudioEditorPage />);
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+
+    await act(async () => {
+      releaseGeneration();
+      await generationGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalledWith('生成音调失败：late old-project failure');
+    expect(historyManager.push).not.toHaveBeenCalled();
+  });
+
+  it('does not replace a newly opened project when selection silencing completes late', async () => {
+    project.selection = { start: 1.25, end: 1.5 };
+    const { rerender } = render(<AudioEditorPage />);
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+    let releaseSilencing!: () => void;
+    const silencingGate = new Promise<void>((resolve) => { releaseSilencing = resolve; });
+    mocks.silenceSelection.mockImplementationOnce(async () => {
+      await silencingGate;
+      return 1;
+    });
+
+    const trigger = screen.getByRole('button', { name: '生成' });
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
+    fireEvent.click(await screen.findByText('静默…'));
+    fireEvent.click(screen.getByRole('button', { name: '生成静默' }));
+    await waitFor(() => expect(mocks.silenceSelection).toHaveBeenCalledTimes(1));
+
+    mocks.projectId = nextProject.id;
+    rerender(<AudioEditorPage />);
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+
+    await act(async () => {
+      releaseSilencing();
+      await silencingGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(project.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.success).mock.calls.some(([message]) => String(message).includes('静默'))).toBe(false);
   });
 });
