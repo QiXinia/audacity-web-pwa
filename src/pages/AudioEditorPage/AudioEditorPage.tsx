@@ -4781,8 +4781,10 @@ function AudioEditorPageContent() {
     if (!project || !quantizedGeneratorSelection) return;
     const activeSelection = quantizedGeneratorSelection;
     setIsApplyingCrossfade(true);
+    const loadGeneration = projectLoadGenerationRef.current;
     try {
       const targets = await collectEffectTargets(activeSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (targets.length < 2) {
         toast.info('Crossfade Tracks 至少需要两条选区内轨道');
         return;
@@ -4794,7 +4796,9 @@ function AudioEditorPageContent() {
         settings,
         targets,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       const updated = await projectService.getProject(project.id);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (!updated) throw new Error('Crossfade 后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection ?? activeSelection);
@@ -4808,6 +4812,7 @@ function AudioEditorPageContent() {
       setCrossfadeDialogOpen(false);
       toast.success(`已在 ${changed} 个片段应用交叉淡化`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('Crossfade 失败:', String(error));
       toast.error(error instanceof Error ? `Crossfade 失败：${error.message}` : 'Crossfade 失败');
     } finally {
@@ -4819,8 +4824,10 @@ function AudioEditorPageContent() {
     if (!project || !quantizedGeneratorSelection) return;
     const activeSelection = quantizedGeneratorSelection;
     setIsApplyingCrossfadeClips(true);
+    const loadGeneration = projectLoadGenerationRef.current;
     try {
       const targets = await collectEffectTargets(activeSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (targets.length !== 1) {
         toast.info('Crossfade Clips 只能应用于一条轨道');
         return;
@@ -4836,7 +4843,9 @@ function AudioEditorPageContent() {
         activeSelection,
         target,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       const updated = await projectService.getProject(project.id);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (!updated) throw new Error('Crossfade Clips 后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection ?? activeSelection);
@@ -4849,6 +4858,7 @@ function AudioEditorPageContent() {
       updateHistoryState();
       toast.success(`已合并并交叉淡化 ${changed} 个选区`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('Crossfade Clips 失败:', String(error));
       toast.error(error instanceof Error ? `Crossfade Clips 失败：${error.message}` : 'Crossfade Clips 失败');
     } finally {

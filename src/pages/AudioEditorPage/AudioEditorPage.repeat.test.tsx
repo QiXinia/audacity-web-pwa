@@ -41,7 +41,7 @@ vi.mock('@/services/projectService', () => ({
     deleteProject: vi.fn(), permanentlyDeleteProject: vi.fn(), addRecordingToTrack: vi.fn(),
     addGeneratedAudioToTracks: vi.fn(), silenceSelectionOnTracks: vi.fn(),
     repeatSelectionOnTracks: vi.fn(), duplicateSelectionToTracks: vi.fn(),
-    crossfadeSelectionOnTracks: vi.fn(), delaySelectionOnTracks: vi.fn(),
+    crossfadeSelectionOnTracks: vi.fn(), crossfadeClipsSelection: vi.fn(), delaySelectionOnTracks: vi.fn(),
     notchFilterSelectionOnTracks: vi.fn(), spectralEditSelectionOnTracks: vi.fn(), adjustableFadeSelectionOnTracks: vi.fn(),
     studioFadeOutSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
@@ -277,6 +277,85 @@ describe('AudioEditorPage Repeat command integration', () => {
     ));
     expect(historyManager.push).toHaveBeenCalledTimes(1);
     expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Crossfade Tracks 交叉淡化');
+  });
+
+  it('does not replace a newly opened project when Crossfade Tracks completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Crossfade Tracks');
+    const updated: IProject = { ...project, name: 'Old project after Crossfade Tracks' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseCrossfade!: () => void;
+    const crossfadeGate = new Promise<void>((resolve) => { releaseCrossfade = resolve; });
+    vi.mocked(projectService.crossfadeSelectionOnTracks).mockImplementationOnce(async () => {
+      await crossfadeGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Crossfade Tracks 交叉淡化…'));
+    expect(await screen.findByRole('dialog', { name: 'Crossfade Tracks 交叉淡化' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Crossfade' }));
+    await waitFor(() => expect(projectService.crossfadeSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseCrossfade();
+      await crossfadeGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已在 2 个片段应用交叉淡化');
+  });
+
+  it('does not replace a newly opened project when Crossfade Clips completes late', async () => {
+    const baseProject = makeProject();
+    const project: IProject = { ...baseProject, tracks: [baseProject.tracks[0]!] };
+    const nextProject = makeNextProject('Next project after Crossfade Clips');
+    const updated: IProject = { ...project, name: 'Old project after Crossfade Clips' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseCrossfadeClips!: () => void;
+    const crossfadeClipsGate = new Promise<void>((resolve) => { releaseCrossfadeClips = resolve; });
+    vi.mocked(projectService.crossfadeClipsSelection).mockImplementationOnce(async () => {
+      await crossfadeClipsGate;
+      return 1;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Crossfade Clips 片段交叉淡化'));
+    await waitFor(() => expect(projectService.crossfadeClipsSelection).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseCrossfadeClips();
+      await crossfadeClipsGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已合并并交叉淡化 1 个选区');
   });
 
   it('opens Delay and applies the default settings with one undo entry', async () => {
