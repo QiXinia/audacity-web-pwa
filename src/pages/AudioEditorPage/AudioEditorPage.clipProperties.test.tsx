@@ -2,11 +2,13 @@
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { toast } from 'sonner';
 import type { IClip, IProject } from '@/types/project';
 
 const mocks = vi.hoisted(() => ({
   loadChannels: vi.fn(),
   loadMetadata: vi.fn(),
+  editLatestProject: vi.fn(),
   saveProject: vi.fn(async () => undefined),
   drawWaveform: vi.fn(),
 }));
@@ -41,6 +43,7 @@ vi.mock('@/services/projectService', () => ({
   projectService: {
     getProject: vi.fn(async () => project), openProject: vi.fn(async () => project),
     saveProject: mocks.saveProject, loadAudioChannels: mocks.loadChannels,
+    editLatestProject: mocks.editLatestProject,
     loadAudioBufferMetadata: mocks.loadMetadata, loadAudioBuffer: vi.fn(async () => null),
   },
 }));
@@ -102,6 +105,7 @@ async function renderProject() {
 describe('AudioEditorPage Clip properties integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    project.sampleRate = 44100;
     window.localStorage.clear();
     mocks.loadChannels.mockResolvedValue([left, right]);
     mocks.loadMetadata.mockResolvedValue({
@@ -145,5 +149,52 @@ describe('AudioEditorPage Clip properties integration', () => {
     expect(await screen.findByTestId('multi-clip-copy-menu')).toBeInTheDocument();
     expect(screen.queryByTestId('clip-properties-menu')).not.toBeInTheDocument();
     expect(screen.queryByTestId('clip-properties-dialog')).not.toBeInTheDocument();
+  });
+
+  it('rejects stale rendered PCM when the Clip changes while its audio is loading', async () => {
+    project.sampleRate = 1000;
+    const clips = await renderProject();
+    let resolveRenderChannels!: (channels: Float32Array[]) => void;
+    const renderChannels = new Promise<Float32Array[]>((resolve) => {
+      resolveRenderChannels = resolve;
+    });
+    const pendingRenderLoad = vi.fn(() => renderChannels);
+    mocks.loadChannels.mockImplementationOnce(pendingRenderLoad);
+
+    const latestProject = structuredClone(project);
+    let committedAfter: IProject | null = null;
+    mocks.editLatestProject.mockImplementationOnce(async (
+      _projectId: string,
+      edit: (value: IProject) => IProject | Promise<IProject>,
+    ) => {
+      const before = structuredClone(latestProject);
+      const after = await edit(latestProject);
+      committedAfter = after;
+      return { before, after };
+    });
+
+    fireEvent.contextMenu(clips[0]!);
+    fireEvent.click(await screen.findByText('Render pitch and speed'));
+    await waitFor(() => expect(pendingRenderLoad).toHaveBeenCalledTimes(1));
+
+    const externallyEdited = latestProject.tracks[0]!.clips[0]!;
+    latestProject.tracks[0]!.clips[0] = {
+      ...externallyEdited,
+      pitchCents: 600,
+      stretchRatio: 1.25,
+    };
+    resolveRenderChannels([new Float32Array(8000).fill(0.1)]);
+
+    await waitFor(() => expect(mocks.editLatestProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      expect(committedAfter !== null || vi.mocked(toast.error).mock.calls.length > 0).toBe(true);
+    });
+    expect(committedAfter).toBeNull();
+    expect(toast.error).toHaveBeenCalledWith('片段在渲染期间已被修改，请重试');
+    expect(latestProject.tracks[0]!.clips[0]).toMatchObject({
+      audioBufferId: 'buffer-a',
+      pitchCents: 600,
+      stretchRatio: 1.25,
+    });
   });
 });

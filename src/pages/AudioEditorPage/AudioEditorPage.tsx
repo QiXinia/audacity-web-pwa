@@ -2871,7 +2871,7 @@ function AudioEditorPageContent() {
       const renderedDuration = renderedChannels[0].length / project.sampleRate;
       const bufferId = await storeProjectBuffer(project.id, renderedChannels, project.sampleRate);
       const committed = await commitClipEdit(
-        (latest) => replaceClipWithRenderedPitchAndSpeed(latest, key, bufferId, renderedDuration),
+        (latest) => replaceClipWithRenderedPitchAndSpeed(latest, key, bufferId, renderedDuration, clip),
         'Rendered time-stretched audio · Render',
       );
       if (!committed) return;

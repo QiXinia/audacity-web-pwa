@@ -258,6 +258,7 @@ describe('Audacity 4 Render pitch and speed', () => {
       { trackId: 'track-a', clipId: 'clip-a' },
       'buffer-rendered',
       rendered[0].length / sampleRate,
+      target,
     );
     const baked = updated.tracks[0].clips[0];
     expect(baked).toMatchObject({
@@ -276,6 +277,58 @@ describe('Audacity 4 Render pitch and speed', () => {
     });
     expect(updated.tracks[0].clips[1]).toBe(neighbor);
     expect(sourceProject.tracks[0].clips[0].audioBufferId).toBe('buffer-a');
+  });
+
+  it('rejects stale PCM after any render input changes but preserves independent metadata edits', () => {
+    const expected = clip({
+      stretchRatio: 1.5,
+      pitchCents: 300,
+      optimizeForVoice: true,
+    });
+    const original = project(expected);
+    const key = { trackId: 'track-a', clipId: 'clip-a' };
+    const changes: Partial<IClip>[] = [
+      { audioBufferId: 'buffer-replaced' },
+      { offset: 0.75 },
+      { duration: 2.5 },
+      { stretchRatio: 1.25 },
+      { pitchCents: 600 },
+      { optimizeForVoice: false },
+    ];
+    for (const change of changes) {
+      const latest = structuredClone(original);
+      Object.assign(latest.tracks[0].clips[0], change);
+      expect(() => replaceClipWithRenderedPitchAndSpeed(
+        latest,
+        key,
+        'buffer-rendered',
+        expected.duration,
+        expected,
+      )).toThrow('片段在渲染期间已被修改，请重试');
+    }
+
+    const latest = structuredClone(original);
+    latest.tracks[0].clips[0] = {
+      ...latest.tracks[0].clips[0],
+      name: 'Renamed while rendering',
+      startTime: 4,
+      gain: -6,
+    };
+    const updated = replaceClipWithRenderedPitchAndSpeed(
+      latest,
+      key,
+      'buffer-rendered',
+      expected.duration,
+      expected,
+    );
+    expect(updated.tracks[0].clips[0]).toMatchObject({
+      name: 'Renamed while rendering',
+      startTime: 4,
+      gain: -6,
+      audioBufferId: 'buffer-rendered',
+      pitchCents: 0,
+      stretchRatio: 1,
+    });
   });
 
   it('uses exactly one second of raw source context at the 1000% speed limit', () => {

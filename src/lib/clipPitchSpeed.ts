@@ -273,6 +273,7 @@ export function replaceClipWithRenderedPitchAndSpeed(
   key: ClipKey,
   audioBufferId: string,
   renderedDuration: number,
+  expectedClip: IClip,
 ): IProject {
   if (!audioBufferId) throw new RangeError('渲染音频 buffer 不能为空');
   if (!Number.isFinite(renderedDuration) || renderedDuration <= 0) {
@@ -285,6 +286,16 @@ export function replaceClipWithRenderedPitchAndSpeed(
     const clips = track.clips.map((clip) => {
       if (clip.id !== key.clipId) return clip;
       found = true;
+      if (
+        clip.audioBufferId !== expectedClip.audioBufferId
+        || clip.offset !== expectedClip.offset
+        || clip.duration !== expectedClip.duration
+        || getClipStretchRatio(clip) !== getClipStretchRatio(expectedClip)
+        || getClipPitchCents(clip) !== getClipPitchCents(expectedClip)
+        || getClipOptimizeForVoice(clip) !== getClipOptimizeForVoice(expectedClip)
+      ) {
+        throw new RangeError('片段在渲染期间已被修改，请重试');
+      }
       if (!hasClipPitchOrSpeed(clip)) {
         throw new RangeError('片段没有可渲染的音高或速度调整');
       }
