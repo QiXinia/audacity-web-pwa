@@ -45,6 +45,7 @@ vi.mock('@/services/projectService', () => ({
     notchFilterSelectionOnTracks: vi.fn(), spectralEditSelectionOnTracks: vi.fn(), adjustableFadeSelectionOnTracks: vi.fn(),
     studioFadeOutSelectionOnTracks: vi.fn(), repairSelectionOnTracks: vi.fn(), clickRemovalSelectionOnTracks: vi.fn(),
     learnNoiseReductionProfile: vi.fn(), noiseReductionSelectionOnTracks: vi.fn(), truncateSilenceSelectionOnTracks: vi.fn(),
+    wahWahSelectionOnTracks: vi.fn(), phaserSelectionOnTracks: vi.fn(),
     renameTrack: vi.fn(), updateTrackVolume: vi.fn(), updateTrackPan: vi.fn(),
   },
 }));
@@ -853,6 +854,86 @@ describe('AudioEditorPage Repeat command integration', () => {
     expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
     expect(historyManager.push).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalledWith('已对 2 条轨道应用 Truncate Silence 静音截断');
+  });
+
+  it('does not replace a newly opened project when Wah Wah completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Wah Wah');
+    const updated: IProject = { ...project, name: 'Old project after Wah Wah' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseWahWah!: () => void;
+    const wahWahGate = new Promise<void>((resolve) => { releaseWahWah = resolve; });
+    vi.mocked(projectService.wahWahSelectionOnTracks).mockImplementationOnce(async () => {
+      await wahWahGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Wah Wah…'));
+    expect(await screen.findByRole('heading', { name: 'Wah Wah' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Wah Wah' }));
+    await waitFor(() => expect(projectService.wahWahSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseWahWah();
+      await wahWahGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Wah Wah');
+  });
+
+  it('does not replace a newly opened project when Phaser completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Phaser');
+    const updated: IProject = { ...project, name: 'Old project after Phaser' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releasePhaser!: () => void;
+    const phaserGate = new Promise<void>((resolve) => { releasePhaser = resolve; });
+    vi.mocked(projectService.phaserSelectionOnTracks).mockImplementationOnce(async () => {
+      await phaserGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Phaser…'));
+    expect(await screen.findByRole('heading', { name: 'Phaser' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Phaser' }));
+    await waitFor(() => expect(projectService.phaserSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releasePhaser();
+      await phaserGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Phaser');
   });
 
   it('does not replace a newly opened project when Repeat completes late', async () => {
