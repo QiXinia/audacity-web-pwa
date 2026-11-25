@@ -5932,9 +5932,11 @@ function AudioEditorPageContent() {
   async function handleApplyRepair() {
     if (!project || !quantizedGeneratorSelection) return;
     setIsApplyingRepair(true);
+    const loadGeneration = projectLoadGenerationRef.current;
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectFullTrackTargets(activeSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (targets.length === 0) {
         toast.info('选区内没有可修复的音频');
         return;
@@ -5945,7 +5947,9 @@ function AudioEditorPageContent() {
         activeSelection,
         targets,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       const updated = await projectService.getProject(project.id);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (!updated) throw new Error('应用 Repair 后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -5957,6 +5961,7 @@ function AudioEditorPageContent() {
       updateHistoryState();
       toast.success(`已对 ${changed} 个片段应用 Repair 修复`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('应用 Repair 修复失败:', String(error));
       toast.error(error instanceof Error ? `应用 Repair 修复失败：${error.message}` : '应用 Repair 修复失败');
     } finally {
@@ -5984,9 +5989,11 @@ function AudioEditorPageContent() {
   async function handleApplyClickRemoval(settings: ClickRemovalSettings) {
     if (!project || !quantizedGeneratorSelection || isApplyingClickRemoval) return;
     setIsApplyingClickRemoval(true);
+    const loadGeneration = projectLoadGenerationRef.current;
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectFullTrackTargets(activeSelection);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -6001,11 +6008,13 @@ function AudioEditorPageContent() {
         settings,
         targets,
       );
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (changed === 0) {
         toast.info('Click Removal 参数为 0，已按官方行为跳过，未修改音频');
         return;
       }
       const updated = await projectService.getProject(project.id);
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       if (!updated) throw new Error('应用 Click Removal 后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection);
@@ -6019,6 +6028,7 @@ function AudioEditorPageContent() {
       setClickRemovalDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Click Removal 咔哒声消除`);
     } catch (error) {
+      if (loadGeneration !== projectLoadGenerationRef.current) return;
       logger.error('应用 Click Removal 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Click Removal 失败：${error.message}` : '应用 Click Removal 失败');
     } finally {
