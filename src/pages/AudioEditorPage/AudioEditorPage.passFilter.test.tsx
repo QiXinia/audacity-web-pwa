@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   previewBuffers: [] as { channels: number; length: number; sampleRate: number; data: Float32Array[] }[],
 }));
 let mockProject: IProject;
+let mockRouteProjectId = 'pass-filter-project';
 const clipDuration = 10 / 48000;
 const settings: PassFilterSettings = { kind: 'highpass', frequencyHz: 1200, rolloff: 24 };
 
@@ -69,7 +70,7 @@ vi.mock('@/engine/audioEngine', () => ({
 }));
 vi.mock('@/wasm/processor', () => ({ isWasmAvailable: vi.fn(() => false), wasmProcessor: {} }));
 vi.mock('react-router-dom', () => ({
-  useParams: () => ({ projectId: 'pass-filter-project' }), useNavigate: () => vi.fn(),
+  useParams: () => ({ projectId: mockRouteProjectId }), useNavigate: () => vi.fn(),
 }));
 vi.mock('sonner', () => ({ toast: { success: mocks.success, error: mocks.error, info: mocks.info } }));
 vi.mock('@/utils/logger', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), log: vi.fn() } }));
@@ -102,11 +103,46 @@ async function openPassFilterDialog(kind: 'highpass' | 'lowpass' = 'highpass') {
   fireEvent.click(await screen.findByRole('option', { name: '24 dB' }));
 }
 
+async function verifyLatePassFilterResultIsIgnored(kind: 'highpass' | 'lowpass') {
+  const title = kind === 'highpass' ? 'High-pass filter' : 'Low-pass filter';
+  let release!: (changed: number) => void;
+  const oldApply = new Promise<number>((resolve) => { release = resolve; });
+  mocks.passFilter.mockReturnValueOnce(oldApply);
+  const { rerender } = render(<AudioEditorPage />);
+  expect(await screen.findByText('High/Low Pass integration')).toBeInTheDocument();
+  await openPassFilterDialog(kind);
+  fireEvent.click(screen.getByRole('button', { name: '应用' }));
+  await waitFor(() => expect(mocks.passFilter).toHaveBeenCalledTimes(1));
+
+  const replacement = {
+    ...structuredClone(makeProject()),
+    id: 'replacement-pass-filter-project',
+    name: 'Replacement pass filter project',
+  };
+  mockProject = replacement;
+  mockRouteProjectId = replacement.id;
+  rerender(<AudioEditorPage key={replacement.id} />);
+  expect(await screen.findByText(replacement.name)).toBeInTheDocument();
+  mocks.push.mockClear();
+  mocks.success.mockClear();
+  mocks.error.mockClear();
+
+  release(2);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(mocks.push).not.toHaveBeenCalled();
+  await waitFor(() => expect(mocks.info).toHaveBeenCalledWith(`已切换工程，忽略过期的 ${title} 结果`));
+  expect(mocks.success).not.toHaveBeenCalled();
+  expect(mocks.error).not.toHaveBeenCalled();
+  expect(screen.queryByRole('heading', { name: title })).not.toBeInTheDocument();
+  expect(screen.getByText(replacement.name)).toBeInTheDocument();
+}
+
 describe('AudioEditorPage High/Low Pass effects', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.previewBuffers.length = 0;
     mockProject = makeProject();
+    mockRouteProjectId = 'pass-filter-project';
     vi.stubGlobal('AudioContext', MockAudioContext);
     Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
     mocks.loadChannels.mockImplementation(async (id: string) => {
@@ -191,5 +227,13 @@ describe('AudioEditorPage High/Low Pass effects', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: '效果' }));
     expect(await screen.findByText('High-pass filter 高通滤波…')).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByText('Low-pass filter 低通滤波…')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('ignores a late High-pass result after switching projects', async () => {
+    await verifyLatePassFilterResultIsIgnored('highpass');
+  });
+
+  it('ignores a late Low-pass result after switching projects', async () => {
+    await verifyLatePassFilterResultIsIgnored('lowpass');
   });
 });
