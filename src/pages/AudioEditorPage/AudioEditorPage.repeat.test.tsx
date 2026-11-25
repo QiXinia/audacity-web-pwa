@@ -306,6 +306,46 @@ describe('AudioEditorPage Repeat command integration', () => {
     expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Delay 延迟');
   });
 
+  it('does not replace a newly opened project when Delay completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Delay');
+    const updated: IProject = { ...project, name: 'Old project after Delay' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseDelay!: () => void;
+    const delayGate = new Promise<void>((resolve) => { releaseDelay = resolve; });
+    vi.mocked(projectService.delaySelectionOnTracks).mockImplementationOnce(async () => {
+      await delayGate;
+      return 2;
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.click(await screen.findByText('Delay 延迟…'));
+    expect(await screen.findByRole('dialog', { name: 'Delay 延迟' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '应用 Delay' }));
+    await waitFor(() => expect(projectService.delaySelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseDelay();
+      await delayGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已对 2 个片段应用 Delay');
+  });
+
   it('opens Adjustable Fade and applies the default fade with one undo entry', async () => {
     const project = makeProject();
     const updated: IProject = { ...project };

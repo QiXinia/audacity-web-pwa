@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IProject } from '@/types/project';
+import { projectService } from '@/services/projectService';
 import type { EchoTrackAudio } from '@/services/projectService';
 
 const mocks = vi.hoisted(() => ({
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   previewBuffers: [] as { channels: number; length: number; sampleRate: number; data: Float32Array[] }[],
 }));
 let mockProject: IProject;
+let mockProjectId = 'echo-project';
 
 function makeProject(): IProject {
   const clip = (id: string) => ({
@@ -111,7 +113,7 @@ vi.mock('@/engine/audioEngine', () => ({
 }));
 vi.mock('@/wasm/processor', () => ({ isWasmAvailable: vi.fn(() => false), wasmProcessor: {} }));
 vi.mock('react-router-dom', () => ({
-  useParams: () => ({ projectId: 'echo-project' }),
+  useParams: () => ({ projectId: mockProjectId }),
   useNavigate: () => vi.fn(),
 }));
 vi.mock('sonner', () => ({ toast: { success: mocks.success, error: mocks.error, info: mocks.info } }));
@@ -149,6 +151,7 @@ describe('AudioEditorPage Echo effect', () => {
     vi.clearAllMocks();
     mocks.previewBuffers.length = 0;
     mockProject = makeProject();
+    mockProjectId = mockProject.id;
     vi.stubGlobal('AudioContext', MockAudioContext);
     mocks.loadChannels.mockImplementation(async (id: string) => {
       if (id === 'buffer-one') {
@@ -225,6 +228,47 @@ describe('AudioEditorPage Echo effect', () => {
     expect(screen.getByRole('heading', { name: 'Echo 回声' })).toBeInTheDocument();
     expect(mocks.push).not.toHaveBeenCalled();
     expect(mocks.saveProject).not.toHaveBeenCalled();
+  });
+
+  it('does not replace a newly opened project when Echo completes late', async () => {
+    const project = makeProject();
+    const nextProject: IProject = {
+      ...makeProject(),
+      id: 'next-project',
+      name: 'Next project after Echo',
+      selection: null,
+    };
+    const updated: IProject = { ...project, name: 'Old project after Echo' };
+    mockProject = project;
+    mockProjectId = project.id;
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    let releaseEcho!: () => void;
+    const echoGate = new Promise<void>((resolve) => { releaseEcho = resolve; });
+    mocks.echo.mockImplementationOnce(async () => {
+      await echoGate;
+      return 2;
+    });
+    const view = render(<AudioEditorPage />);
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+    await openEchoDialog();
+    fireEvent.click(screen.getByRole('button', { name: '应用回声' }));
+    await waitFor(() => expect(mocks.echo).toHaveBeenCalledTimes(1));
+
+    mockProjectId = nextProject.id;
+    view.rerender(<AudioEditorPage />);
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseEcho();
+      await echoGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.success).not.toHaveBeenCalledWith('已对 2 个片段应用回声');
   });
 
   it('disables Echo when there is no real selection', async () => {

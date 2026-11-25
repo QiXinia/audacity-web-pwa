@@ -5437,10 +5437,13 @@ function AudioEditorPageContent() {
 
   async function handleApplyEcho(delaySeconds: number, decay: number) {
     if (!project || !quantizedGeneratorSelection) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsApplyingEcho(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -5453,7 +5456,9 @@ function AudioEditorPageContent() {
         decay,
         targets,
       );
+      if (!isCurrentAction()) return;
       const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('应用回声后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -5466,6 +5471,7 @@ function AudioEditorPageContent() {
       setEchoDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用回声`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('应用回声失败:', String(error));
       toast.error(error instanceof Error ? `应用回声失败：${error.message}` : '应用回声失败');
     } finally {
@@ -5511,10 +5517,13 @@ function AudioEditorPageContent() {
 
   async function handleApplyDelay(delaySettings: DelaySettings) {
     if (!project || !quantizedGeneratorSelection) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsApplyingDelay(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const targets = await collectEffectTargets(activeSelection);
+      if (!isCurrentAction()) return;
       if (targets.length === 0) {
         toast.info('选区内没有可处理的音频');
         return;
@@ -5526,7 +5535,9 @@ function AudioEditorPageContent() {
         delaySettings,
         targets,
       );
+      if (!isCurrentAction()) return;
       const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('应用 Delay 后无法重新读取工程');
       setProject(updated);
       pushHistoryCmd({
@@ -5539,6 +5550,7 @@ function AudioEditorPageContent() {
       setDelayDialogOpen(false);
       toast.success(`已对 ${changed} 个片段应用 Delay`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('应用 Delay 失败:', String(error));
       toast.error(error instanceof Error ? `应用 Delay 失败：${error.message}` : '应用 Delay 失败');
     } finally {
