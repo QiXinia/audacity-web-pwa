@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AudioEditorPage from '@/pages/AudioEditorPage/AudioEditorPage';
 import { historyManager } from '@/services/historyService';
 import { projectService } from '@/services/projectService';
 import { audioEngine } from '@/engine/audioEngine';
+import { toast } from 'sonner';
 import type { IClip, IProject } from '@/types/project';
 
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -117,6 +118,24 @@ function renderEditor() {
   return render(<MemoryRouter initialEntries={['/editor/repeat-project']}>
     <Routes><Route path="/editor/:projectId" element={<AudioEditorPage />} /></Routes>
   </MemoryRouter>);
+}
+
+function makeNextProject(name: string): IProject {
+  const project = makeProject();
+  return {
+    ...project,
+    id: 'next-project',
+    name,
+    tracks: [{ ...project.tracks[0]!, id: 'next-track', name: 'Next track' }],
+    selection: null,
+  };
+}
+
+function renderSwitchableEditor() {
+  const router = createMemoryRouter([
+    { path: '/editor/:projectId', element: <AudioEditorPage /> },
+  ], { initialEntries: ['/editor/repeat-project'] });
+  return { ...render(<RouterProvider router={router} />), router };
 }
 
 describe('AudioEditorPage Repeat command integration', () => {
@@ -313,5 +332,85 @@ describe('AudioEditorPage Repeat command integration', () => {
     ));
     expect(historyManager.push).toHaveBeenCalledTimes(1);
     expect(vi.mocked(historyManager.push).mock.calls[0][0].label).toBe('Adjustable Fade 可调淡化');
+  });
+
+  it('does not replace a newly opened project when Repeat completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Repeat');
+    const updated: IProject = { ...project, name: 'Old project after Repeat' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseRepeat!: () => void;
+    const repeatGate = new Promise<void>((resolve) => { releaseRepeat = resolve; });
+    vi.mocked(projectService.repeatSelectionOnTracks).mockImplementationOnce(async () => {
+      await repeatGate;
+      return [{ ...project.tracks[0]!.clips[0]!, id: 'late-repeat', name: 'Late Repeat' }];
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.pointerDown(await screen.findByText('Repeat 重复…'));
+    fireEvent.click(screen.getByText('Repeat 重复…'));
+    fireEvent.change(await screen.findByLabelText('新增重复次数'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: '应用重复' }));
+    await waitFor(() => expect(projectService.repeatSelectionOnTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseRepeat();
+      await repeatGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已插入 1 个重复片段');
+  });
+
+  it('does not replace a newly opened project when Duplicate completes late', async () => {
+    const project = makeProject();
+    const nextProject = makeNextProject('Next project after Duplicate');
+    const updated: IProject = { ...project, name: 'Old project after Duplicate' };
+    vi.mocked(projectService.openProject).mockImplementation(async (id) => (
+      id === project.id ? project : nextProject
+    ));
+    vi.mocked(projectService.getProject).mockResolvedValue(updated);
+    vi.mocked(projectService.loadAudioChannels).mockResolvedValue([new Float32Array(10).fill(0.25)]);
+    vi.mocked(projectService.loadAudioBuffer).mockResolvedValue(new Float32Array(10).fill(0.25));
+    let releaseDuplicate!: () => void;
+    const duplicateGate = new Promise<void>((resolve) => { releaseDuplicate = resolve; });
+    vi.mocked(projectService.duplicateSelectionToTracks).mockImplementationOnce(async () => {
+      await duplicateGate;
+      return [{ ...project.tracks[0]!.clips[0]!, id: 'late-duplicate', name: 'Late Duplicate' }];
+    });
+    const { router } = renderSwitchableEditor();
+    expect(await screen.findByText(project.name)).toBeInTheDocument();
+
+    const effectMenu = screen.getByRole('button', { name: '效果' });
+    fireEvent.pointerDown(effectMenu);
+    fireEvent.click(effectMenu);
+    fireEvent.pointerDown(await screen.findByText('Duplicate 复制为新轨道'));
+    fireEvent.click(screen.getByText('Duplicate 复制为新轨道'));
+    await waitFor(() => expect(projectService.duplicateSelectionToTracks).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/editor/next-project'); });
+    expect(await screen.findByText(nextProject.name)).toBeInTheDocument();
+    await act(async () => {
+      releaseDuplicate();
+      await duplicateGate;
+    });
+
+    expect(screen.getByText(nextProject.name)).toBeInTheDocument();
+    expect(screen.queryByText(updated.name)).not.toBeInTheDocument();
+    expect(historyManager.push).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalledWith('已在 1 条新轨道复制选区');
   });
 });

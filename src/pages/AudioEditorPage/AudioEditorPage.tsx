@@ -4483,10 +4483,13 @@ function AudioEditorPageContent() {
   // Effect operations
   async function handleRepeatSelection(repeatCount: number) {
     if (!project || !quantizedGeneratorSelection) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     setIsRepeating(true);
     try {
       const activeSelection = quantizedGeneratorSelection;
       const copied = await copySelection(project, activeSelection.start, activeSelection.end);
+      if (!isCurrentAction()) return;
       if (!copied || copied.tracks.length === 0) {
         toast.info('选区内没有可重复的音频');
         return;
@@ -4498,7 +4501,9 @@ function AudioEditorPageContent() {
         repeatCount,
         copied.tracks.map((track) => ({ trackId: track.trackId, sampleData: track.channels })),
       );
+      if (!isCurrentAction()) return;
       const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('重复后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection ?? {
@@ -4515,6 +4520,7 @@ function AudioEditorPageContent() {
       setRepeatDialogOpen(false);
       toast.success(`已插入 ${inserted.length} 个重复片段`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('重复选区失败:', String(error));
       toast.error(error instanceof Error ? `重复选区失败：${error.message}` : '重复选区失败');
     } finally {
@@ -4527,6 +4533,8 @@ function AudioEditorPageContent() {
       ? quantizeSelectionToSamples(target.selection, project?.sampleRate ?? 44100)
       : quantizedGeneratorSelection;
     if (!project || !activeSelection) return;
+    const generation = projectLoadGenerationRef.current;
+    const isCurrentAction = () => projectLoadGenerationRef.current === generation;
     try {
       const copied = await copySelection(
         project,
@@ -4534,6 +4542,7 @@ function AudioEditorPageContent() {
         activeSelection.end,
         target ? new Set([target.trackId]) : undefined,
       );
+      if (!isCurrentAction()) return;
       if (!copied || copied.tracks.length === 0) {
         toast.info('选区内没有可复制的音频');
         return;
@@ -4544,7 +4553,9 @@ function AudioEditorPageContent() {
         activeSelection,
         copied.tracks.map((track) => ({ trackId: track.trackId, sampleData: track.channels })),
       );
+      if (!isCurrentAction()) return;
       const updated = await projectService.getProject(project.id);
+      if (!isCurrentAction()) return;
       if (!updated) throw new Error('复制后无法重新读取工程');
       setProject(updated);
       setSelection(updated.selection ?? activeSelection);
@@ -4557,6 +4568,7 @@ function AudioEditorPageContent() {
       updateHistoryState();
       toast.success(`已在 ${inserted.length} 条新轨道复制选区`);
     } catch (error) {
+      if (!isCurrentAction()) return;
       logger.error('Duplicate 选区失败:', String(error));
       toast.error(error instanceof Error ? `Duplicate 失败：${error.message}` : 'Duplicate 失败');
     }
